@@ -45,6 +45,66 @@ check_root() {
     [[ $EUID -eq 0 ]] || error "Execute como root: sudo bash deploy.sh"
 }
 
+# ── Verificar estrutura de diretórios ─────────────────────────────────────────
+check_structure() {
+    step "Verificando estrutura do projeto"
+
+    local required_dirs=("agents" "llm" "api" "frontend" "nginx")
+    local required_files=("docker-compose.yml" "api/Dockerfile" "frontend/Dockerfile")
+    local missing=()
+
+    for dir in "${required_dirs[@]}"; do
+        if [[ ! -d "${SCRIPT_DIR}/${dir}" ]]; then
+            missing+=("DIRETÓRIO: ${dir}/")
+        fi
+    done
+
+    for file in "${required_files[@]}"; do
+        if [[ ! -f "${SCRIPT_DIR}/${file}" ]]; then
+            missing+=("ARQUIVO: ${file}")
+        fi
+    done
+
+    if [[ ${#missing[@]} -gt 0 ]]; then
+        echo -e "${RED}Estrutura do projeto incompleta!${NC}"
+        echo -e "  Diretório de trabalho: ${SCRIPT_DIR}"
+        echo
+        echo -e "  ${YELLOW}Itens faltando:${NC}"
+        for item in "${missing[@]}"; do
+            echo -e "    ✗ ${item}"
+        done
+        echo
+        echo -e "  ${BOLD}Estrutura esperada:${NC}"
+        cat << 'TREE'
+  /caminho/do/projeto/          ← execute deploy.sh daqui
+  ├── agents/                   ← lógica dos agentes LangGraph
+  ├── llm/
+  ├── api/
+  │   ├── Dockerfile
+  │   └── requirements.txt
+  ├── frontend/
+  │   └── Dockerfile
+  ├── nginx/
+  ├── docker-compose.yml
+  └── deploy.sh                 ← este script
+TREE
+        echo
+        echo -e "  ${YELLOW}Se seu projeto está em subpasta (ex: saas-farmacia/), execute:${NC}"
+        echo -e "    cd saas-farmacia && sudo bash deploy.sh"
+        echo
+        error "Corrija a estrutura antes de continuar."
+    fi
+
+    # Verifica se agents/ tem conteúdo
+    local agents_files
+    agents_files=$(find "${SCRIPT_DIR}/agents" -name "*.py" 2>/dev/null | wc -l)
+    if [[ "$agents_files" -eq 0 ]]; then
+        error "O diretório agents/ existe mas está vazio. Verifique o upload do projeto."
+    fi
+
+    success "Estrutura do projeto OK (${agents_files} arquivos Python em agents/)"
+}
+
 # ── Instalar dependências do sistema ──────────────────────────────────────────
 install_system_deps() {
     step "Instalando dependências do sistema"
@@ -470,9 +530,10 @@ EOF
 issue_ssl() {
     step "Emitindo Certificado SSL (Let's Encrypt)"
 
-    # Sobe nginx com config HTTP para servir o challenge ACME
+    # Sobe APENAS nginx (--no-deps) para servir o challenge ACME.
+    # Não construímos api/admin aqui — apenas nginx precisa estar online.
     info "Iniciando nginx em modo HTTP para validação ACME..."
-    docker compose up -d nginx 2>>"$LOG_FILE"
+    docker compose up -d --no-deps nginx 2>>"$LOG_FILE"
     sleep 4
 
     # Verifica se nginx subiu
@@ -657,6 +718,7 @@ main() {
 
     install_system_deps
     install_docker
+    check_structure       # verifica agents/, llm/, api/, etc. antes de qualquer build
     configure_firewall
     collect_config
     check_dns
