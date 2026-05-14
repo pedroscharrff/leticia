@@ -19,6 +19,7 @@ _KNOWN_SKILLS = {
     "genericos",
     "vendedor",
     "recuperador",
+    "saudacao",     # recepção — ativo em todos os planos
     "guardrails",   # node de segurança — sempre disponível
 }
 

@@ -111,6 +111,7 @@ def build_graph_for_tenant(cfg: TenantConfig, redis: Any = None):
     from agents.nodes.skills.vendedor        import vendedor_node
     from agents.nodes.skills.recuperador     import recuperador_node
     from agents.nodes.skills.guardrails      import guardrails_node
+    from agents.nodes.skills.saudacao        import saudacao_node
 
     llm_factory = _make_llm_factory(cfg)
     max_retries = settings.analyst_max_retries
@@ -124,14 +125,16 @@ def build_graph_for_tenant(cfg: TenantConfig, redis: Any = None):
     vend_node    = functools.partial(vendedor_node,        llm_factory=llm_factory)
     recup_node   = functools.partial(recuperador_node,     llm_factory=llm_factory)
     guard_node   = functools.partial(guardrails_node,      llm_factory=llm_factory)
+    sauda_node   = functools.partial(saudacao_node,        llm_factory=llm_factory)
 
     # ── Mapa de skills disponíveis para este tenant ───────────────────────────
     all_skill_nodes = {
-        "farmaceutico":    farm_node,
-        "principio_ativo": pa_node,
-        "genericos":       gen_node,
-        "vendedor":        vend_node,
-        "recuperador":     recup_node,
+        "saudacao":        sauda_node,   # recepção — basic+
+        "farmaceutico":    farm_node,    # dúvidas — basic+
+        "principio_ativo": pa_node,      # substâncias — pro+
+        "genericos":       gen_node,     # genéricos — pro+
+        "vendedor":        vend_node,    # compras — pro+
+        "recuperador":     recup_node,   # reengajamento — enterprise
     }
     # Filtra apenas skills ativas + garante fallback mínimo
     active_skills = [s for s in cfg.skills_active if s in all_skill_nodes]
