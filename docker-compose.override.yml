@@ -1,0 +1,16 @@
+# Local dev overrides — exposes DB ports to host so the API can run outside Docker.
+# This file is automatically merged by docker compose and should NOT be deployed.
+version: "3.9"
+
+services:
+  postgres:
+    ports:
+      - "5434:5432"
+
+  redis:
+    ports:
+      - "6379:6379"
+
+  rabbitmq:
+    ports:
+      - "5672:5672"

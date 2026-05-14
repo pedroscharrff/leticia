@@ -1,0 +1,87 @@
+.settings__hero {
+  border-radius: var(--radius-lg);
+  padding: var(--space-xxl) var(--space-section);
+  text-align: center;
+  margin-bottom: var(--space-xxl);
+}
+.settings__hero-title {
+  font-size: var(--text-display-lg);
+  letter-spacing: var(--tracking-hero);
+  color: var(--color-on-dark);
+  margin-bottom: var(--space-sm);
+}
+.settings__hero-sub {
+  font-size: var(--text-lead-airy);
+  font-weight: 300;
+  color: var(--color-body-muted);
+}
+
+.settings__section { margin-bottom: var(--space-xxl); }
+
+.settings__section-title {
+  font-family: var(--font-display);
+  font-size: var(--text-tagline);
+  font-weight: 600;
+  letter-spacing: var(--tracking-tagline);
+  color: var(--color-ink);
+  margin-bottom: var(--space-lg);
+}
+
+.settings__info-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: var(--space-md);
+}
+
+.settings__info-card {
+  background: var(--color-canvas);
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-lg);
+  padding: var(--space-lg);
+}
+.settings__info-card-title {
+  font-size: var(--text-body);
+  font-weight: 600;
+  letter-spacing: var(--tracking-body);
+  margin-bottom: var(--space-sm);
+}
+.settings__info-card-body {
+  font-size: var(--text-caption);
+  color: var(--color-ink-muted-80);
+  letter-spacing: var(--tracking-caption);
+  line-height: 1.7;
+}
+.settings__info-card-body code {
+  font-family: "SF Mono", "Fira Code", monospace;
+  font-size: 11px;
+  background: var(--color-canvas-parchment);
+  border-radius: 3px;
+  padding: 1px 5px;
+  color: var(--color-ink);
+}
+
+.settings__code-block {
+  background: var(--color-surface-tile-1);
+  border-radius: var(--radius-lg);
+  padding: var(--space-lg);
+}
+.settings__code-block pre {
+  font-family: "SF Mono", "Fira Code", monospace;
+  font-size: 13px;
+  color: var(--color-primary-on-dark);
+  overflow-x: auto;
+  white-space: pre-wrap;
+}
+.settings__code-hint {
+  margin-top: var(--space-sm);
+  font-size: var(--text-caption);
+  color: var(--color-body-muted);
+  letter-spacing: var(--tracking-caption);
+}
+.settings__code-hint code {
+  font-family: "SF Mono", "Fira Code", monospace;
+  font-size: 11px;
+  color: var(--color-primary-on-dark);
+}
+
+.settings__session { display: flex; flex-direction: column; gap: var(--space-md); }

@@ -1,0 +1,109 @@
+.sub-nav {
+  position: fixed;
+  top: var(--nav-global-h);
+  left: 0; right: 0;
+  height: var(--nav-sub-h);
+  background: rgba(245, 245, 247, 0.8);
+  backdrop-filter: saturate(180%) blur(20px);
+  -webkit-backdrop-filter: saturate(180%) blur(20px);
+  border-bottom: 1px solid rgba(0, 0, 0, 0.08);
+  z-index: 900;
+}
+
+.sub-nav__inner {
+  max-width: 1200px;
+  margin: 0 auto;
+  height: 100%;
+  padding: 0 var(--space-xl);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.sub-nav__title {
+  font-family: var(--font-display);
+  font-size: var(--text-tagline);
+  font-weight: 600;
+  letter-spacing: var(--tracking-tagline);
+  color: var(--color-ink);
+}
+
+/* ─── Shared button primitives (used across the app) ──────────────────────── */
+.btn-primary {
+  background: var(--color-primary);
+  color: white;
+  font-family: var(--font-text);
+  font-size: var(--text-body);
+  font-weight: 400;
+  letter-spacing: var(--tracking-body);
+  border: none;
+  border-radius: var(--radius-pill);
+  padding: 11px 22px;
+  cursor: pointer;
+  transition: transform var(--ease-btn), opacity var(--ease-btn);
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
+  white-space: nowrap;
+}
+.btn-primary:hover   { opacity: 0.9; }
+.btn-primary:active  { transform: scale(0.95); }
+.btn-primary:disabled{ opacity: 0.4; cursor: not-allowed; }
+
+.btn-secondary {
+  background: transparent;
+  color: var(--color-primary);
+  font-family: var(--font-text);
+  font-size: var(--text-body);
+  font-weight: 400;
+  border: 1px solid var(--color-primary);
+  border-radius: var(--radius-pill);
+  padding: 11px 22px;
+  cursor: pointer;
+  transition: transform var(--ease-btn), opacity var(--ease-btn);
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
+  white-space: nowrap;
+}
+.btn-secondary:hover  { opacity: 0.75; }
+.btn-secondary:active { transform: scale(0.95); }
+
+.btn-utility {
+  background: var(--color-ink);
+  color: white;
+  font-family: var(--font-text);
+  font-size: var(--text-caption);
+  font-weight: 400;
+  letter-spacing: var(--tracking-caption);
+  border: none;
+  border-radius: var(--radius-sm);
+  padding: 8px 15px;
+  cursor: pointer;
+  transition: transform var(--ease-btn), opacity var(--ease-btn);
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
+}
+.btn-utility:hover  { opacity: 0.85; }
+.btn-utility:active { transform: scale(0.95); }
+
+.btn-danger {
+  background: var(--color-danger);
+  color: white;
+  font-family: var(--font-text);
+  font-size: var(--text-caption);
+  font-weight: 400;
+  border: none;
+  border-radius: var(--radius-sm);
+  padding: 8px 15px;
+  cursor: pointer;
+  transition: transform var(--ease-btn), opacity var(--ease-btn);
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
+}
+.btn-danger:hover  { opacity: 0.85; }
+.btn-danger:active { transform: scale(0.95); }
+
+.sub-nav__cta { font-size: var(--text-caption); padding: 8px 18px; }

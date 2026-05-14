@@ -1,0 +1,23 @@
+.billing-page { padding: 24px; max-width: 960px; }
+.page-title { font-size: 22px; font-weight: 700; margin-bottom: 24px; }
+.section-title { font-size: 16px; font-weight: 600; margin: 32px 0 12px; }
+.error-banner { background: #fee2e2; color: #991b1b; padding: 12px 16px; border-radius: 8px; margin-bottom: 20px; }
+.billing-cards { display: flex; gap: 16px; flex-wrap: wrap; margin-bottom: 8px; }
+.usage-bar-card { background: var(--color-surface); border: 1px solid var(--color-border); border-radius: 12px; padding: 16px; min-width: 200px; }
+.usage-bar-label { font-size: 13px; color: var(--color-secondary); display: block; margin-bottom: 8px; }
+.usage-bar-track { height: 8px; background: var(--color-border); border-radius: 99px; overflow: hidden; }
+.usage-bar-fill { height: 100%; border-radius: 99px; transition: width .4s; }
+.plan-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px; }
+.plan-card { border: 1px solid var(--color-border); border-radius: 12px; padding: 20px; }
+.plan-card--active { border-color: var(--color-blue); box-shadow: 0 0 0 2px var(--color-blue-light); }
+.plan-card__header { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 12px; }
+.plan-card__label { font-weight: 700; font-size: 16px; }
+.plan-card__price { font-size: 14px; color: var(--color-secondary); }
+.plan-card__features { list-style: none; padding: 0; margin: 0 0 16px; font-size: 13px; display: flex; flex-direction: column; gap: 4px; }
+.plan-card__current { font-size: 13px; color: var(--color-blue); font-weight: 600; }
+.invoices-table { width: 100%; border-collapse: collapse; font-size: 14px; }
+.invoices-table th, .invoices-table td { padding: 10px 12px; text-align: left; border-bottom: 1px solid var(--color-border); }
+.invoices-table th { font-weight: 600; color: var(--color-secondary); }
+.cancel-zone { margin-top: 40px; padding-top: 24px; border-top: 1px solid var(--color-border); }
+.btn--danger { background: #ef4444; color: #fff; }
+.btn--danger:hover { background: #dc2626; }

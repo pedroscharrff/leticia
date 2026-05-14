@@ -1,0 +1,241 @@
+/* ── Users list ──────────────────────────────────────────────────────────── */
+.users-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.user-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  background: var(--color-canvas);
+  border: 1px solid var(--color-rule);
+  border-radius: 10px;
+}
+
+.user-row__avatar {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: var(--color-primary);
+  color: white;
+  font-size: 14px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.user-row__info {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+}
+
+.user-row__name {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--color-ink);
+}
+
+.user-row__email {
+  font-size: 12px;
+  color: var(--color-ink-muted-48);
+}
+
+.user-row__status {
+  font-size: 12px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  background: rgba(0,0,0,0.05);
+  color: var(--color-ink-muted-48);
+}
+
+.user-row__status--active {
+  background: rgba(52, 199, 89, 0.1);
+  color: #34c759;
+}
+
+/* ── Dark overview tile ──────────────────────────────────────────────────── */
+.tenant-detail__overview {
+  border-radius: var(--radius-lg);
+  padding: var(--space-xxl);
+  margin-bottom: var(--space-xxl);
+}
+
+.tenant-detail__overview-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: var(--space-xl);
+}
+
+.overview-stat {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+}
+.overview-stat__label {
+  font-size: var(--text-fine);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  color: var(--color-body-muted);
+}
+.overview-stat__value {
+  font-family: var(--font-display);
+  font-size: var(--text-display-md);
+  font-weight: 600;
+  letter-spacing: var(--tracking-body);
+  color: var(--color-on-dark);
+  line-height: 1.1;
+}
+
+/* ── Sections ─────────────────────────────────────────────────────────────── */
+.tenant-detail__section { margin-bottom: var(--space-xxl); }
+
+.tenant-detail__section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-md);
+  margin-bottom: var(--space-lg);
+}
+
+.tenant-detail__section-title {
+  font-family: var(--font-display);
+  font-size: var(--text-tagline);
+  font-weight: 600;
+  letter-spacing: var(--tracking-tagline);
+  color: var(--color-ink);
+  margin-bottom: 0;
+}
+
+.tenant-detail__chart {
+  background: var(--color-canvas);
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-lg);
+  padding: var(--space-lg);
+}
+
+.tenant-detail__empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-lg);
+  padding: var(--space-xxl);
+  background: var(--color-canvas);
+  border: 1px dashed var(--color-hairline);
+  border-radius: var(--radius-lg);
+  color: var(--color-ink-muted-48);
+  text-align: center;
+}
+
+/* ── Skills grid ──────────────────────────────────────────────────────────── */
+.skills-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: var(--space-md);
+}
+
+.skill-card {
+  background: var(--color-canvas);
+  border: 1.5px solid var(--color-hairline);
+  border-radius: var(--radius-lg);
+  padding: var(--space-lg);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+  transition: border-color 0.15s ease;
+}
+.skill-card--active  { border-color: rgba(0, 102, 204, 0.25); }
+.skill-card--inactive{ opacity: 0.6; }
+
+.skill-card__top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-sm);
+}
+
+.skill-card__info {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xxs);
+}
+
+.skill-card__name {
+  font-family: var(--font-text);
+  font-size: var(--text-body);
+  font-weight: 600;
+  letter-spacing: var(--tracking-body);
+  color: var(--color-ink);
+}
+.skill-card__desc {
+  font-size: var(--text-caption);
+  color: var(--color-ink-muted-48);
+  letter-spacing: var(--tracking-caption);
+}
+
+.skill-card__toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  flex-shrink: 0;
+}
+
+.skill-card__config {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xxs);
+  padding-top: var(--space-sm);
+  border-top: 1px solid var(--color-divider-soft);
+}
+.skill-card__config-label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  color: var(--color-ink-muted-48);
+}
+
+/* ── API info tile ────────────────────────────────────────────────────────── */
+.tenant-detail__api-info {
+  border-radius: var(--radius-lg);
+  padding: var(--space-xl);
+}
+
+.api-info-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: var(--space-md);
+  margin-top: var(--space-lg);
+}
+
+.api-info-item {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xxs);
+}
+.api-info-item__label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  color: var(--color-ink-muted-48);
+}
+.api-info-item__code {
+  font-family: "SF Mono", "Fira Code", monospace;
+  font-size: 12px;
+  color: var(--color-ink);
+  background: var(--color-canvas);
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-xs);
+  padding: 6px 10px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  display: block;
+}

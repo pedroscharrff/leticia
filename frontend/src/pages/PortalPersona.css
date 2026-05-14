@@ -1,0 +1,129 @@
+.persona-tabs {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 20px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.persona-tab {
+  background: transparent;
+  border: none;
+  padding: 10px 16px;
+  font-size: 14px;
+  cursor: pointer;
+  color: var(--text-secondary);
+  border-bottom: 2px solid transparent;
+}
+.persona-tab--active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+  font-weight: 600;
+}
+
+.persona-form {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+.persona-section {
+  background: var(--surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: 12px;
+  padding: 20px 24px;
+}
+.persona-section h2 {
+  margin: 0 0 16px;
+  font-size: 16px;
+  font-weight: 600;
+}
+.persona-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px 20px;
+}
+.persona-grid label,
+.persona-full {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+.persona-full {
+  margin-top: 14px;
+}
+.persona-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.persona-help {
+  color: var(--text-secondary);
+  font-size: 13px;
+  margin-bottom: 16px;
+}
+.prompts-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.prompt-card {
+  background: var(--surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: 12px;
+  padding: 16px 20px;
+}
+.prompt-card--override {
+  border-color: var(--accent);
+}
+.prompt-card__head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.prompt-card__head h3 {
+  margin: 0;
+  font-size: 15px;
+}
+.prompt-card__badge {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--bg-muted);
+  color: var(--text-secondary);
+  margin-left: 8px;
+}
+.prompt-card--override .prompt-card__badge {
+  background: var(--accent);
+  color: white;
+}
+.prompt-card__body {
+  margin-top: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.prompt-card__body label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+.prompt-default {
+  background: var(--bg-muted);
+  padding: 12px;
+  border-radius: 8px;
+  font-size: 12px;
+  white-space: pre-wrap;
+  max-height: 200px;
+  overflow: auto;
+}
+.prompt-textarea {
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 12px;
+}
+.prompt-card__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}

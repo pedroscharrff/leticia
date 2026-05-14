@@ -1,0 +1,147 @@
+.cliente-header {
+  display: flex; justify-content: space-between; gap: 16px; align-items: flex-start;
+}
+.cliente-back {
+  background: transparent; border: none; cursor: pointer;
+  font-size: 0.85rem; color: var(--color-primary, #2563eb);
+  padding: 0; margin-bottom: 6px;
+}
+.cliente-aggregates,
+.cliente-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 8px;
+}
+.cliente-stats { margin-bottom: 16px; }
+.cliente-aggregates { min-width: 280px; }
+
+.cliente-agg {
+  background: var(--color-surface, #fff);
+  border: 1px solid var(--color-border, #e5e7eb);
+  border-radius: 10px;
+  padding: 10px 14px;
+  display: flex; flex-direction: column;
+}
+.cliente-agg__label {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--color-text-muted, #6b7280);
+}
+.cliente-agg__value { font-size: 1rem; font-weight: 600; }
+
+.cliente-tabs {
+  display: flex; gap: 4px;
+  border-bottom: 1px solid var(--color-border, #e5e7eb);
+  margin-bottom: 16px;
+}
+.cliente-tab {
+  background: transparent;
+  border: none; cursor: pointer;
+  padding: 10px 16px;
+  font-size: 0.92rem;
+  color: var(--color-text-muted, #6b7280);
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+}
+.cliente-tab.is-active {
+  color: var(--color-primary, #2563eb);
+  border-bottom-color: var(--color-primary, #2563eb);
+  font-weight: 600;
+}
+.cliente-tab-count {
+  background: var(--color-surface-hover, #eef2ff);
+  color: var(--color-primary, #2563eb);
+  border-radius: 999px;
+  padding: 1px 8px;
+  font-size: 0.74rem;
+  margin-left: 4px;
+}
+
+.cliente-card {
+  background: var(--color-surface, #fff);
+  border: 1px solid var(--color-border, #e5e7eb);
+  border-radius: 12px;
+  padding: 20px 24px;
+  display: flex; flex-direction: column; gap: 16px;
+  max-width: 900px;
+}
+.cliente-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+}
+.cliente-form-actions { display: flex; justify-content: flex-end; }
+
+.cliente-empty {
+  background: var(--color-surface, #fff);
+  border: 1px dashed var(--color-border, #e5e7eb);
+  border-radius: 10px;
+  padding: 36px;
+  text-align: center;
+  color: var(--color-text-muted, #6b7280);
+}
+
+/* Orders list */
+.cliente-orders { display: flex; flex-direction: column; gap: 10px; }
+.cliente-order {
+  background: var(--color-surface, #fff);
+  border: 1px solid var(--color-border, #e5e7eb);
+  border-radius: 10px;
+  padding: 14px 18px;
+  display: flex; flex-direction: column; gap: 8px;
+}
+.cliente-order header {
+  display: flex; justify-content: space-between; align-items: center;
+}
+.cliente-order-id { font-family: ui-monospace, monospace; font-weight: 600; }
+.cliente-order-items {
+  list-style: none; padding: 0; margin: 0;
+  display: flex; flex-direction: column; gap: 2px;
+  font-size: 0.88rem;
+  color: var(--color-text-muted, #475569);
+}
+.cliente-order-items li { display: flex; justify-content: space-between; }
+.cliente-order-noitems {
+  margin: 0;
+  padding: 8px 12px;
+  background: var(--color-surface-hover, #f9fafb);
+  border-radius: 6px;
+  font-size: 0.85rem;
+  color: var(--color-text-muted, #6b7280);
+  font-style: italic;
+}
+.cliente-order footer {
+  display: flex; justify-content: space-between; align-items: center;
+  border-top: 1px solid var(--color-border, #f3f4f6);
+  padding-top: 8px;
+  font-size: 0.95rem;
+}
+.btn-sm { padding: 4px 10px; font-size: 0.82rem; align-self: flex-start; }
+
+/* Chat */
+.cliente-chat {
+  display: flex; flex-direction: column; gap: 8px;
+  max-width: 760px;
+}
+.cliente-msg {
+  background: var(--color-surface, #fff);
+  border: 1px solid var(--color-border, #e5e7eb);
+  border-radius: 10px;
+  padding: 10px 14px;
+}
+.cliente-msg--human {
+  background: #eff6ff;
+  border-color: #bfdbfe;
+  margin-right: 60px;
+}
+.cliente-msg--ai {
+  margin-left: 60px;
+}
+.cliente-msg-meta {
+  display: flex; justify-content: space-between;
+  font-size: 0.78rem;
+  color: var(--color-text-muted, #6b7280);
+  margin-bottom: 4px;
+}
+.cliente-msg p { margin: 0; white-space: pre-wrap; font-size: 0.9rem; }

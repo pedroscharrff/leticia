@@ -1,0 +1,174 @@
+version: "3.9"
+
+x-api-env: &api-env
+  DATABASE_URL: postgresql://farmacia:${DB_PASSWORD}@postgres:5432/saas_farmacia
+  REDIS_URL: redis://redis:6379/0
+  RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
+  ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+  GOOGLE_API_KEY: ${GOOGLE_API_KEY}
+  SECRET_KEY: ${SECRET_KEY}
+  ENVIRONMENT: ${ENVIRONMENT:-production}
+  LOG_LEVEL: ${LOG_LEVEL:-INFO}
+  ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@farmacia.io}
+  ADMIN_PASSWORD_HASH: ${ADMIN_PASSWORD_HASH}
+  CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173}
+  SESSION_TTL_SECONDS: ${SESSION_TTL_SECONDS:-1800}
+  MAX_CONTEXT_MESSAGES: ${MAX_CONTEXT_MESSAGES:-10}
+  ANALYST_MAX_RETRIES: ${ANALYST_MAX_RETRIES:-1}
+  LLM_TIMEOUT_SECONDS: ${LLM_TIMEOUT_SECONDS:-30}
+  CELERY_WORKERS_CONCURRENCY: ${CELERY_WORKERS_CONCURRENCY:-16}
+
+services:
+  # ── Admin UI (React SPA) ─────────────────────────────────────────────────
+  admin:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "4080:80"      # Admin panel: http://localhost:4080 (proxy to HTTPS via nginx in prod)
+    depends_on:
+      - api
+    restart: unless-stopped
+
+  # ── Reverse proxy (SSL termination + webhook routing) ────────────────────
+  nginx:
+    image: nginx:1.27-alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+      - certbot_certs:/etc/letsencrypt:ro
+    depends_on:
+      - api
+      - admin
+    restart: unless-stopped
+
+  # ── FastAPI ──────────────────────────────────────────────────────────────
+  api:
+    build:
+      context: .          # project root — gives access to agents/ and llm/
+      dockerfile: api/Dockerfile
+    environment:
+      <<: *api-env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ── Celery workers (2 replicas = 32 concurrent conversations) ────────────
+  worker:
+    build:
+      context: .
+      dockerfile: api/Dockerfile
+    command: >
+      celery -A workers.celery_app.celery_app worker
+      --concurrency=${CELERY_WORKERS_CONCURRENCY:-16}
+      --loglevel=${LOG_LEVEL:-info}
+      --queues=celery
+    environment:
+      <<: *api-env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    deploy:
+      replicas: 2
+    restart: unless-stopped
+
+  # ── PostgreSQL 16 ────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: saas_farmacia
+      POSTGRES_USER: farmacia
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./api/db/migrations/001_initial.sql:/docker-entrypoint-initdb.d/001_initial.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U farmacia -d saas_farmacia"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # ── Redis 7 ─────────────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    command: >
+      redis-server
+      --maxmemory 2gb
+      --maxmemory-policy allkeys-lru
+      --save ""
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # ── RabbitMQ ─────────────────────────────────────────────────────────────
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+    ports:
+      - "15672:15672"   # Management UI — restrict to VPN in prod
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    restart: unless-stopped
+
+  # ── Prometheus ───────────────────────────────────────────────────────────
+  prometheus:
+    image: prom/prometheus:v2.55.0
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=30d"
+    restart: unless-stopped
+
+  # ── Grafana ──────────────────────────────────────────────────────────────
+  grafana:
+    image: grafana/grafana:11.3.0
+    ports:
+      - "3000:3000"     # Restrict to VPN in prod
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - grafana_data:/var/lib/grafana
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  redis_data:
+  rabbitmq_data:
+  prometheus_data:
+  grafana_data:
+  certbot_certs:

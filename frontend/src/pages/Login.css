@@ -1,0 +1,100 @@
+.login-page {
+  display: flex;
+  min-height: 100vh;
+}
+
+/* ─── Left — dark hero tile ──────────────────────────────────────────────── */
+.login-hero {
+  flex: 1;
+  background: var(--color-surface-tile-1);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-section);
+  min-height: 100vh;
+}
+
+.login-hero__content {
+  text-align: center;
+  color: var(--color-on-dark);
+  max-width: 360px;
+}
+
+.login-logo {
+  display: inline-flex;
+  margin-bottom: var(--space-lg);
+}
+
+.login-hero__title {
+  font-family: var(--font-display);
+  font-size: var(--text-display-lg);
+  font-weight: 600;
+  letter-spacing: var(--tracking-hero);
+  color: var(--color-on-dark);
+  line-height: 1.07;
+  margin-bottom: var(--space-sm);
+}
+
+.login-hero__sub {
+  font-size: var(--text-lead-airy);
+  color: var(--color-body-muted);
+  font-weight: 300;
+}
+
+/* ─── Right — form panel ─────────────────────────────────────────────────── */
+.login-form-panel {
+  width: 480px;
+  flex-shrink: 0;
+  background: var(--color-canvas);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-section) var(--space-xxl);
+  gap: var(--space-xl);
+}
+
+.login-form {
+  width: 100%;
+  max-width: 360px;
+}
+
+.login-form__heading {
+  font-family: var(--font-display);
+  font-size: var(--text-display-md);
+  font-weight: 600;
+  letter-spacing: var(--tracking-body);
+  color: var(--color-ink);
+}
+
+.login-form__hint {
+  margin-top: var(--space-xs);
+  font-size: var(--text-caption);
+  color: var(--color-ink-muted-48);
+  letter-spacing: var(--tracking-caption);
+}
+
+.login-form__submit {
+  width: 100%;
+  justify-content: center;
+  margin-top: var(--space-lg);
+  padding: 14px 28px;
+  font-size: 17px;
+}
+
+.login-legal {
+  font-size: var(--text-fine);
+  color: var(--color-ink-muted-48);
+  text-align: center;
+  letter-spacing: var(--tracking-fine);
+  line-height: 1.5;
+  max-width: 300px;
+}
+
+/* ─── Responsive ─────────────────────────────────────────────────────────── */
+@media (max-width: 768px) {
+  .login-page { flex-direction: column; }
+  .login-hero  { min-height: 200px; padding: var(--space-xxl); }
+  .login-hero__title { font-size: var(--text-display-md); }
+  .login-form-panel { width: 100%; padding: var(--space-xl); }
+}

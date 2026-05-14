@@ -1,0 +1,21 @@
+.estoque-page { padding: 24px; }
+.estoque-header { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; margin-bottom: 24px; }
+.page-title { font-size: 22px; font-weight: 700; margin: 0; }
+.estoque-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.search-input { padding: 6px 12px; border: 1px solid var(--color-border); border-radius: 8px; font-size: 14px; width: 200px; }
+.products-table { width: 100%; border-collapse: collapse; font-size: 14px; }
+.products-table th, .products-table td { padding: 10px 12px; text-align: left; border-bottom: 1px solid var(--color-border); }
+.products-table th { font-weight: 600; color: var(--color-secondary); }
+.product-name { font-weight: 500; }
+.actions { display: flex; gap: 4px; }
+.btn-icon { background: none; border: none; cursor: pointer; font-size: 16px; padding: 4px; }
+.empty-row { text-align: center; color: var(--color-secondary); padding: 32px !important; }
+.error-banner { background: #fee2e2; color: #991b1b; padding: 10px 16px; border-radius: 8px; margin-bottom: 16px; }
+.info-banner { background: #dbeafe; color: #1e40af; padding: 10px 16px; border-radius: 8px; margin-bottom: 16px; }
+.modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.4); display: flex; align-items: center; justify-content: center; z-index: 100; }
+.modal-box { background: var(--color-surface); border-radius: 16px; padding: 28px; width: 480px; max-width: 95vw; }
+.modal-box h2 { font-size: 18px; font-weight: 700; margin-bottom: 20px; }
+.form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.form-label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; font-weight: 500; }
+.form-input { padding: 8px 12px; border: 1px solid var(--color-border); border-radius: 8px; font-size: 14px; }
+.modal-footer { display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px; }

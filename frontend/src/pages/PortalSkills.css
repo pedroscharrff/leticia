@@ -1,0 +1,74 @@
+.portal-skills-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 16px;
+}
+
+.portal-skill-card {
+  background: var(--color-canvas);
+  border: 1px solid var(--color-rule);
+  border-radius: 16px;
+  padding: 24px;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+.portal-skill-card--active {
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 1px rgba(0,102,204,0.2);
+}
+
+.portal-skill-card__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+}
+
+.portal-skill-card__name {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--color-ink);
+  margin-bottom: 4px;
+}
+
+.portal-skill-card__desc {
+  font-size: 13px;
+  color: var(--color-ink-muted-48);
+  line-height: 1.5;
+}
+
+.portal-skill-card__toggle {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  min-width: 40px;
+  min-height: 24px;
+}
+
+.portal-skill-card__model {
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--color-rule);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.portal-skill-card__model-label {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--color-ink-muted-48);
+}
+
+.portal-empty {
+  text-align: center;
+  padding: 80px 0;
+  color: var(--color-ink-muted-48);
+}
+
+.portal-empty__hint {
+  font-size: 14px;
+  margin-top: 8px;
+}

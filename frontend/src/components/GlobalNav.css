@@ -1,0 +1,62 @@
+.global-nav {
+  position: fixed;
+  top: 0; left: 0; right: 0;
+  height: var(--nav-global-h);
+  background: var(--color-surface-black);
+  z-index: 1000;
+}
+
+.global-nav__inner {
+  max-width: 1200px;
+  margin: 0 auto;
+  height: 100%;
+  padding: 0 var(--space-xl);
+  display: flex;
+  align-items: center;
+  gap: var(--space-xl);
+}
+
+.global-nav__logo {
+  background: none;
+  border: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  padding: 4px;
+  opacity: 0.9;
+  transition: opacity var(--ease-btn);
+}
+.global-nav__logo:hover { opacity: 1; }
+
+.global-nav__links {
+  display: flex;
+  list-style: none;
+  gap: var(--space-lg);
+  flex: 1;
+}
+
+.global-nav__links button {
+  background: none;
+  border: none;
+  color: rgba(255, 255, 255, 0.8);
+  font-family: var(--font-text);
+  font-size: var(--text-nav);
+  letter-spacing: var(--tracking-fine);
+  cursor: pointer;
+  padding: 0;
+  transition: color var(--ease-btn);
+}
+.global-nav__links button:hover { color: white; }
+
+.global-nav__logout {
+  background: none;
+  border: none;
+  color: rgba(255, 255, 255, 0.6);
+  font-family: var(--font-text);
+  font-size: var(--text-nav);
+  letter-spacing: var(--tracking-fine);
+  cursor: pointer;
+  padding: 0;
+  transition: color var(--ease-btn);
+}
+.global-nav__logout:hover { color: white; }

@@ -1,0 +1,97 @@
+.portal-logs-table-wrap {
+  overflow-x: auto;
+  border-radius: 16px;
+  border: 1px solid var(--color-rule);
+  background: var(--color-canvas);
+}
+
+.portal-logs-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.portal-logs-table thead tr {
+  border-bottom: 1px solid var(--color-rule);
+}
+
+.portal-logs-table th {
+  padding: 12px 16px;
+  text-align: left;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--color-ink-muted-48);
+  white-space: nowrap;
+}
+
+.portal-logs-table td {
+  padding: 12px 16px;
+  color: var(--color-ink);
+  border-bottom: 1px solid var(--color-rule);
+  vertical-align: middle;
+}
+
+.portal-logs-table tr:last-child td {
+  border-bottom: none;
+}
+
+.portal-logs-table tbody tr:hover {
+  background: var(--color-canvas-parchment);
+}
+
+.logs-cell--date {
+  white-space: nowrap;
+  color: var(--color-ink-muted-48);
+  font-size: 12px;
+}
+
+.logs-cell--session {
+  font-family: "SF Mono", monospace;
+  font-size: 11px;
+  color: var(--color-ink-muted-48);
+}
+
+.logs-cell--skill {
+  font-size: 12px;
+  color: var(--color-primary);
+  white-space: nowrap;
+}
+
+.logs-cell--content {
+  max-width: 320px;
+  color: var(--color-ink);
+  line-height: 1.4;
+}
+
+.logs-cell--num {
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-ink-muted-48);
+  font-size: 12px;
+}
+
+.role-badge {
+  display: inline-block;
+  padding: 3px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.role-badge--user {
+  background: rgba(0, 102, 204, 0.1);
+  color: var(--color-primary);
+}
+
+.role-badge--bot {
+  background: rgba(52, 199, 89, 0.1);
+  color: #34c759;
+}
+
+.portal-load-more {
+  display: flex;
+  justify-content: center;
+  padding: 24px;
+}
