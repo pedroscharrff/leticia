@@ -6,17 +6,17 @@ Constrói o LangGraph compilado para um tenant específico.
 Fluxo do grafo:
   START
     ↓
-  load_context  (Redis + PostgreSQL)
+  load_context    (Redis + PostgreSQL)
     ↓
-  orchestrator  (classifica intenção → escolhe skill)
-    ↓  (conditional routing por selected_skill)
-  [farmaceutico | principio_ativo | genericos | vendedor | recuperador]
+  orchestrator    (classifica intenção → escolhe skill)
+    ↓  route_to_skill()
+  [farmaceutico | principio_ativo | genericos | vendedor | recuperador | guardrails]
     ↓
-  analyst       (valida qualidade da resposta)
-    ↓  (se analyst_approved=False e retry < max → volta ao skill)
-  save_context  (persiste no Redis e PostgreSQL)
-    ↓
-  END
+  analyst         (valida qualidade da resposta)
+    ↓  analyst_router()
+  ┌─ "approved"  → save_context → END
+  ├─ "retry"     → skill (novamente, até max_retries)
+  └─ "escalate"  → save_context → END  (callback com flag escalate=True)
 
 Importado por: api/workers/celery_app.py
 """
@@ -30,6 +30,8 @@ from langchain_core.language_models import BaseChatModel
 from langgraph.graph import StateGraph, END
 
 from agents.state import AgentState
+from agents.router import route_to_skill, analyst_router
+
 
 # ── TenantConfig ──────────────────────────────────────────────────────────────
 
@@ -60,7 +62,7 @@ class TenantConfig:
 
 def _make_llm_factory(cfg: TenantConfig):
     """
-    Retorna um callable(role) → BaseChatModel.
+    Retorna callable(role) → BaseChatModel.
     role: "orchestrator" | "analyst" | "skill"
     """
     def _get(role: str) -> BaseChatModel:
@@ -86,32 +88,6 @@ def _make_llm_factory(cfg: TenantConfig):
     return _get
 
 
-# ── Routing ───────────────────────────────────────────────────────────────────
-
-_SKILL_NODES = {
-    "farmaceutico":   "farmaceutico",
-    "principio_ativo": "principio_ativo",
-    "genericos":      "genericos",
-    "vendedor":       "vendedor",
-    "recuperador":    "recuperador",
-}
-
-
-def _route_to_skill(state: AgentState) -> str:
-    """Edge condicional: orquestra → skill node."""
-    skill = state.get("selected_skill", "farmaceutico")
-    return _SKILL_NODES.get(skill, "farmaceutico")
-
-
-def _route_after_analyst(state: AgentState) -> str:
-    """Edge condicional: analyst → save_context ou retry ao skill."""
-    if not state.get("analyst_approved", True):
-        # Volta ao skill original para regenerar resposta
-        skill = state.get("selected_skill", "farmaceutico")
-        return _SKILL_NODES.get(skill, "farmaceutico")
-    return "save_context"
-
-
 # ── Graph builder ─────────────────────────────────────────────────────────────
 
 def build_graph_for_tenant(cfg: TenantConfig, redis: Any = None):
@@ -120,74 +96,86 @@ def build_graph_for_tenant(cfg: TenantConfig, redis: Any = None):
 
     Args:
         cfg:   Configuração do tenant (skills, modelos, etc.)
-        redis: Conexão Redis (injetada mas não usada diretamente aqui —
-               os nodes a obtêm via get_redis())
+        redis: Conexão Redis (os nodes a obtêm via get_redis())
 
     Returns:
         Grafo compilado com suporte a ainvoke().
     """
     from config import settings
-    from agents.nodes.context     import load_context, save_context
+    from agents.nodes.context      import load_context, save_context
     from agents.nodes.orchestrator import orchestrator
     from agents.nodes.analyst      import analyst
-    from agents.nodes.skills.farmaceutico   import farmaceutico_node
+    from agents.nodes.skills.farmaceutico    import farmaceutico_node
     from agents.nodes.skills.principio_ativo import principio_ativo_node
-    from agents.nodes.skills.genericos      import genericos_node
-    from agents.nodes.skills.vendedor       import vendedor_node
-    from agents.nodes.skills.recuperador    import recuperador_node
+    from agents.nodes.skills.genericos       import genericos_node
+    from agents.nodes.skills.vendedor        import vendedor_node
+    from agents.nodes.skills.recuperador     import recuperador_node
+    from agents.nodes.skills.guardrails      import guardrails_node
 
     llm_factory = _make_llm_factory(cfg)
     max_retries = settings.analyst_max_retries
 
-    # Bind llm_factory nos nodes via partial (LangGraph requer callables puros)
-    orch_node     = functools.partial(orchestrator,     llm_factory=llm_factory)
-    analyst_node  = functools.partial(analyst,          llm_factory=llm_factory, max_retries=max_retries)
-    farm_node     = functools.partial(farmaceutico_node,   llm_factory=llm_factory)
-    pa_node       = functools.partial(principio_ativo_node, llm_factory=llm_factory)
-    gen_node      = functools.partial(genericos_node,   llm_factory=llm_factory)
-    vend_node     = functools.partial(vendedor_node,    llm_factory=llm_factory)
-    recup_node    = functools.partial(recuperador_node, llm_factory=llm_factory)
+    # Bind llm_factory nos nodes via partial
+    orch_node    = functools.partial(orchestrator,         llm_factory=llm_factory)
+    analyst_node = functools.partial(analyst,              llm_factory=llm_factory, max_retries=max_retries)
+    farm_node    = functools.partial(farmaceutico_node,    llm_factory=llm_factory)
+    pa_node      = functools.partial(principio_ativo_node, llm_factory=llm_factory)
+    gen_node     = functools.partial(genericos_node,       llm_factory=llm_factory)
+    vend_node    = functools.partial(vendedor_node,        llm_factory=llm_factory)
+    recup_node   = functools.partial(recuperador_node,     llm_factory=llm_factory)
+    guard_node   = functools.partial(guardrails_node,      llm_factory=llm_factory)
+
+    # ── Mapa de skills disponíveis para este tenant ───────────────────────────
+    all_skill_nodes = {
+        "farmaceutico":    farm_node,
+        "principio_ativo": pa_node,
+        "genericos":       gen_node,
+        "vendedor":        vend_node,
+        "recuperador":     recup_node,
+    }
+    # Filtra apenas skills ativas + garante fallback mínimo
+    active_skills = [s for s in cfg.skills_active if s in all_skill_nodes]
+    if not active_skills:
+        active_skills = ["farmaceutico"]
+
+    active_skill_nodes = {s: all_skill_nodes[s] for s in active_skills}
 
     # ── Grafo ─────────────────────────────────────────────────────────────────
     graph = StateGraph(AgentState)
 
-    # Nodes
-    graph.add_node("load_context",    load_context)
-    graph.add_node("orchestrator",    orch_node)
-    graph.add_node("farmaceutico",    farm_node)
-    graph.add_node("principio_ativo", pa_node)
-    graph.add_node("genericos",       gen_node)
-    graph.add_node("vendedor",        vend_node)
-    graph.add_node("recuperador",     recup_node)
-    graph.add_node("analyst",         analyst_node)
-    graph.add_node("save_context",    save_context)
+    # Nodes fixos (sempre presentes)
+    graph.add_node("load_context", load_context)
+    graph.add_node("orchestrator", orch_node)
+    graph.add_node("analyst",      analyst_node)
+    graph.add_node("save_context", save_context)
+    graph.add_node("guardrails",   guard_node)   # sempre presente (safety net)
 
-    # Arestas fixas
+    # Nodes de skill (apenas os ativos do tenant)
+    for skill_name, node_fn in active_skill_nodes.items():
+        graph.add_node(skill_name, node_fn)
+
+    # ── Arestas fixas ─────────────────────────────────────────────────────────
     graph.set_entry_point("load_context")
     graph.add_edge("load_context", "orchestrator")
 
-    # orchestrator → skill (conditional)
-    skill_map = {
-        "farmaceutico":    "farmaceutico",
-        "principio_ativo": "principio_ativo",
-        "genericos":       "genericos",
-        "vendedor":        "vendedor",
-        "recuperador":     "recuperador",
-    }
-    # Filtra apenas skills ativas do tenant
-    active_skill_map = {
-        k: v for k, v in skill_map.items() if k in cfg.skills_active
-    } or {"farmaceutico": "farmaceutico"}  # fallback mínimo
-
-    graph.add_conditional_edges("orchestrator", _route_to_skill, active_skill_map)
+    # orchestrator → skill (via route_to_skill)
+    routing_map = {**{s: s for s in active_skills}, "guardrails": "guardrails"}
+    graph.add_conditional_edges("orchestrator", route_to_skill, routing_map)
 
     # skill → analyst
-    for skill_node in active_skill_map.values():
-        graph.add_edge(skill_node, "analyst")
+    for skill_name in list(active_skill_nodes.keys()) + ["guardrails"]:
+        graph.add_edge(skill_name, "analyst")
 
-    # analyst → save_context ou retry ao skill
-    retry_map = {**active_skill_map, "save_context": "save_context"}
-    graph.add_conditional_edges("analyst", _route_after_analyst, retry_map)
+    # analyst → approved / retry / escalate (via analyst_router)
+    # "retry" volta para o skill original; "approved" e "escalate" vão para save_context
+    retry_map = {s: s for s in active_skill_nodes.keys()}
+    analyst_routing = {
+        "approved": "save_context",
+        "escalate": "save_context",   # salva e o callback entrega com escalate=True
+        "retry":    "farmaceutico",   # fallback para retry no skill principal
+        **retry_map,                  # retry vai para o skill que gerou a resposta
+    }
+    graph.add_conditional_edges("analyst", analyst_router, analyst_routing)
 
     # save_context → END
     graph.add_edge("save_context", END)
