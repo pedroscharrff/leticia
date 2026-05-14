@@ -15,8 +15,12 @@ build/
 # Logs
 *.log
 
-# Env
+# Env & segredos — NUNCA commitar
 .env
+.env.local
+.env.production
+CREDENCIAIS.txt
+deploy.log
 
 # VSCode
 .vscode/

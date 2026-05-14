@@ -1,36 +1,37 @@
 version: "3.9"
 
+# Variáveis compartilhadas entre api e workers
 x-api-env: &api-env
-  DATABASE_URL: postgresql://farmacia:${DB_PASSWORD}@postgres:5432/saas_farmacia
-  REDIS_URL: redis://redis:6379/0
-  RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
-  ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
-  GOOGLE_API_KEY: ${GOOGLE_API_KEY}
-  SECRET_KEY: ${SECRET_KEY}
-  ENVIRONMENT: ${ENVIRONMENT:-production}
-  LOG_LEVEL: ${LOG_LEVEL:-INFO}
-  ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@farmacia.io}
-  ADMIN_PASSWORD_HASH: ${ADMIN_PASSWORD_HASH}
-  CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173}
-  SESSION_TTL_SECONDS: ${SESSION_TTL_SECONDS:-1800}
-  MAX_CONTEXT_MESSAGES: ${MAX_CONTEXT_MESSAGES:-10}
-  ANALYST_MAX_RETRIES: ${ANALYST_MAX_RETRIES:-1}
-  LLM_TIMEOUT_SECONDS: ${LLM_TIMEOUT_SECONDS:-30}
-  CELERY_WORKERS_CONCURRENCY: ${CELERY_WORKERS_CONCURRENCY:-16}
+  DATABASE_URL:                postgresql://farmacia:${DB_PASSWORD}@postgres:5432/saas_farmacia
+  REDIS_URL:                   redis://redis:6379/0
+  RABBITMQ_URL:                amqp://farmacia:${RABBITMQ_PASS}@rabbitmq:5672/
+  ANTHROPIC_API_KEY:           ${ANTHROPIC_API_KEY}
+  GOOGLE_API_KEY:              ${GOOGLE_API_KEY:-}
+  SECRET_KEY:                  ${SECRET_KEY}
+  ENVIRONMENT:                 ${ENVIRONMENT:-production}
+  LOG_LEVEL:                   ${LOG_LEVEL:-INFO}
+  ADMIN_EMAIL:                 ${ADMIN_EMAIL}
+  ADMIN_PASSWORD_HASH:         ${ADMIN_PASSWORD_HASH}
+  CORS_ORIGINS:                ${CORS_ORIGINS}
+  SESSION_TTL_SECONDS:         ${SESSION_TTL_SECONDS:-1800}
+  MAX_CONTEXT_MESSAGES:        ${MAX_CONTEXT_MESSAGES:-10}
+  ANALYST_MAX_RETRIES:         ${ANALYST_MAX_RETRIES:-1}
+  LLM_TIMEOUT_SECONDS:         ${LLM_TIMEOUT_SECONDS:-30}
+  CELERY_WORKERS_CONCURRENCY:  ${CELERY_WORKERS_CONCURRENCY:-16}
 
 services:
-  # ── Admin UI (React SPA) ─────────────────────────────────────────────────
+
+  # ── Painel Admin (React SPA) ─────────────────────────────────────────────────
   admin:
     build:
       context: ./frontend
       dockerfile: Dockerfile
-    ports:
-      - "4080:80"      # Admin panel: http://localhost:4080 (proxy to HTTPS via nginx in prod)
     depends_on:
       - api
     restart: unless-stopped
+    # Sem exposição de porta — acessado pelo nginx via rede interna
 
-  # ── Reverse proxy (SSL termination + webhook routing) ────────────────────
+  # ── Reverse Proxy (SSL + roteamento) ────────────────────────────────────────
   nginx:
     image: nginx:1.27-alpine
     ports:
@@ -38,16 +39,37 @@ services:
       - "443:443"
     volumes:
       - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
-      - certbot_certs:/etc/letsencrypt:ro
+      - certbot_certs:/etc/letsencrypt:ro          # certificados SSL
+      - certbot_www:/var/www/certbot:ro             # webroot para ACME challenge
     depends_on:
       - api
       - admin
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost/health", "||", "true"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
 
-  # ── FastAPI ──────────────────────────────────────────────────────────────
+  # ── Certbot (emissão e renovação automática SSL) ──────────────────────────────
+  certbot:
+    image: certbot/certbot:latest
+    volumes:
+      - certbot_certs:/etc/letsencrypt       # leitura/escrita dos certs
+      - certbot_www:/var/www/certbot         # escrita do challenge ACME
+    # Renova automaticamente a cada 12h (Let's Encrypt expira em 90 dias)
+    entrypoint: >
+      /bin/sh -c "trap exit TERM;
+      while :; do
+        certbot renew --quiet --webroot --webroot-path=/var/www/certbot;
+        sleep 12h & wait $${!};
+      done"
+    restart: unless-stopped
+
+  # ── FastAPI ──────────────────────────────────────────────────────────────────
   api:
     build:
-      context: .          # project root — gives access to agents/ and llm/
+      context: .
       dockerfile: api/Dockerfile
     environment:
       <<: *api-env
@@ -64,8 +86,9 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
+      start_period: 20s
 
-  # ── Celery workers (2 replicas = 32 concurrent conversations) ────────────
+  # ── Celery Workers (2 réplicas = 32 conversas simultâneas) ──────────────────
   worker:
     build:
       context: .
@@ -87,13 +110,19 @@ services:
     deploy:
       replicas: 2
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "celery", "-A", "workers.celery_app.celery_app", "inspect", "ping"]
+      interval: 60s
+      timeout: 15s
+      retries: 3
+      start_period: 30s
 
-  # ── PostgreSQL 16 ────────────────────────────────────────────────────────
+  # ── PostgreSQL 16 ────────────────────────────────────────────────────────────
   postgres:
     image: postgres:16-alpine
     environment:
-      POSTGRES_DB: saas_farmacia
-      POSTGRES_USER: farmacia
+      POSTGRES_DB:       saas_farmacia
+      POSTGRES_USER:     farmacia
       POSTGRES_PASSWORD: ${DB_PASSWORD}
     volumes:
       - postgres_data:/var/lib/postgresql/data
@@ -103,9 +132,10 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+      start_period: 10s
     restart: unless-stopped
 
-  # ── Redis 7 ─────────────────────────────────────────────────────────────
+  # ── Redis 7 ──────────────────────────────────────────────────────────────────
   redis:
     image: redis:7-alpine
     command: >
@@ -122,14 +152,14 @@ services:
       retries: 5
     restart: unless-stopped
 
-  # ── RabbitMQ ─────────────────────────────────────────────────────────────
+  # ── RabbitMQ ─────────────────────────────────────────────────────────────────
   rabbitmq:
     image: rabbitmq:3.13-management-alpine
     environment:
-      RABBITMQ_DEFAULT_USER: guest
-      RABBITMQ_DEFAULT_PASS: guest
+      RABBITMQ_DEFAULT_USER: farmacia
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASS}   # senha via .env (não mais "guest")
     ports:
-      - "15672:15672"   # Management UI — restrict to VPN in prod
+      - "127.0.0.1:15672:15672"   # Management UI — apenas localhost (SSH tunnel)
     volumes:
       - rabbitmq_data:/var/lib/rabbitmq
     healthcheck:
@@ -137,9 +167,10 @@ services:
       interval: 30s
       timeout: 10s
       retries: 5
+      start_period: 20s
     restart: unless-stopped
 
-  # ── Prometheus ───────────────────────────────────────────────────────────
+  # ── Prometheus ───────────────────────────────────────────────────────────────
   prometheus:
     image: prom/prometheus:v2.55.0
     volumes:
@@ -151,14 +182,15 @@ services:
       - "--storage.tsdb.retention.time=30d"
     restart: unless-stopped
 
-  # ── Grafana ──────────────────────────────────────────────────────────────
+  # ── Grafana ──────────────────────────────────────────────────────────────────
   grafana:
     image: grafana/grafana:11.3.0
     ports:
-      - "3000:3000"     # Restrict to VPN in prod
+      - "127.0.0.1:3000:3000"     # apenas localhost (SSH tunnel)
     environment:
-      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-admin}
-      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD}
+      GF_USERS_ALLOW_SIGN_UP:     "false"
+      GF_SERVER_ROOT_URL:         "http://localhost:3000"
     volumes:
       - grafana_data:/var/lib/grafana
     depends_on:
@@ -171,4 +203,5 @@ volumes:
   rabbitmq_data:
   prometheus_data:
   grafana_data:
-  certbot_certs:
+  certbot_certs:    # certificados Let's Encrypt (compartilhado: nginx + certbot)
+  certbot_www:      # webroot para ACME challenge   (compartilhado: nginx + certbot)
