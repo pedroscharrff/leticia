@@ -50,6 +50,7 @@ class PersonaOut(BaseModel):
     custom_instructions: str | None
     forbidden_topics: str | None
     catchphrases: list[str]
+    conversation_playbook: str | None
     business_hours: str | None
     location: str | None
     delivery_info: str | None
@@ -74,6 +75,7 @@ class PersonaUpdate(BaseModel):
     custom_instructions: str | None = None
     forbidden_topics: str | None = None
     catchphrases: list[str] | None = None
+    conversation_playbook: str | None = None
     business_hours: str | None = None
     location: str | None = None
     delivery_info: str | None = None

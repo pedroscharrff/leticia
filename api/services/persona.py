@@ -28,6 +28,7 @@ PERSONA_DEFAULTS: dict[str, Any] = {
     "custom_instructions": None,
     "forbidden_topics": None,
     "catchphrases": [],
+    "conversation_playbook": None,
     "business_hours": None,
     "location": None,
     "delivery_info": None,

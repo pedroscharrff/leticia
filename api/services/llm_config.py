@@ -5,8 +5,12 @@ Returns a dict ready to be unpacked into TenantConfig fields.
 """
 from __future__ import annotations
 
+import structlog
+
 from db.postgres import get_db_conn
 from services.secrets import decrypt
+
+log = structlog.get_logger()
 
 # Models that belong to OpenAI and cannot be used with other providers
 _OPENAI_MODEL_PREFIXES = ("gpt-", "o1-", "o3-", "o4-", "chatgpt-")
@@ -80,7 +84,12 @@ async def load_tenant_llm_config(tenant_id: str) -> dict:
 
     api_key: str | None = None
     if is_byok and row["api_key_enc"]:
-        api_key = decrypt(bytes(row["api_key_enc"]))
+        try:
+            api_key = decrypt(bytes(row["api_key_enc"]))
+        except ValueError:
+            # Chave de criptografia trocada ou dado corrompido → fallback para credits
+            log.warning("llm_config.decrypt_failed", tenant_id=tenant_id)
+            is_byok = False
 
     # Provider override only applies in BYOK; in credits mode each node uses
     # the platform's curated provider so we don't try to call OpenAI with
