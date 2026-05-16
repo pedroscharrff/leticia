@@ -1,14 +1,15 @@
 """
-POST /webhook/{tenant_id}
+POST /webhook/{webhook_token}
 
-Receives a message from an external WhatsApp gateway (WAHA, Uazapi, etc.),
-validates the tenant's API key, and publishes the job to Celery.
+Receives a message from an external WhatsApp gateway (WAHA, Uazapi, etc.).
+The webhook_token is the tenant's api_key embedded in the URL — this is the
+standard pattern for gateway webhooks where a fixed URL must carry the auth.
 """
 import structlog
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel
 
-from dependencies import resolve_tenant
+from db.postgres import get_db_conn
 from models.tenant import TenantRow
 from workers.celery_app import process_message
 
@@ -23,16 +24,28 @@ class InboundMessage(BaseModel):
     session_id: str | None = None  # caller may supply; generated if absent
 
 
-@router.post("/{tenant_id}", status_code=status.HTTP_202_ACCEPTED)
-async def receive_message(
-    tenant_id: str,
-    body: InboundMessage,
-    tenant: TenantRow = Depends(resolve_tenant),
-):
-    if tenant_id != str(tenant.id):
-        raise HTTPException(status_code=403, detail="tenant_id mismatch")
+async def _resolve_tenant_by_token(webhook_token: str) -> TenantRow:
+    async with get_db_conn() as conn:
+        row = await conn.fetchrow(
+            "SELECT * FROM public.tenants WHERE api_key = $1 AND active = TRUE",
+            webhook_token,
+        )
+    if not row:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid webhook token",
+        )
+    return TenantRow(**dict(row))
 
-    session_id = body.session_id or f"{tenant_id}:{body.phone}"
+
+@router.post("/{webhook_token}", status_code=status.HTTP_202_ACCEPTED)
+async def receive_message(
+    webhook_token: str,
+    body: InboundMessage,
+):
+    tenant = await _resolve_tenant_by_token(webhook_token)
+
+    session_id = body.session_id or f"{tenant.id}:{body.phone}"
 
     task = process_message.delay(
         tenant_id=str(tenant.id),
@@ -45,7 +58,7 @@ async def receive_message(
 
     log.info(
         "webhook.received",
-        tenant=tenant_id,
+        tenant=str(tenant.id),
         phone=body.phone,
         task_id=task.id,
     )
