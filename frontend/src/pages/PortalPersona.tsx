@@ -271,6 +271,26 @@ export function PortalPersona() {
           </section>
 
           <section className="persona-section">
+            <h2>Playbook do atendimento</h2>
+            <p style={{ margin: "0 0 12px", color: "#666", fontSize: "0.9em" }}>
+              Defina o <strong>fluxo passo a passo</strong> que seus agentes devem
+              seguir. Cada etapa será executada em uma resposta separada, conduzindo
+              o cliente como uma conversa real. Use texto livre, numerado.
+            </p>
+            <label className="persona-full">
+              Etapas do atendimento
+              <textarea
+                className="form-input"
+                rows={14}
+                value={persona.conversation_playbook ?? ""}
+                placeholder={`1. ACOLHIMENTO — cumprimente brevemente no primeiro contato.\n\n2. TRIAGEM — antes de recomendar, faça UMA pergunta (alergia? idade? há quanto tempo?).\n\n3. RECOMENDAÇÃO — 1-2 opções, uma linha cada, pergunte qual prefere.\n\n4. ESTOQUE — quando escolher, informe disponibilidade e preço.\n\n5. CARRINHO — confirme antes de adicionar.\n\n6. FECHAMENTO — vantagens (PIX, fidelidade), confirme e despeça.`}
+                onChange={(e) => setPersona({ ...persona, conversation_playbook: e.target.value })}
+                style={{ fontFamily: "monospace", fontSize: "0.85em" }}
+              />
+            </label>
+          </section>
+
+          <section className="persona-section">
             <h2>Regras de conduta</h2>
             <label className="persona-full">
               Instruções extras (sempre aplicadas)

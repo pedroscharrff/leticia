@@ -347,6 +347,7 @@ export interface Persona {
   custom_instructions: string | null;
   forbidden_topics: string | null;
   catchphrases: string[];
+  conversation_playbook: string | null;
   business_hours: string | null;
   location: string | null;
   delivery_info: string | null;

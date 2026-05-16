@@ -295,9 +295,17 @@ hash_admin_password() {
 write_env() {
     step "Gerando arquivo .env"
 
+    # O hash bcrypt contém '$2b$12$...' — docker-compose interpreta '$' como variável.
+    # Escapamos '$' → '$$' no .env para que docker-compose passe o valor correto ao container.
+    local escaped_hash
+    escaped_hash="${ADMIN_PASSWORD_HASH//\$/\$\$}"
+
     cat > "${SCRIPT_DIR}/.env" << EOF
 # ─── Gerado por deploy.sh em $(date) ─────────────────────────────────────────
 # ⚠  NUNCA faça commit deste arquivo!
+
+# ─── Força uso apenas do docker-compose.yml (ignora override de dev) ─────────
+COMPOSE_FILE=docker-compose.yml
 
 # ─── Database ────────────────────────────────────────────────────────────────
 DB_PASSWORD=${DB_PASSWORD}
@@ -316,7 +324,7 @@ LOG_LEVEL=INFO
 
 # ─── Admin ───────────────────────────────────────────────────────────────────
 ADMIN_EMAIL=${ADMIN_EMAIL}
-ADMIN_PASSWORD_HASH=${ADMIN_PASSWORD_HASH}
+ADMIN_PASSWORD_HASH=${escaped_hash}
 
 # ─── CORS ────────────────────────────────────────────────────────────────────
 CORS_ORIGINS=https://${ADMIN_DOMAIN},https://${API_DOMAIN}
@@ -540,9 +548,11 @@ issue_ssl() {
     docker compose ps nginx | grep -q "Up" \
         || error "nginx não subiu. Veja: docker compose logs nginx"
 
-    # Emite o certificado via certbot (webroot)
+    # Emite o certificado via certbot (webroot).
+    # --entrypoint certbot sobrescreve o loop de renovação definido no compose,
+    # garantindo que o container execute 'certonly' em vez de travar no loop.
     info "Solicitando certificado para: ${API_DOMAIN}, ${ADMIN_DOMAIN}"
-    docker compose run --rm certbot certonly \
+    docker compose run --rm --entrypoint certbot certbot certonly \
         --webroot \
         --webroot-path=/var/www/certbot \
         --email "${SSL_EMAIL}" \

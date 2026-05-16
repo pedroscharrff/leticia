@@ -48,6 +48,21 @@ def route_to_skill(state: AgentState) -> str:
     return _FALLBACK
 
 
+def handoff_router(state: AgentState) -> str:
+    """
+    Edge condicional: skill → analyst.
+
+    POLÍTICA ATUAL (conversação natural):
+    Não encadeamos múltiplos skills na MESMA resposta. Cada skill responde
+    brevemente, conduz UMA etapa do atendimento, e a próxima etapa acontece
+    quando o cliente responder (em outro turno).
+
+    handoff_to ainda fica armazenado no state como DICA para o orchestrator
+    do próximo turno (futuro: usar como bias na classificação).
+    """
+    return "analyst"
+
+
 def analyst_router(state: AgentState) -> str:
     """
     Edge condicional: analyst → próximo passo.

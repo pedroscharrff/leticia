@@ -30,7 +30,26 @@ from langchain_core.language_models import BaseChatModel
 from langgraph.graph import StateGraph, END
 
 from agents.state import AgentState
-from agents.router import route_to_skill, analyst_router
+from agents.router import route_to_skill, analyst_router, handoff_router
+
+
+# ── SkillOverride ─────────────────────────────────────────────────────────────
+
+@dataclass
+class SkillOverride:
+    """
+    Configuração por-skill que sobrescreve os defaults do tenant.
+
+    Campos:
+        llm_model:      modelo LLM específico para este skill (ex: "claude-sonnet-4-6")
+        llm_provider:   provider específico (ex: "anthropic", "openai", "google")
+        prompt_version: versão do prompt a usar (ex: "v1", "v2")
+        config_json:    configurações extras em JSON (livre para cada skill)
+    """
+    llm_model:      str | None = None
+    llm_provider:   str | None = None
+    prompt_version: str = "v1"
+    config_json:    dict = field(default_factory=dict)
 
 
 # ── TenantConfig ──────────────────────────────────────────────────────────────
@@ -43,6 +62,12 @@ class TenantConfig:
     schema_name:  str
     callback_url: str
     skills_active: list[str] = field(default_factory=list)
+
+    # Plano do tenant (basic | pro | enterprise)
+    plan: str = "basic"
+
+    # Overrides por skill (model/provider específicos por skill)
+    skill_overrides: dict[str, SkillOverride] = field(default_factory=dict)
 
     # Modo LLM
     llm_mode:    str = "credits"          # "credits" | "byok"
@@ -63,7 +88,10 @@ class TenantConfig:
 def _make_llm_factory(cfg: TenantConfig):
     """
     Retorna callable(role) → BaseChatModel.
-    role: "orchestrator" | "analyst" | "skill"
+
+    role pode ser:
+    - "orchestrator" | "analyst" | "skill"  → papéis fixos
+    - nome de skill (ex: "farmaceutico")    → usa SkillOverride se disponível
     """
     def _get(role: str) -> BaseChatModel:
         role_map = {
@@ -71,7 +99,14 @@ def _make_llm_factory(cfg: TenantConfig):
             "analyst":      (cfg.analyst_provider,      cfg.analyst_model),
             "skill":        (cfg.default_skill_provider, cfg.default_skill_model),
         }
-        provider, model = role_map.get(role, role_map["skill"])
+
+        # Verifica se há override específico para este skill
+        if role in cfg.skill_overrides:
+            override = cfg.skill_overrides[role]
+            provider = override.llm_provider or cfg.default_skill_provider
+            model    = override.llm_model    or cfg.default_skill_model
+        else:
+            provider, model = role_map.get(role, role_map["skill"])
 
         if cfg.llm_mode == "byok" and cfg.llm_api_key:
             from llm.providers import get_llm_for_tenant
@@ -165,9 +200,11 @@ def build_graph_for_tenant(cfg: TenantConfig, redis: Any = None):
     routing_map = {**{s: s for s in active_skills}, "guardrails": "guardrails"}
     graph.add_conditional_edges("orchestrator", route_to_skill, routing_map)
 
-    # skill → analyst
+    # skill → handoff_router → [outro skill | analyst]
+    # Cada skill pode passar a bola para outro skill via marcador [[HANDOFF:skill:ctx]]
+    handoff_map = {**{s: s for s in active_skills}, "guardrails": "guardrails", "analyst": "analyst"}
     for skill_name in list(active_skill_nodes.keys()) + ["guardrails"]:
-        graph.add_edge(skill_name, "analyst")
+        graph.add_conditional_edges(skill_name, handoff_router, handoff_map)
 
     # analyst → approved / retry / escalate (via analyst_router)
     # "retry" volta para o skill original; "approved" e "escalate" vão para save_context

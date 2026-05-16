@@ -15,17 +15,45 @@ from agents.state import AgentState
 log = structlog.get_logger()
 
 _SYSTEM = """\
-Você é o orquestrador de um assistente de farmácia. Sua única função é classificar a intenção do cliente e escolher a skill correta.
+Você é o orquestrador de um sistema MULTI-AGENTE de farmácia. Sua função é classificar
+a intenção do cliente e direcioná-lo para o PRIMEIRO agente certo. Os agentes podem
+passar a bola entre si depois, então NÃO se preocupe em escolher "o agente final" —
+escolha o agente que deve LIDERAR a resposta.
 
 Skills disponíveis:
 {skills_list}
 
-Regras de classificação:
-- farmaceutico  → dúvidas sobre medicamentos, interações, posologia, reações adversas, contraindicações, bulas
-- principio_ativo → "qual o princípio ativo de X?", "X tem [substância]?"
-- genericos     → "tem genérico de X?", "qual o genérico mais barato?", substituições de marca
-- vendedor      → comprar, preço, disponibilidade, adicionar ao carrinho, pedido, entrega
-- recuperador   → cliente sumiu/não comprou, reengajamento, recuperação de carrinho abandonado
+REGRAS CRÍTICAS — leia com atenção:
+
+1. **SINTOMAS / dor / mal-estar** ("dor de cabeça", "estou com febre", "tô gripado",
+   "preciso de algo pra X") → SEMPRE farmaceutico
+   (o farmacêutico avalia e depois passa para o vendedor verificar estoque)
+
+2. **PRODUTO ESPECÍFICO já nomeado** ("vocês têm Dipirona?", "quanto custa Tylenol?",
+   "tem Amoxicilina em estoque?") → vendedor
+   (o cliente já sabe o que quer; vendedor consulta estoque/preço)
+
+3. **PRINCÍPIO ATIVO** ("qual o princípio ativo do Tylenol?", "Aspirina contém AAS?")
+   → principio_ativo
+
+4. **GENÉRICOS / SUBSTITUIÇÕES** ("tem genérico de X?", "qual o mais barato similar?")
+   → genericos
+
+5. **DÚVIDAS FARMACÊUTICAS** (posologia, interações, efeitos colaterais, bulas)
+   → farmaceutico
+
+6. **SAUDAÇÕES / PRIMEIRO CONTATO** ("oi", "bom dia", "tudo bem?") → saudacao
+
+7. **RECUPERAÇÃO** (cliente que sumiu, voltou depois) → recuperador
+
+8. **OFF-TOPIC / EMERGÊNCIA / CONTEÚDO IMPRÓPRIO** → guardrails
+
+Exemplos:
+• "Estou com dor de cabeça" → farmaceutico (sintoma → farmacêutico recomenda)
+• "Você tem Dipirona?" → vendedor (produto nomeado → vendedor checa estoque)
+• "Pra dor de cabeça, vocês têm Dipirona ou Paracetamol?" → farmaceutico
+  (combina sintoma + nomes; farmacêutico assume liderança)
+• "Quanto custa o Paracetamol 750mg?" → vendedor
 
 Responda APENAS com JSON válido, sem explicações:
 {{"skill": "<skill_name>", "confidence": <0.0-1.0>, "intent": "<resumo da intenção em português>"}}
@@ -101,7 +129,14 @@ async def orchestrator(state: AgentState, llm_factory) -> AgentState:
             HumanMessage(content=user_content),
         ])
 
-        parsed = _extract_json(response.content)
+        # Garante string (response.content pode ser lista de blocos)
+        content = response.content
+        if not isinstance(content, str):
+            content = "".join(
+                b.get("text", "") if isinstance(b, dict) else str(b)
+                for b in (content or [])
+            )
+        parsed = _extract_json(content)
         skill      = parsed.get("skill", _FALLBACK_SKILL)
         confidence = float(parsed.get("confidence", 0.5))
         intent     = parsed.get("intent", current_message[:100])
@@ -126,8 +161,17 @@ async def orchestrator(state: AgentState, llm_factory) -> AgentState:
         intent=intent[:60],
     )
 
+    import time as _time
     trace = list(state.get("trace_steps", []))
-    trace.append(f"orchestrator→{skill} ({confidence:.0%}): {intent[:60]}")
+    trace.append({
+        "node": "orchestrator",
+        "ts_ms": int(_time.time() * 1000),
+        "data": {
+            "skill": skill,
+            "confidence": round(confidence, 2),
+            "intent": intent[:120],
+        },
+    })
 
     return {
         **state,

@@ -15,7 +15,7 @@ import structlog
 from langchain_core.messages import SystemMessage, HumanMessage
 
 from agents.state import AgentState
-from agents.nodes.skills._base import _persona_prefix
+from agents.nodes.skills._base import _persona_prefix, _extract_text
 
 log = structlog.get_logger()
 
@@ -68,7 +68,12 @@ async def guardrails_node(state: AgentState, llm_factory) -> AgentState:
             "• *193* — Bombeiros\n\n"
             "Um atendente humano foi notificado para te ajudar agora."
         )
-        trace.append("guardrails: emergência detectada → escalate=True")
+        import time as _time
+        trace.append({
+            "node": "guardrails",
+            "ts_ms": int(_time.time() * 1000),
+            "data": {"emergency": True, "escalate": True},
+        })
         return {
             **state,
             "final_response": final_response,
@@ -90,12 +95,17 @@ async def guardrails_node(state: AgentState, llm_factory) -> AgentState:
             SystemMessage(content=system_prompt),
             HumanMessage(content=current_message),
         ])
-        final_response = response.content
+        final_response = _extract_text(response.content)
     except Exception as exc:
         log.error("guardrails.failed", exc=str(exc))
         final_response = "Posso ajudar com informações sobre medicamentos e produtos farmacêuticos. Como posso te ajudar?"
 
-    trace.append(f"guardrails: respondido (escalate={escalate})")
+    import time as _time
+    trace.append({
+        "node": "guardrails",
+        "ts_ms": int(_time.time() * 1000),
+        "data": {"escalate": escalate},
+    })
 
     return {
         **state,
