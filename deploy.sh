@@ -295,36 +295,35 @@ hash_admin_password() {
 write_env() {
     step "Gerando arquivo .env"
 
-    # O hash bcrypt contém '$2b$12$...' — docker-compose interpreta '$' como variável.
-    # Escapamos '$' → '$$' no .env; '$dds' garante dois dólares literais (não o PID do shell).
-    local escaped_hash dds='$$'
-    escaped_hash="${ADMIN_PASSWORD_HASH//\$/$dds}"
-
+    # Valores envolvidos em aspas simples são tratados LITERALMENTE pelo parser
+    # de .env do Docker Compose v2 — sem interpolação, sem necessidade de escape.
+    # Aplicamos aspas simples em todos os segredos que podem conter caracteres
+    # especiais (hash bcrypt com '$', chaves de API com '-', etc.).
     cat > "${SCRIPT_DIR}/.env" << EOF
 # ─── Gerado por deploy.sh em $(date) ─────────────────────────────────────────
 # ⚠  NUNCA faça commit deste arquivo!
 
 # ─── Database ────────────────────────────────────────────────────────────────
-DB_PASSWORD=${DB_PASSWORD}
+DB_PASSWORD='${DB_PASSWORD}'
 
 # ─── RabbitMQ ────────────────────────────────────────────────────────────────
-RABBITMQ_PASS=${RABBITMQ_PASS}
+RABBITMQ_PASS='${RABBITMQ_PASS}'
 
 # ─── LLM API Keys ────────────────────────────────────────────────────────────
-ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
-GOOGLE_API_KEY=${GOOGLE_API_KEY}
+ANTHROPIC_API_KEY='${ANTHROPIC_API_KEY}'
+GOOGLE_API_KEY='${GOOGLE_API_KEY}'
 
 # ─── App ─────────────────────────────────────────────────────────────────────
-SECRET_KEY=${SECRET_KEY}
+SECRET_KEY='${SECRET_KEY}'
 ENVIRONMENT=production
 LOG_LEVEL=INFO
 
 # ─── Admin ───────────────────────────────────────────────────────────────────
-ADMIN_EMAIL=${ADMIN_EMAIL}
-ADMIN_PASSWORD_HASH=${escaped_hash}
+ADMIN_EMAIL='${ADMIN_EMAIL}'
+ADMIN_PASSWORD_HASH='${ADMIN_PASSWORD_HASH}'
 
 # ─── CORS ────────────────────────────────────────────────────────────────────
-CORS_ORIGINS=https://${ADMIN_DOMAIN},https://${API_DOMAIN}
+CORS_ORIGINS='https://${ADMIN_DOMAIN},https://${API_DOMAIN}'
 
 # ─── Limites ─────────────────────────────────────────────────────────────────
 CELERY_WORKERS_CONCURRENCY=16
@@ -334,7 +333,7 @@ ANALYST_MAX_RETRIES=1
 LLM_TIMEOUT_SECONDS=30
 
 # ─── Grafana ─────────────────────────────────────────────────────────────────
-GRAFANA_PASSWORD=${GRAFANA_PASSWORD}
+GRAFANA_PASSWORD='${GRAFANA_PASSWORD}'
 EOF
 
     chmod 600 "${SCRIPT_DIR}/.env"
@@ -546,21 +545,38 @@ issue_ssl() {
         | grep -qiE "Up|running" \
         || error "nginx não subiu. Veja: docker compose logs nginx"
 
+    # Sanity check: o webroot deve estar realmente servindo pelo nginx
+    info "Testando que o ACME challenge path está acessível..."
+    local test_file=".well-known/acme-challenge/deploy-test-$$"
+    docker compose -f "${SCRIPT_DIR}/docker-compose.yml" exec -T nginx \
+        sh -c "mkdir -p /var/www/certbot/.well-known/acme-challenge && echo ok > /var/www/certbot/${test_file}" \
+        2>>"$LOG_FILE" || warn "Não foi possível escrever arquivo de teste no nginx"
+
+    if curl -sf --max-time 10 "http://${API_DOMAIN}/${test_file}" | grep -q "ok"; then
+        success "ACME challenge path OK em http://${API_DOMAIN}"
+    else
+        warn "Não consegui validar http://${API_DOMAIN}/${test_file} — Let's Encrypt pode falhar."
+        warn "Verifique: (1) DNS apontando para este servidor, (2) porta 80 aberta na nuvem/firewall."
+    fi
+
     # Emite o certificado via certbot (webroot).
     # --entrypoint certbot sobrescreve o loop de renovação definido no compose,
     # garantindo que o container execute 'certonly' em vez de travar no loop.
     # Saída exibida no terminal (sem redirecionar) para diagnóstico em tempo real.
+    # Timeout de 180s evita travamento se Let's Encrypt não responder.
     info "Solicitando certificado para: ${API_DOMAIN}, ${ADMIN_DOMAIN}"
-    docker compose -f "${SCRIPT_DIR}/docker-compose.yml" run --rm --entrypoint certbot certbot certonly \
+    timeout 180 docker compose -f "${SCRIPT_DIR}/docker-compose.yml" \
+        run --rm --entrypoint certbot certbot certonly \
         --webroot \
         --webroot-path=/var/www/certbot \
         --email "${SSL_EMAIL}" \
         --agree-tos \
         --no-eff-email \
         --force-renewal \
+        --non-interactive \
         -d "${API_DOMAIN}" \
         -d "${ADMIN_DOMAIN}" \
-        || error "Falha ao emitir certificado. Verifique se o DNS está apontado corretamente e as portas 80/443 estão abertas."
+        || error "Falha ao emitir certificado. Verifique: (1) DNS apontado, (2) porta 80 aberta na nuvem, (3) logs em ${LOG_FILE}"
 
     success "Certificado SSL emitido com sucesso!"
 
@@ -725,7 +741,14 @@ main() {
     cd "${SCRIPT_DIR}"
     : > "$LOG_FILE"  # limpa/cria o log
 
-    # Ignora docker-compose.override.yml (arquivo de dev) em produção.
+    # Em produção, o docker-compose.override.yml (arquivo de dev) precisa ficar
+    # fora do alcance do Compose. Renomear .bak é mais confiável que -f/COMPOSE_FILE
+    # (algumas versões ainda mergeam o override mesmo com -f explícito).
+    if [[ -f "${SCRIPT_DIR}/docker-compose.override.yml" ]]; then
+        mv "${SCRIPT_DIR}/docker-compose.override.yml" \
+           "${SCRIPT_DIR}/docker-compose.override.yml.bak"
+        info "docker-compose.override.yml renomeado para .bak (dev only)"
+    fi
     export COMPOSE_FILE="${SCRIPT_DIR}/docker-compose.yml"
 
     install_system_deps
