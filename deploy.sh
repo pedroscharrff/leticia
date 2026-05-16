@@ -296,16 +296,13 @@ write_env() {
     step "Gerando arquivo .env"
 
     # O hash bcrypt contém '$2b$12$...' — docker-compose interpreta '$' como variável.
-    # Escapamos '$' → '$$' no .env para que docker-compose passe o valor correto ao container.
-    local escaped_hash
-    escaped_hash="${ADMIN_PASSWORD_HASH//\$/\$\$}"
+    # Escapamos '$' → '$$' no .env; '$dds' garante dois dólares literais (não o PID do shell).
+    local escaped_hash dds='$$'
+    escaped_hash="${ADMIN_PASSWORD_HASH//\$/$dds}"
 
     cat > "${SCRIPT_DIR}/.env" << EOF
 # ─── Gerado por deploy.sh em $(date) ─────────────────────────────────────────
 # ⚠  NUNCA faça commit deste arquivo!
-
-# ─── Força uso apenas do docker-compose.yml (ignora override de dev) ─────────
-COMPOSE_FILE=docker-compose.yml
 
 # ─── Database ────────────────────────────────────────────────────────────────
 DB_PASSWORD=${DB_PASSWORD}
@@ -541,18 +538,20 @@ issue_ssl() {
     # Sobe APENAS nginx (--no-deps) para servir o challenge ACME.
     # Não construímos api/admin aqui — apenas nginx precisa estar online.
     info "Iniciando nginx em modo HTTP para validação ACME..."
-    docker compose up -d --no-deps nginx 2>>"$LOG_FILE"
+    docker compose -f "${SCRIPT_DIR}/docker-compose.yml" up -d --no-deps nginx 2>>"$LOG_FILE"
     sleep 4
 
-    # Verifica se nginx subiu
-    docker compose ps nginx | grep -q "Up" \
+    # Verifica se nginx subiu (Compose v2 mostra "running", v1 mostrava "Up")
+    docker compose -f "${SCRIPT_DIR}/docker-compose.yml" ps nginx \
+        | grep -qiE "Up|running" \
         || error "nginx não subiu. Veja: docker compose logs nginx"
 
     # Emite o certificado via certbot (webroot).
     # --entrypoint certbot sobrescreve o loop de renovação definido no compose,
     # garantindo que o container execute 'certonly' em vez de travar no loop.
+    # Saída exibida no terminal (sem redirecionar) para diagnóstico em tempo real.
     info "Solicitando certificado para: ${API_DOMAIN}, ${ADMIN_DOMAIN}"
-    docker compose run --rm --entrypoint certbot certbot certonly \
+    docker compose -f "${SCRIPT_DIR}/docker-compose.yml" run --rm --entrypoint certbot certbot certonly \
         --webroot \
         --webroot-path=/var/www/certbot \
         --email "${SSL_EMAIL}" \
@@ -561,7 +560,6 @@ issue_ssl() {
         --force-renewal \
         -d "${API_DOMAIN}" \
         -d "${ADMIN_DOMAIN}" \
-        2>>"$LOG_FILE" \
         || error "Falha ao emitir certificado. Verifique se o DNS está apontado corretamente e as portas 80/443 estão abertas."
 
     success "Certificado SSL emitido com sucesso!"
@@ -569,8 +567,8 @@ issue_ssl() {
     # Troca para config HTTPS e recarrega nginx
     info "Ativando configuração HTTPS no nginx..."
     write_nginx_https
-    docker compose exec nginx nginx -s reload 2>>"$LOG_FILE" \
-        || docker compose restart nginx 2>>"$LOG_FILE"
+    docker compose -f "${SCRIPT_DIR}/docker-compose.yml" exec nginx nginx -s reload 2>>"$LOG_FILE" \
+        || docker compose -f "${SCRIPT_DIR}/docker-compose.yml" restart nginx 2>>"$LOG_FILE"
     sleep 2
 
     success "nginx rodando com HTTPS/TLS 1.3"
@@ -581,17 +579,18 @@ start_services() {
     step "Iniciando Todos os Serviços"
 
     info "Fazendo build das imagens Docker..."
-    docker compose build --no-cache 2>>"$LOG_FILE"
+    docker compose -f "${SCRIPT_DIR}/docker-compose.yml" build --no-cache 2>>"$LOG_FILE"
 
     info "Subindo todos os serviços..."
-    docker compose up -d 2>>"$LOG_FILE"
+    docker compose -f "${SCRIPT_DIR}/docker-compose.yml" up -d 2>>"$LOG_FILE"
 
     info "Aguardando serviços ficarem saudáveis..."
     local attempts=0
     local healthy=false
 
     while [[ $attempts -lt 40 ]]; do
-        if docker compose ps | grep -E "(api|postgres|redis|rabbitmq)" | grep -q "healthy"; then
+        if docker compose -f "${SCRIPT_DIR}/docker-compose.yml" ps \
+            | grep -E "(api|postgres|redis|rabbitmq)" | grep -qiE "healthy|running"; then
             healthy=true
             break
         fi
@@ -725,6 +724,9 @@ main() {
     check_root
     cd "${SCRIPT_DIR}"
     : > "$LOG_FILE"  # limpa/cria o log
+
+    # Ignora docker-compose.override.yml (arquivo de dev) em produção.
+    export COMPOSE_FILE="${SCRIPT_DIR}/docker-compose.yml"
 
     install_system_deps
     install_docker
