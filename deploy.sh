@@ -322,6 +322,9 @@ LOG_LEVEL=INFO
 ADMIN_EMAIL='${ADMIN_EMAIL}'
 ADMIN_PASSWORD_HASH='${ADMIN_PASSWORD_HASH}'
 
+# ─── Frontend ────────────────────────────────────────────────────────────────
+VITE_API_URL=https://${API_DOMAIN}
+
 # ─── CORS ────────────────────────────────────────────────────────────────────
 CORS_ORIGINS='https://${ADMIN_DOMAIN},https://${API_DOMAIN}'
 
