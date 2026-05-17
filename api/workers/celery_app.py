@@ -209,3 +209,255 @@ async def _run_graph(
         except Exception:
             pass
         raise
+
+
+# ── Broker bundled task (debounce — agrupa mensagens picadas) ───────────────
+
+@celery_app.task(name="process_bundled_message", bind=True, max_retries=0)
+def process_bundled_message(
+    self,
+    tenant_id: str,
+    integration_id: str,
+    bundle_key: str,
+    scheduled_for_ts: float,
+) -> None:
+    """
+    Debounce processor.
+
+    Cada mensagem que chega agenda esta task com countdown=window. Quando
+    rodamos:
+      - lemos `last_seen` do Redis. Se for > nosso `scheduled_for_ts`,
+        significa que chegou mensagem nova depois de nós — então DESISTIMOS
+        (uma task mais recente vai processar o bundle completo).
+      - caso contrário, pegamos todas as mensagens do buffer, concatenamos
+        com quebra de linha, e disparamos o fluxo do agente com o texto
+        combinado.
+    """
+    asyncio.run(_run_bundle(
+        tenant_id=tenant_id,
+        integration_id=integration_id,
+        bundle_key=bundle_key,
+        scheduled_for_ts=scheduled_for_ts,
+    ))
+
+
+async def _run_bundle(
+    tenant_id: str,
+    integration_id: str,
+    bundle_key: str,
+    scheduled_for_ts: float,
+) -> None:
+    from db.postgres import init_pool
+    from db.redis_client import get_redis, init_redis
+    import json as _json
+
+    await init_pool()
+    await init_redis()
+    redis = get_redis()
+
+    last_seen_raw = await redis.get(f"{bundle_key}:last_seen")
+    try:
+        last_seen = float(last_seen_raw) if last_seen_raw else 0.0
+    except (ValueError, TypeError):
+        last_seen = 0.0
+
+    # Outra mensagem chegou depois desta task ser agendada → desiste.
+    # A task agendada por aquela mensagem mais recente vai processar tudo.
+    if last_seen > scheduled_for_ts:
+        log.info("bundle.skipped_newer_arrived",
+                 bundle_key=bundle_key,
+                 scheduled=scheduled_for_ts, last_seen=last_seen)
+        return
+
+    # Pega tudo do buffer e limpa
+    items_raw = await redis.lrange(bundle_key, 0, -1)
+    await redis.delete(bundle_key, f"{bundle_key}:last_seen")
+
+    if not items_raw:
+        return
+
+    items = [_json.loads(i) for i in items_raw]
+    combined_message = "\n".join(it["msg"].strip()
+                                 for it in items if (it.get("msg") or "").strip())
+    if not combined_message:
+        return
+
+    # Usa o canonical_input da última mensagem como base e sobrescreve message
+    base_input = items[-1].get("input") or {}
+    canonical_input = {**base_input, "message": combined_message}
+    last_event_id = items[-1].get("event_id") or ""
+
+    log.info("bundle.processing",
+             bundle_key=bundle_key,
+             count=len(items),
+             combined_len=len(combined_message))
+
+    await _run_broker_flow(
+        tenant_id=tenant_id,
+        integration_id=integration_id,
+        raw_event_id=last_event_id,
+        canonical_input=canonical_input,
+    )
+
+
+# ── Broker task (universal webhook flow) ─────────────────────────────────────
+
+@celery_app.task(name="process_broker_message", bind=True, max_retries=0)
+def process_broker_message(
+    self,
+    tenant_id: str,
+    integration_id: str,
+    raw_event_id: str,
+    canonical_input: dict,
+) -> None:
+    """
+    Runs the agent for a webhook event ingested via /hooks/*.
+
+    After the agent finishes:
+      - Applies the integration's reply_body_template against
+        {input, reply, phone, message, name, session_id, event_id}
+      - If reply_mode == 'forward', POSTs the body to reply_url.
+      - Updates the broker_raw_events row with the final canonical payload.
+    """
+    asyncio.run(_run_broker_flow(
+        tenant_id=tenant_id,
+        integration_id=integration_id,
+        raw_event_id=raw_event_id,
+        canonical_input=canonical_input,
+    ))
+
+
+async def _run_broker_flow(
+    tenant_id: str,
+    integration_id: str,
+    raw_event_id: str,
+    canonical_input: dict,
+) -> None:
+    from db.postgres import get_db_conn, init_pool
+    from db.redis_client import get_redis, init_redis
+    from agents.graph_builder import build_graph_for_tenant, TenantConfig
+    from services.llm_config import load_tenant_llm_config
+    from services import broker as broker_svc
+
+    await init_pool()
+    await init_redis()
+    redis = get_redis()
+
+    async with get_db_conn() as conn:
+        tenant = await conn.fetchrow(
+            "SELECT schema_name FROM public.tenants WHERE id = $1", tenant_id,
+        )
+        integration = await conn.fetchrow(
+            "SELECT * FROM public.tenant_integrations WHERE id = $1", integration_id,
+        )
+
+    if not tenant or not integration:
+        log.error("broker.flow.missing_records", tenant=tenant_id, integration=integration_id)
+        return
+
+    schema_name = tenant["schema_name"]
+    phone = canonical_input.get("phone") or ""
+    message = canonical_input.get("message") or ""
+    session_id = canonical_input.get("session_id") or f"{tenant_id}:{phone or raw_event_id}"
+
+    # Load active skills + LLM config
+    async with get_db_conn() as conn:
+        await conn.execute(f"SET search_path = {schema_name}, public")
+        rows = await conn.fetch(
+            "SELECT skill_name FROM skills_config WHERE ativo = TRUE"
+        )
+        active_skills = [r["skill_name"] for r in rows]
+
+    llm_cfg = await load_tenant_llm_config(tenant_id)
+
+    tenant_cfg = TenantConfig(
+        tenant_id=tenant_id,
+        schema_name=schema_name,
+        callback_url="",   # not used; we control the reply ourselves
+        skills_active=active_skills,
+        **llm_cfg,
+    )
+
+    graph = build_graph_for_tenant(tenant_cfg, redis)
+
+    initial_state = {
+        "tenant_id": tenant_id,
+        "session_id": session_id,
+        "phone": phone,
+        "schema_name": schema_name,
+        "current_message": message,
+        "messages": [],
+        "intent": "",
+        "selected_skill": "",
+        "confidence": 0.0,
+        "retry_count": 0,
+        "customer_profile": "indefinido",
+        "cart": {"items": [], "subtotal": 0.0},
+        "stock_mode": "catalogo",
+        "available_skills": active_skills,
+        "analyst_approved": False,
+        "final_response": "",
+        "escalate": False,
+        "callback_url": "",
+        "trace_steps": [],
+        "persona": {},
+        "skill_prompts": {},
+    }
+
+    config = {"configurable": {"thread_id": session_id}}
+    t0 = time.monotonic()
+    skill_used = "broker"
+    reply_text = ""
+    error: str | None = None
+
+    try:
+        final_state = await graph.ainvoke(initial_state, config=config)
+        skill_used = final_state.get("selected_skill", "unknown")
+        reply_text = final_state.get("final_response", "")
+        CONV_TOTAL.labels(tenant_id=tenant_id, skill=skill_used, status="ok").inc()
+        LATENCY.labels(tenant_id=tenant_id, skill=skill_used).observe(time.monotonic() - t0)
+    except Exception as exc:
+        error = str(exc)
+        reply_text = "Ocorreu um erro no atendimento. Por favor, tente novamente."
+        CONV_TOTAL.labels(tenant_id=tenant_id, skill=skill_used, status="error").inc()
+        log.error("broker.flow.agent_failed", tenant=tenant_id, exc=error)
+
+    # Build reply body from template
+    reply_context = {
+        "input": canonical_input,
+        "reply": reply_text,
+        "phone": phone,
+        "message": message,
+        "name": canonical_input.get("name"),
+        "session_id": session_id,
+        "event_id": raw_event_id,
+    }
+    template = integration["reply_body_template"] or {}
+    reply_body = (
+        broker_svc.apply_mapping(template, reply_context)
+        if template else {"reply": reply_text}
+    )
+
+    # Persist final state
+    canonical_combined = {**reply_context, "_reply_body": reply_body, "_error": error}
+    async with get_db_conn() as conn:
+        await conn.execute(
+            "UPDATE public.broker_raw_events "
+            "SET status=$2, canonical_event='agent.message', canonical_payload=$3, "
+            "attempts=attempts+1, processed_at=NOW(), error=$4 "
+            "WHERE id=$1",
+            raw_event_id,
+            "failed" if error else "processed",
+            canonical_combined,
+            error,
+        )
+
+    # Forward to external URL if configured
+    if integration["reply_mode"] == "forward" and integration["reply_url"]:
+        try:
+            await _deliver_response(integration["reply_url"], reply_body)
+            log.info("broker.flow.forwarded",
+                     tenant=tenant_id, url=integration["reply_url"])
+        except Exception as exc:
+            log.warning("broker.flow.forward_failed",
+                        tenant=tenant_id, url=integration["reply_url"], exc=str(exc))

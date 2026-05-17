@@ -47,6 +47,7 @@ from routers.skill_examples import portal_router as examples_portal_router, admi
 from routers.sales_config import portal_router as sales_config_portal_router, admin_router as sales_config_admin_router
 from routers.orders import router as orders_router
 from routers.order_status_messages import router as order_status_messages_router
+from routers.broker import ingest_router as broker_ingest_router, portal_router as broker_portal_router
 from middleware.usage import UsageEnforcementMiddleware
 
 # ── Structured logging ────────────────────────────────────────────────────────
@@ -149,6 +150,8 @@ app.include_router(sales_config_portal_router)
 app.include_router(sales_config_admin_router)
 app.include_router(orders_router)
 app.include_router(order_status_messages_router)
+app.include_router(broker_ingest_router)
+app.include_router(broker_portal_router)
 
 
 @app.get("/health", tags=["infra"])

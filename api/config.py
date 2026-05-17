@@ -50,6 +50,11 @@ class Settings(BaseSettings):
     # CORS — comma-separated list of allowed origins
     cors_origins: str = "http://localhost:5173,http://localhost:3000"
 
+    # Public URL of the backend (used to build webhook ingest URLs shown in the UI).
+    # Set this to the URL that external systems can reach (e.g. https://api.farmacia.io)
+    # Falls back to request.base_url when empty (works for direct access, not behind proxies).
+    public_api_url: str = "http://localhost:8000"
+
     # Self-service signup
     allow_signup: bool = True
     default_trial_days: int = 7
