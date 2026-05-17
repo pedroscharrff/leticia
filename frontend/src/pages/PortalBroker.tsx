@@ -277,6 +277,13 @@ function FlowTab({ integration, onSaved }: { integration: Integration; onSaved: 
   const [replyUrl, setReplyUrl] = useState(integration.reply_url ?? "");
   const [replyMethod, setReplyMethod] = useState(integration.reply_method || "POST");
   const [replyStatusCode, setReplyStatusCode] = useState(integration.reply_status_code || 200);
+  const [replyHeaders, setReplyHeaders] = useState<{ key: string; value: string }[]>(() => {
+    const existing = integration.reply_headers || {};
+    const entries = Object.entries(existing);
+    return entries.length > 0
+      ? entries.map(([key, value]) => ({ key, value: String(value) }))
+      : [];
+  });
   // Bundling (debounce) config
   const [bundleEnabled, setBundleEnabled] = useState(integration.bundle_enabled || false);
   const [bundleWindow, setBundleWindow] = useState(integration.bundle_window_seconds || 10);
@@ -300,6 +307,8 @@ function FlowTab({ integration, onSaved }: { integration: Integration; onSaved: 
     setReplyUrl(integration.reply_url ?? "");
     setReplyMethod(integration.reply_method || "POST");
     setReplyStatusCode(integration.reply_status_code || 200);
+    const headerEntries = Object.entries(integration.reply_headers || {});
+    setReplyHeaders(headerEntries.map(([key, value]) => ({ key, value: String(value) })));
     setBundleEnabled(integration.bundle_enabled || false);
     setBundleWindow(integration.bundle_window_seconds || 10);
     const rt = Object.entries(integration.reply_body_template || {});
@@ -370,6 +379,8 @@ function FlowTab({ integration, onSaved }: { integration: Integration; onSaved: 
     const inbound_field_map: Record<string, string> = { ...inputMap };
     const reply_body_template: Record<string, string> = {};
     replyFields.forEach(f => { if (f.key && f.expr) reply_body_template[f.key] = f.expr; });
+    const reply_headers: Record<string, string> = {};
+    replyHeaders.forEach(h => { if (h.key && h.value) reply_headers[h.key] = h.value; });
 
     try {
       await saveFlow(integration.id, {
@@ -377,7 +388,7 @@ function FlowTab({ integration, onSaved }: { integration: Integration; onSaved: 
         reply_mode: replyMode,
         reply_url: replyMode === "forward" ? replyUrl : null,
         reply_method: replyMethod,
-        reply_headers: {},
+        reply_headers,
         reply_body_template,
         reply_status_code: replyStatusCode,
         bundle_enabled: bundleEnabled,
@@ -560,6 +571,63 @@ function FlowTab({ integration, onSaved }: { integration: Integration; onSaved: 
                        placeholder="https://api.z-api.io/instances/.../send-text" />
               </label>
             </div>
+
+            <details style={{ marginTop: 12 }}>
+              <summary style={{
+                cursor: "pointer", fontSize: 13, fontWeight: 600,
+                color: "var(--color-text-muted, #86868b)", marginBottom: 8,
+              }}>
+                Headers personalizados (opcional)
+                {replyHeaders.length > 0 && (
+                  <span style={{
+                    marginLeft: 8, fontSize: 11, padding: "1px 8px",
+                    background: "#e3f2fd", color: "#1565c0", borderRadius: 10,
+                  }}>{replyHeaders.length}</span>
+                )}
+              </summary>
+              <p className="broker-card-sub" style={{ marginTop: 8 }}>
+                Útil para autenticação (ex: <code>Authorization: Bearer ...</code>) ou
+                tokens específicos do gateway (Z-API, Twilio, etc.).
+              </p>
+              {replyHeaders.map((h, idx) => (
+                <div key={idx} className="broker-row">
+                  <input className="broker-row-key" placeholder="Authorization"
+                         value={h.key} onChange={(e) => {
+                           const c = [...replyHeaders];
+                           c[idx] = { ...c[idx], key: e.target.value };
+                           setReplyHeaders(c);
+                         }} />
+                  <span className="broker-arrow">:</span>
+                  <input className="broker-row-expr" placeholder="Bearer abc123..."
+                         value={h.value} onChange={(e) => {
+                           const c = [...replyHeaders];
+                           c[idx] = { ...c[idx], value: e.target.value };
+                           setReplyHeaders(c);
+                         }} />
+                  <button className="broker-row-del" onClick={() =>
+                    setReplyHeaders(replyHeaders.filter((_, i) => i !== idx))
+                  }>×</button>
+                </div>
+              ))}
+              <button className="broker-link" onClick={() =>
+                setReplyHeaders([...replyHeaders, { key: "", value: "" }])
+              }>
+                + Adicionar header
+              </button>
+
+              <div style={{ marginTop: 8, fontSize: 12, color: "#86868b" }}>
+                <strong>Exemplos comuns:</strong>{" "}
+                <button className="broker-link" onClick={() =>
+                  setReplyHeaders([...replyHeaders, { key: "Authorization", value: "Bearer " }])
+                }>Authorization</button>
+                <button className="broker-link" onClick={() =>
+                  setReplyHeaders([...replyHeaders, { key: "Client-Token", value: "" }])
+                }>Client-Token (Z-API)</button>
+                <button className="broker-link" onClick={() =>
+                  setReplyHeaders([...replyHeaders, { key: "X-API-Key", value: "" }])
+                }>X-API-Key</button>
+              </div>
+            </details>
           </div>
         )}
 
