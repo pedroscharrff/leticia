@@ -142,13 +142,27 @@ def _build_messages(state: AgentState, system_prompt: str) -> list:
     """Constrói lista de mensagens LangChain com histórico."""
     lc_messages = [SystemMessage(content=system_prompt)]
 
+    # Skip blank entries — Anthropic rejects any message with empty content.
     for msg in state.get("messages", []):
+        content = (msg.get("content") or "").strip()
+        if not content:
+            continue
         if msg["role"] == "user":
-            lc_messages.append(HumanMessage(content=msg["content"]))
+            lc_messages.append(HumanMessage(content=content))
         elif msg["role"] == "assistant":
-            lc_messages.append(AIMessage(content=msg["content"]))
+            lc_messages.append(AIMessage(content=content))
 
-    lc_messages.append(HumanMessage(content=state.get("current_message", "")))
+    current = (state.get("current_message", "") or "").strip()
+    if not current:
+        # Fallback to last non-empty user msg from history, or a placeholder.
+        current = next(
+            ((m.get("content") or "").strip()
+             for m in reversed(state.get("messages", []))
+             if m.get("role") == "user" and (m.get("content") or "").strip()),
+            "Oi",
+        )
+        log.warning("skill.current_message_empty.fallback", used=current[:50])
+    lc_messages.append(HumanMessage(content=current))
     return lc_messages
 
 

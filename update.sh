@@ -70,6 +70,10 @@ step "3/4  Aplicando atualização"
 info "Subindo novos containers..."
 docker compose up -d --no-deps api worker admin
 
+info "Recarregando nginx (atualiza IP dos novos containers)..."
+docker compose exec -T nginx nginx -s reload 2>/dev/null \
+    || docker compose restart nginx
+
 info "Removendo imagens antigas não utilizadas..."
 docker image prune -f &>/dev/null || true
 

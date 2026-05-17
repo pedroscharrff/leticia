@@ -16,6 +16,7 @@ const NAV_ITEMS = [
   { path: "/portal/clientes",   label: "Clientes",   icon: "👥", key: "clientes"  },
   { path: "/portal/logs",       label: "Conversas",  icon: "💬", key: "logs"      },
   { path: "/portal/integracao", label: "Integração", icon: "🔗", key: "integracao"},
+  { path: "/portal/broker",     label: "Webhooks",   icon: "⚡", key: "broker"    },
   { path: "/portal/billing",    label: "Assinatura", icon: "💳", key: "billing"   },
   { path: "/portal/traces",    label: "Traces",     icon: "🔍", key: "traces"    },
   { path: "/portal/ia-config", label: "Config IA",  icon: "🤖", key: "ia-config" },

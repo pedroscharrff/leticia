@@ -133,10 +133,12 @@ async def save_context(state: AgentState) -> AgentState:
     final_response = state.get("final_response", "")
     skill_used     = state.get("selected_skill", "unknown")
 
-    # Atualiza histórico
+    # Atualiza histórico — evita persistir mensagens vazias (causariam 400 no Anthropic)
     messages = list(state.get("messages", []))
-    messages.append({"role": "user",      "content": current_msg})
-    messages.append({"role": "assistant", "content": final_response})
+    if (current_msg or "").strip():
+        messages.append({"role": "user", "content": current_msg.strip()})
+    if (final_response or "").strip():
+        messages.append({"role": "assistant", "content": final_response.strip()})
 
     # ── Redis ─────────────────────────────────────────────────────────────────
     try:

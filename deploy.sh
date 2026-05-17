@@ -421,13 +421,16 @@ server {
     # Tamanho máximo do body (mensagens WhatsApp com mídia)
     client_max_body_size 10M;
 
+    # Docker DNS — re-resolve service names every 10s so nginx picks up the
+    # new container IP after `docker compose up --no-deps api`.
+    resolver 127.0.0.11 valid=10s ipv6=off;
+
     # ── Webhook — recebe mensagens das plataformas WhatsApp ───────────────────
-    # URL: POST https://${API_DOMAIN}/webhook/{tenant_id}
-    # Header: X-API-Key: <api_key_do_tenant>
+    # URL: POST https://${API_DOMAIN}/webhook/{webhook_token}
     location /webhook/ {
         limit_req zone=webhook burst=20 nodelay;
-
-        proxy_pass            http://api:8000;
+        set \$upstream_api api:8000;
+        proxy_pass            http://\$upstream_api;
         proxy_http_version    1.1;
         proxy_set_header      Host              \$host;
         proxy_set_header      X-Real-IP         \$remote_addr;
@@ -441,8 +444,8 @@ server {
     # ── Auth endpoints ────────────────────────────────────────────────────────
     location /auth/ {
         limit_req zone=api_auth burst=5 nodelay;
-
-        proxy_pass            http://api:8000;
+        set \$upstream_api api:8000;
+        proxy_pass            http://\$upstream_api;
         proxy_http_version    1.1;
         proxy_set_header      Host              \$host;
         proxy_set_header      X-Real-IP         \$remote_addr;
@@ -452,7 +455,8 @@ server {
 
     # ── Health check (sem rate limit — para load balancers) ──────────────────
     location /health {
-        proxy_pass         http://api:8000;
+        set \$upstream_api api:8000;
+        proxy_pass         http://\$upstream_api;
         proxy_http_version 1.1;
         proxy_set_header   Host \$host;
         access_log         off;
@@ -460,7 +464,8 @@ server {
 
     # ── Docs da API (Swagger / ReDoc) ─────────────────────────────────────────
     location ~ ^/(docs|redoc|openapi\.json)$ {
-        proxy_pass         http://api:8000;
+        set \$upstream_api api:8000;
+        proxy_pass         http://\$upstream_api;
         proxy_http_version 1.1;
         proxy_set_header   Host \$host;
     }
@@ -468,8 +473,8 @@ server {
     # ── Admin API (protegido por autenticação na própria API) ─────────────────
     location /admin/ {
         limit_req zone=api_pub burst=30 nodelay;
-
-        proxy_pass            http://api:8000;
+        set \$upstream_api api:8000;
+        proxy_pass            http://\$upstream_api;
         proxy_http_version    1.1;
         proxy_set_header      Host              \$host;
         proxy_set_header      X-Real-IP         \$remote_addr;
@@ -480,8 +485,8 @@ server {
     # ── API geral ─────────────────────────────────────────────────────────────
     location / {
         limit_req zone=api_pub burst=30 nodelay;
-
-        proxy_pass            http://api:8000;
+        set \$upstream_api api:8000;
+        proxy_pass            http://\$upstream_api;
         proxy_http_version    1.1;
         proxy_set_header      Host              \$host;
         proxy_set_header      X-Real-IP         \$remote_addr;
@@ -518,9 +523,12 @@ server {
     gzip_types text/plain text/css application/json application/javascript text/xml application/xml application/xml+rss text/javascript;
     gzip_min_length 1024;
 
+    resolver 127.0.0.11 valid=10s ipv6=off;
+
     # SPA React Admin
     location / {
-        proxy_pass            http://admin:80;
+        set \$upstream_admin admin:80;
+        proxy_pass            http://\$upstream_admin;
         proxy_http_version    1.1;
         proxy_set_header      Host              \$host;
         proxy_set_header      X-Real-IP         \$remote_addr;
