@@ -181,6 +181,8 @@ class RawEventOut(BaseModel):
     error: str | None
     attempts: int
     created_at: str
+    idempotency_key: str | None = None
+    payload_preview: str | None = None  # primeiros 200 chars do payload
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -371,13 +373,36 @@ async def ingest(
         # Insert raw event (idempotent within the 60s bucket)
         existing = await conn.fetchrow(
             """
-            SELECT id, status FROM public.broker_raw_events
+            SELECT id, status, created_at, payload FROM public.broker_raw_events
             WHERE tenant_id = $1 AND integration_slug = $2 AND idempotency_key = $3
             """,
             tenant["id"], integration_slug, idem,
         )
         if existing:
-            return {"accepted": True, "duplicate": True, "event_id": str(existing["id"])}
+            # Log detalhado pra diagnosticar deduplicações inesperadas
+            log.warning(
+                "hooks.duplicate_detected",
+                slug=integration_slug,
+                idem_key=idem,
+                explicit_header=bool(explicit_idem),
+                original_event_id=str(existing["id"]),
+                original_created_at=existing["created_at"].isoformat(),
+                new_payload_preview=json.dumps(payload, ensure_ascii=False)[:300],
+                original_payload_preview=json.dumps(existing["payload"], ensure_ascii=False)[:300],
+                payloads_identical=(payload == existing["payload"]),
+            )
+            return {
+                "accepted": True,
+                "duplicate": True,
+                "event_id": str(existing["id"]),
+                "original_received_at": existing["created_at"].isoformat(),
+                "idempotency_key": idem,
+                "reason": (
+                    "Payload idêntico recebido nos últimos 60s. "
+                    "Se o sistema externo está mandando mensagens diferentes mas caindo aqui, "
+                    "verifique se o payload tem algum campo único (timestamp, message_id)."
+                ),
+            }
 
         event_row = await conn.fetchrow(
             """
@@ -922,7 +947,7 @@ async def list_events(user: TenantUser, limit: int = 50, status_filter: str | No
             rows = await conn.fetch(
                 """
                 SELECT id, integration_slug, direction, status, canonical_event,
-                       error, attempts, created_at
+                       error, attempts, created_at, idempotency_key, payload
                 FROM public.broker_raw_events
                 WHERE tenant_id = $1 AND status = $2
                 ORDER BY created_at DESC LIMIT $3
@@ -933,7 +958,7 @@ async def list_events(user: TenantUser, limit: int = 50, status_filter: str | No
             rows = await conn.fetch(
                 """
                 SELECT id, integration_slug, direction, status, canonical_event,
-                       error, attempts, created_at
+                       error, attempts, created_at, idempotency_key, payload
                 FROM public.broker_raw_events
                 WHERE tenant_id = $1
                 ORDER BY created_at DESC LIMIT $2
@@ -950,6 +975,9 @@ async def list_events(user: TenantUser, limit: int = 50, status_filter: str | No
             error=r["error"],
             attempts=r["attempts"],
             created_at=r["created_at"].isoformat(),
+            idempotency_key=r["idempotency_key"],
+            payload_preview=(json.dumps(r["payload"], ensure_ascii=False)[:200]
+                             if r["payload"] is not None else None),
         )
         for r in rows
     ]

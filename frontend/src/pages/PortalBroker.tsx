@@ -754,48 +754,178 @@ function FlowTab({ integration, onSaved }: { integration: Integration; onSaved: 
 function EventsTab() {
   const [events, setEvents] = useState<RawEvent[]>([]);
   const [filter, setFilter] = useState<string>("");
+  const [detail, setDetail] = useState<any>(null);
+  const [loadingDetail, setLoadingDetail] = useState(false);
 
   const reload = useCallback(async () => {
     setEvents(await listRawEvents(filter || undefined));
   }, [filter]);
   useEffect(() => { reload(); }, [reload]);
 
+  async function openDetail(id: string) {
+    setLoadingDetail(true);
+    setDetail({ loading: true });
+    try {
+      const full = await getRawEvent(id);
+      setDetail(full);
+    } catch (e: any) {
+      setDetail({ error: e?.response?.data?.detail ?? e.message });
+    } finally {
+      setLoadingDetail(false);
+    }
+  }
+
+  // Agrupa eventos por idempotency_key pra evidenciar colisões
+  const idemCounts = events.reduce<Record<string, number>>((acc, e) => {
+    if (e.idempotency_key) acc[e.idempotency_key] = (acc[e.idempotency_key] || 0) + 1;
+    return acc;
+  }, {});
+
   return (
-    <div className="broker-card">
-      <div className="broker-events-header">
-        <h3 className="broker-card-title">Eventos recebidos</h3>
-        <select value={filter} onChange={(e) => setFilter(e.target.value)}>
-          <option value="">Todos</option>
-          <option value="processed">Processados</option>
-          <option value="skipped">Sem mapeamento</option>
-          <option value="failed">Falhas</option>
-          <option value="pending">Pendentes</option>
-        </select>
-        <button className="broker-secondary" onClick={reload}>Atualizar</button>
-      </div>
-      <table className="broker-table">
-        <thead>
-          <tr><th>Quando</th><th>Origem</th><th>Status</th><th>Evento</th><th>Erro</th><th></th></tr>
-        </thead>
-        <tbody>
-          {events.map((e) => (
-            <tr key={e.id}>
-              <td>{new Date(e.created_at).toLocaleString("pt-BR")}</td>
-              <td><code>{e.integration_slug}</code></td>
-              <td><span className={`broker-status broker-status--${e.status}`}>{e.status}</span></td>
-              <td>{e.canonical_event ?? "—"}</td>
-              <td className="broker-truncate">{e.error ?? ""}</td>
-              <td>
-                {(e.status === "skipped" || e.status === "failed") && (
-                  <button className="broker-link" onClick={async () => {
-                    await replayEvent(e.id); reload();
-                  }}>Reprocessar</button>
-                )}
-              </td>
+    <>
+      <div className="broker-card">
+        <div className="broker-events-header">
+          <h3 className="broker-card-title">Eventos recebidos</h3>
+          <select value={filter} onChange={(e) => setFilter(e.target.value)}>
+            <option value="">Todos</option>
+            <option value="processed">Processados</option>
+            <option value="skipped">Sem mapeamento</option>
+            <option value="failed">Falhas</option>
+            <option value="pending">Pendentes</option>
+          </select>
+          <button className="broker-secondary" onClick={reload}>Atualizar</button>
+        </div>
+        <p className="broker-card-sub" style={{ marginBottom: 12 }}>
+          Clique numa linha pra ver o payload completo. Use a coluna <strong>Idem. Key</strong> pra
+          identificar mensagens deduplicadas (mesma chave = mesma mensagem dentro de 60s).
+        </p>
+        <table className="broker-table">
+          <thead>
+            <tr>
+              <th>Quando</th>
+              <th>Origem</th>
+              <th>Status</th>
+              <th>Evento</th>
+              <th>Payload</th>
+              <th title="Chave de idempotência (60s bucket + hash do payload)">Idem. Key</th>
+              <th></th>
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {events.map((e) => {
+              const idemDup = e.idempotency_key && idemCounts[e.idempotency_key] > 1;
+              return (
+                <tr key={e.id} style={{ cursor: "pointer" }} onClick={() => openDetail(e.id)}>
+                  <td>{new Date(e.created_at).toLocaleString("pt-BR")}</td>
+                  <td><code>{e.integration_slug}</code></td>
+                  <td><span className={`broker-status broker-status--${e.status}`}>{e.status}</span></td>
+                  <td>{e.canonical_event ?? "—"}</td>
+                  <td className="broker-truncate" style={{ maxWidth: 280, fontFamily: "monospace", fontSize: 11 }}>
+                    {e.payload_preview ?? "—"}
+                  </td>
+                  <td style={{ fontFamily: "monospace", fontSize: 11 }}>
+                    {e.idempotency_key
+                      ? <span style={{
+                          color: idemDup ? "#c62828" : "#86868b",
+                          fontWeight: idemDup ? 600 : 400,
+                        }} title={e.idempotency_key}>
+                          {e.idempotency_key.slice(0, 24)}{e.idempotency_key.length > 24 ? "…" : ""}
+                          {idemDup && ` (${idemCounts[e.idempotency_key]}×)`}
+                        </span>
+                      : "—"}
+                  </td>
+                  <td onClick={(ev) => ev.stopPropagation()}>
+                    {(e.status === "skipped" || e.status === "failed") && (
+                      <button className="broker-link" onClick={async () => {
+                        await replayEvent(e.id); reload();
+                      }}>Reprocessar</button>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      {detail && (
+        <div style={{
+          position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)",
+          zIndex: 9999, display: "flex", alignItems: "center", justifyContent: "center",
+        }} onClick={() => setDetail(null)}>
+          <div style={{
+            background: "white", borderRadius: 12, padding: 24,
+            maxWidth: 900, width: "92%", maxHeight: "85vh", overflow: "auto",
+          }} onClick={(e) => e.stopPropagation()}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+              <h3 style={{ margin: 0 }}>Detalhes do evento</h3>
+              <button onClick={() => setDetail(null)} style={{
+                border: 0, background: "transparent", fontSize: 28, cursor: "pointer", lineHeight: 1,
+              }}>×</button>
+            </div>
+            {loadingDetail || detail.loading ? (
+              <div style={{ padding: 40, textAlign: "center" }}>Carregando...</div>
+            ) : detail.error ? (
+              <div className="broker-error">{detail.error}</div>
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+                <DetailRow label="ID" value={detail.id} mono />
+                <DetailRow label="Status" value={detail.status} />
+                <DetailRow label="Origem" value={detail.integration_slug} />
+                <DetailRow label="Recebido em" value={new Date(detail.created_at).toLocaleString("pt-BR")} />
+                {detail.processed_at && (
+                  <DetailRow label="Processado em" value={new Date(detail.processed_at).toLocaleString("pt-BR")} />
+                )}
+                <DetailRow label="Idempotency Key" value={detail.idempotency_key ?? "—"} mono />
+                {detail.error && <DetailRow label="Erro" value={detail.error} />}
+
+                <div>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: "#86868b", marginBottom: 4 }}>
+                    Headers recebidos
+                  </div>
+                  <pre style={{
+                    background: "#0d0d0e", color: "#a5d6a7", padding: 12, borderRadius: 8,
+                    fontSize: 11, maxHeight: 150, overflow: "auto",
+                  }}>{JSON.stringify(detail.headers ?? {}, null, 2)}</pre>
+                </div>
+
+                <div>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: "#86868b", marginBottom: 4 }}>
+                    Payload bruto recebido
+                  </div>
+                  <pre style={{
+                    background: "#0d0d0e", color: "#fff59d", padding: 12, borderRadius: 8,
+                    fontSize: 11, maxHeight: 300, overflow: "auto",
+                  }}>{JSON.stringify(detail.payload ?? {}, null, 2)}</pre>
+                </div>
+
+                {detail.canonical_payload && (
+                  <div>
+                    <div style={{ fontSize: 12, fontWeight: 600, color: "#86868b", marginBottom: 4 }}>
+                      Resultado processado (canonical + reply)
+                    </div>
+                    <pre style={{
+                      background: "#0d0d0e", color: "#90caf9", padding: 12, borderRadius: 8,
+                      fontSize: 11, maxHeight: 300, overflow: "auto",
+                    }}>{JSON.stringify(detail.canonical_payload, null, 2)}</pre>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
+function DetailRow({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
+  return (
+    <div style={{ display: "grid", gridTemplateColumns: "160px 1fr", gap: 12, alignItems: "baseline" }}>
+      <div style={{ fontSize: 12, fontWeight: 600, color: "#86868b" }}>{label}</div>
+      <div style={{ fontSize: 13, fontFamily: mono ? "monospace" : "inherit", wordBreak: "break-all" }}>
+        {value}
+      </div>
     </div>
   );
 }

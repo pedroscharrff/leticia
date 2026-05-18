@@ -96,6 +96,8 @@ export interface RawEvent {
   error: string | null;
   attempts: number;
   created_at: string;
+  idempotency_key?: string | null;
+  payload_preview?: string | null;
 }
 
 // ── Integrations ──
