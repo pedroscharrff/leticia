@@ -357,8 +357,10 @@ async def _run_broker_flow(
 
     schema_name = tenant["schema_name"]
     phone = canonical_input.get("phone") or ""
+    # Sanitize phone: keep only digits (Z-API/WhatsApp formats add ":21@s.whatsapp.net")
+    phone_clean = "".join(c for c in phone if c.isdigit())[:20] or "unknown"
     message = canonical_input.get("message") or ""
-    session_id = canonical_input.get("session_id") or f"{tenant_id}:{phone or raw_event_id}"
+    session_id = canonical_input.get("session_id") or phone_clean
 
     # Load active skills + LLM config
     async with get_db_conn() as conn:
@@ -383,7 +385,7 @@ async def _run_broker_flow(
     initial_state = {
         "tenant_id": tenant_id,
         "session_id": session_id,
-        "phone": phone,
+        "phone": phone_clean,
         "schema_name": schema_name,
         "current_message": message,
         "messages": [],

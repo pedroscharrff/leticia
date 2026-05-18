@@ -529,7 +529,7 @@ async def ingest(
         async with get_db_conn() as conn:
             await conn.execute(
                 "UPDATE public.broker_raw_events "
-                "SET status='processed', canonical_event='agent.message.stub', "
+                "SET status='processed', canonical_event='agent.message', "
                 "canonical_payload=$2, attempts=attempts+1, processed_at=NOW() "
                 "WHERE id=$1",
                 event_id, {**reply_context, "_reply_body": reply_body},
@@ -590,8 +590,9 @@ async def _invoke_agent_sync(
     from services.llm_config import load_tenant_llm_config
 
     phone = canonical_input.get("phone") or ""
+    phone_clean = "".join(c for c in phone if c.isdigit())[:20] or "unknown"
     message = canonical_input.get("message") or ""
-    session_id = canonical_input.get("session_id") or f"{tenant_id}:{phone or event_id}"
+    session_id = canonical_input.get("session_id") or phone_clean
 
     async with get_db_conn() as conn:
         await conn.execute(f"SET search_path = {schema_name}, public")
@@ -612,7 +613,7 @@ async def _invoke_agent_sync(
     initial_state = {
         "tenant_id": tenant_id,
         "session_id": session_id,
-        "phone": phone,
+        "phone": phone_clean,
         "schema_name": schema_name,
         "current_message": message,
         "messages": [],
