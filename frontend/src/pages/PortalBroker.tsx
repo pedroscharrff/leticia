@@ -504,7 +504,7 @@ function FlowTab({ integration, onSaved }: { integration: Integration; onSaved: 
                       className="agent-field-manual"
                       value={mapped}
                       onChange={(e) => setInputFor(f.key, e.target.value)}
-                      placeholder={f.hint || "$.caminho"}
+                      placeholder={f.hint || "$.caminho | digits"}
                     />
                   )}
                 </div>
@@ -512,6 +512,88 @@ function FlowTab({ integration, onSaved }: { integration: Integration; onSaved: 
             );
           })}
         </div>
+
+        <details style={{ marginTop: 12 }}>
+          <summary style={{
+            cursor: "pointer", fontSize: 13, fontWeight: 600,
+            color: "var(--color-text-muted, #86868b)",
+          }}>
+            🔧 Transformações disponíveis (regex, digits, lower, etc.)
+          </summary>
+          <div style={{
+            marginTop: 8, padding: 12,
+            background: "#f5f5f7", borderRadius: 8, fontSize: 12,
+            color: "#1d1d1f", lineHeight: 1.7,
+          }}>
+            <p style={{ margin: "0 0 8px" }}>
+              Use <code>|</code> (pipe com espaço dos dois lados) para encadear
+              transformações no valor extraído:
+            </p>
+            <table style={{ width: "100%", borderCollapse: "collapse" }}>
+              <tbody>
+                <tr>
+                  <td style={{ padding: "4px 8px", fontFamily: "monospace" }}>
+                    <code>$.from | digits</code>
+                  </td>
+                  <td style={{ padding: "4px 8px" }}>
+                    Mantém só os dígitos.<br/>
+                    <span style={{ color: "#86868b" }}>
+                      Ex: <code>5511999@s.whatsapp.net</code> → <code>5511999</code>
+                    </span>
+                  </td>
+                </tr>
+                <tr>
+                  <td style={{ padding: "4px 8px", fontFamily: "monospace" }}>
+                    <code>$.from | regex:(\d+)</code>
+                  </td>
+                  <td style={{ padding: "4px 8px" }}>
+                    Extrai a primeira ocorrência do padrão (ou grupo 1).<br/>
+                    <span style={{ color: "#86868b" }}>
+                      Ex: <code>tel: 11 99999-1234</code> com <code>regex:(\d{`{4}`}-\d{`{4}`})</code> → <code>9999-1234</code>
+                    </span>
+                  </td>
+                </tr>
+                <tr>
+                  <td style={{ padding: "4px 8px", fontFamily: "monospace" }}>
+                    <code>$.text | trim</code>
+                  </td>
+                  <td style={{ padding: "4px 8px" }}>Remove espaços em branco das pontas.</td>
+                </tr>
+                <tr>
+                  <td style={{ padding: "4px 8px", fontFamily: "monospace" }}>
+                    <code>$.text | lower</code> / <code>upper</code>
+                  </td>
+                  <td style={{ padding: "4px 8px" }}>Converte para minúsculas / MAIÚSCULAS.</td>
+                </tr>
+                <tr>
+                  <td style={{ padding: "4px 8px", fontFamily: "monospace" }}>
+                    <code>$.x | slice:0:10</code>
+                  </td>
+                  <td style={{ padding: "4px 8px" }}>
+                    Pega só os caracteres da posição N até M.<br/>
+                    <span style={{ color: "#86868b" }}>Ex: <code>"abcdefghij"</code> → <code>"abcde"</code> com <code>slice:0:5</code></span>
+                  </td>
+                </tr>
+                <tr>
+                  <td style={{ padding: "4px 8px", fontFamily: "monospace" }}>
+                    <code>$.name | default:Cliente</code>
+                  </td>
+                  <td style={{ padding: "4px 8px" }}>
+                    Valor padrão se o campo estiver vazio/nulo.
+                  </td>
+                </tr>
+                <tr>
+                  <td style={{ padding: "4px 8px", fontFamily: "monospace", verticalAlign: "top" }}>
+                    <code>$.from | regex:(\d+) | digits</code>
+                  </td>
+                  <td style={{ padding: "4px 8px" }}>
+                    Encadeia várias transformações da esquerda pra direita.
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </details>
 
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 8 }}>
           <button className="broker-link" onClick={() => setShowAdvanced(!showAdvanced)}>

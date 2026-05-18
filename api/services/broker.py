@@ -108,13 +108,33 @@ def _step(item: Any, tok: str | int) -> Any:
 def evaluate(expr: Any, payload: Any) -> Any:
     """
     Evaluate one field_map value.
+
+    Base extractors:
       - non-string → returned as-is (literal)
       - "$..."     → JSONPath read
       - "=tmpl"    → template (Jinja-lite) or literal
       - other str  → literal string
+
+    Transformation pipeline (pipe-separated, applied left to right):
+      "$.from | digits"               → only digits
+      "$.from | regex:(\\d+)"         → first regex match (group 1 if present)
+      "$.text | lower"                → lowercase
+      "$.text | upper"                → UPPERCASE
+      "$.text | trim"                 → strip whitespace
+      "$.x    | default:Anônimo"      → fallback if empty/None
+      "$.from | regex:(\\d+) | digits"→ multiple chained
     """
     if not isinstance(expr, str):
         return expr
+
+    # Pipeline split — only when " | " (pipe surrounded by spaces) exists
+    if " | " in expr:
+        head, *tail = expr.split(" | ")
+        value = evaluate(head.strip(), payload)
+        for transform in tail:
+            value = _apply_transform(transform.strip(), value)
+        return value
+
     if expr.startswith("$"):
         return resolve_path(payload, expr)
     if expr.startswith("="):
@@ -126,6 +146,49 @@ def evaluate(expr: Any, payload: Any) -> Any:
             return "" if val is None else str(val)
         return _TEMPLATE_EXPR.sub(_sub, body)
     return expr
+
+
+def _apply_transform(transform: str, value: Any) -> Any:
+    """Apply a single pipeline transform to value."""
+    # default:X kicks in even when value is None/empty
+    if transform.startswith("default:"):
+        fallback = transform[8:]
+        return value if (value not in (None, "", [])) else fallback
+
+    if value is None:
+        return None
+
+    if transform == "digits":
+        return "".join(c for c in str(value) if c.isdigit())
+    if transform == "lower":
+        return str(value).lower()
+    if transform == "upper":
+        return str(value).upper()
+    if transform == "trim":
+        return str(value).strip()
+
+    if transform.startswith("regex:"):
+        pattern = transform[6:]
+        try:
+            m = re.search(pattern, str(value))
+        except re.error:
+            return None
+        if not m:
+            return None
+        return m.group(1) if m.groups() else m.group(0)
+
+    if transform.startswith("slice:"):
+        # slice:0:10  → equivalente a value[0:10]
+        try:
+            parts = transform[6:].split(":")
+            start = int(parts[0]) if parts[0] else 0
+            end = int(parts[1]) if len(parts) > 1 and parts[1] else None
+            return str(value)[start:end] if end is not None else str(value)[start:]
+        except (ValueError, IndexError):
+            return value
+
+    # Transform desconhecida — retorna valor como está pra não quebrar silenciosamente
+    return value
 
 
 # ── Dotted-key nesting ───────────────────────────────────────────────────────
