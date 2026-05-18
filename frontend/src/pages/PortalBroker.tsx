@@ -838,6 +838,8 @@ function FlowTab({ integration, onSaved }: { integration: Integration; onSaved: 
           {skipRules.map((r, idx) => {
             const knownPath = paths.find(p => p.path === r.path);
             const useCustomPath = r.path && !knownPath;
+            // Detecta se a regra está mal configurada: caminho não existe no payload capturado
+            const pathMissing = r.path && paths.length > 0 && !knownPath;
 
             function updateRule(patch: Partial<typeof r>) {
               const c = [...skipRules]; c[idx] = { ...c[idx], ...patch }; setSkipRules(c);
@@ -845,9 +847,29 @@ function FlowTab({ integration, onSaved }: { integration: Integration; onSaved: 
 
             return (
               <div key={idx} style={{
-                border: "1px solid var(--color-border, #e5e7eb)",
-                borderRadius: 8, padding: 10, background: "#fafafa",
+                border: pathMissing
+                  ? "2px solid #c62828"
+                  : "1px solid var(--color-border, #e5e7eb)",
+                borderRadius: 8, padding: 10,
+                background: pathMissing ? "#ffebee" : "#fafafa",
               }}>
+                <div style={{
+                  fontSize: 12, fontWeight: 600, color: "#c62828",
+                  marginBottom: 8, textTransform: "uppercase", letterSpacing: 0.3,
+                }}>
+                  🚫 Ignorar mensagem quando:
+                </div>
+                {pathMissing && (
+                  <div style={{
+                    padding: "8px 10px", marginBottom: 8,
+                    background: "white", border: "1px solid #c62828",
+                    borderRadius: 6, fontSize: 12, color: "#c62828",
+                  }}>
+                    ⚠️ <strong>Esse caminho não existe no último webhook recebido.</strong>
+                    {" "}A regra nunca vai matchar nada. Escolha um dos campos do dropdown
+                    pra ter certeza que existe.
+                  </div>
+                )}
                 <div style={{
                   display: "grid",
                   gridTemplateColumns: "1fr auto 1fr 32px",
@@ -925,6 +947,25 @@ function FlowTab({ integration, onSaved }: { integration: Integration; onSaved: 
                     setSkipRules(skipRules.filter((_, i) => i !== idx))
                   }>×</button>
                 </div>
+
+                {/* Frase em PT-BR explicando o que a regra faz */}
+                {r.path && r.equals && (
+                  <div style={{
+                    marginTop: 8, padding: "8px 10px",
+                    background: "#fff8e1", borderRadius: 6,
+                    fontSize: 12, color: "#5d4037",
+                  }}>
+                    📋 <strong>O que essa regra faz:</strong> quando o webhook recebido
+                    tiver <code>{r.path}</code> igual a <strong>{r.equals}</strong>,
+                    a mensagem será <strong>ignorada</strong> (não processa, não responde).
+                    {knownPath && String(knownPath.sample).replace(/^"|"$/g, "") === r.equals && (
+                      <div style={{ marginTop: 4, color: "#c62828", fontWeight: 600 }}>
+                        ⚠️ Atenção: o último webhook recebido tem esse mesmo valor —
+                        confirme se isso é uma mensagem que você QUER ignorar.
+                      </div>
+                    )}
+                  </div>
+                )}
 
                 {/* Comentário e dica do valor atual */}
                 <div style={{ marginTop: 6, display: "flex", gap: 8, alignItems: "center" }}>
