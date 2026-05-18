@@ -560,9 +560,17 @@ async def ingest(
                 event_id, {**reply_context, "_reply_body": reply_body},
             )
         from fastapi.responses import JSONResponse
+        # Headers customizados configurados pelo tenant são aplicados ao response.
+        # Aceita strings simples; nginx/fastapi cuidam dos cabeçalhos padrão.
+        custom_headers = {
+            str(k): str(v)
+            for k, v in (integration.get("reply_headers") or {}).items()
+            if k and v
+        }
         return JSONResponse(
             status_code=integration.get("reply_status_code") or 200,
             content=reply_body,
+            headers=custom_headers or None,
         )
 
     # ── Legacy mapping/outbound flow (still supported for advanced users) ─

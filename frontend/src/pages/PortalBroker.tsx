@@ -571,63 +571,6 @@ function FlowTab({ integration, onSaved }: { integration: Integration; onSaved: 
                        placeholder="https://api.z-api.io/instances/.../send-text" />
               </label>
             </div>
-
-            <details style={{ marginTop: 12 }}>
-              <summary style={{
-                cursor: "pointer", fontSize: 13, fontWeight: 600,
-                color: "var(--color-text-muted, #86868b)", marginBottom: 8,
-              }}>
-                Headers personalizados (opcional)
-                {replyHeaders.length > 0 && (
-                  <span style={{
-                    marginLeft: 8, fontSize: 11, padding: "1px 8px",
-                    background: "#e3f2fd", color: "#1565c0", borderRadius: 10,
-                  }}>{replyHeaders.length}</span>
-                )}
-              </summary>
-              <p className="broker-card-sub" style={{ marginTop: 8 }}>
-                Útil para autenticação (ex: <code>Authorization: Bearer ...</code>) ou
-                tokens específicos do gateway (Z-API, Twilio, etc.).
-              </p>
-              {replyHeaders.map((h, idx) => (
-                <div key={idx} className="broker-row">
-                  <input className="broker-row-key" placeholder="Authorization"
-                         value={h.key} onChange={(e) => {
-                           const c = [...replyHeaders];
-                           c[idx] = { ...c[idx], key: e.target.value };
-                           setReplyHeaders(c);
-                         }} />
-                  <span className="broker-arrow">:</span>
-                  <input className="broker-row-expr" placeholder="Bearer abc123..."
-                         value={h.value} onChange={(e) => {
-                           const c = [...replyHeaders];
-                           c[idx] = { ...c[idx], value: e.target.value };
-                           setReplyHeaders(c);
-                         }} />
-                  <button className="broker-row-del" onClick={() =>
-                    setReplyHeaders(replyHeaders.filter((_, i) => i !== idx))
-                  }>×</button>
-                </div>
-              ))}
-              <button className="broker-link" onClick={() =>
-                setReplyHeaders([...replyHeaders, { key: "", value: "" }])
-              }>
-                + Adicionar header
-              </button>
-
-              <div style={{ marginTop: 8, fontSize: 12, color: "#86868b" }}>
-                <strong>Exemplos comuns:</strong>{" "}
-                <button className="broker-link" onClick={() =>
-                  setReplyHeaders([...replyHeaders, { key: "Authorization", value: "Bearer " }])
-                }>Authorization</button>
-                <button className="broker-link" onClick={() =>
-                  setReplyHeaders([...replyHeaders, { key: "Client-Token", value: "" }])
-                }>Client-Token (Z-API)</button>
-                <button className="broker-link" onClick={() =>
-                  setReplyHeaders([...replyHeaders, { key: "X-API-Key", value: "" }])
-                }>X-API-Key</button>
-              </div>
-            </details>
           </div>
         )}
 
@@ -638,6 +581,74 @@ function FlowTab({ integration, onSaved }: { integration: Integration; onSaved: 
                    onChange={(e) => setReplyStatusCode(parseInt(e.target.value) || 200)} />
           </label>
         )}
+
+        {/* Headers — funciona pros dois modos (response = response HTTP, forward = POST destino) */}
+        <details style={{ marginTop: 12 }}>
+          <summary style={{
+            cursor: "pointer", fontSize: 13, fontWeight: 600,
+            color: "var(--color-text-muted, #86868b)", marginBottom: 8,
+          }}>
+            Headers personalizados (opcional)
+            {replyHeaders.length > 0 && (
+              <span style={{
+                marginLeft: 8, fontSize: 11, padding: "1px 8px",
+                background: "#e3f2fd", color: "#1565c0", borderRadius: 10,
+              }}>{replyHeaders.length}</span>
+            )}
+          </summary>
+          <p className="broker-card-sub" style={{ marginTop: 8 }}>
+            {replyMode === "forward" ? (
+              <>Adicionados ao POST para a URL destino. Útil para autenticação
+              (ex: <code>Authorization: Bearer ...</code>) ou tokens de gateway
+              (Z-API, Twilio, etc.).</>
+            ) : (
+              <>Adicionados ao HTTP response devolvido ao chamador. Útil para
+              definir <code>Content-Type</code> customizado ou headers que o
+              sistema externo valida na resposta.</>
+            )}
+          </p>
+          {replyHeaders.map((h, idx) => (
+            <div key={idx} className="broker-row">
+              <input className="broker-row-key" placeholder="Authorization"
+                     value={h.key} onChange={(e) => {
+                       const c = [...replyHeaders];
+                       c[idx] = { ...c[idx], key: e.target.value };
+                       setReplyHeaders(c);
+                     }} />
+              <span className="broker-arrow">:</span>
+              <input className="broker-row-expr" placeholder="Bearer abc123..."
+                     value={h.value} onChange={(e) => {
+                       const c = [...replyHeaders];
+                       c[idx] = { ...c[idx], value: e.target.value };
+                       setReplyHeaders(c);
+                     }} />
+              <button className="broker-row-del" onClick={() =>
+                setReplyHeaders(replyHeaders.filter((_, i) => i !== idx))
+              }>×</button>
+            </div>
+          ))}
+          <button className="broker-link" onClick={() =>
+            setReplyHeaders([...replyHeaders, { key: "", value: "" }])
+          }>
+            + Adicionar header
+          </button>
+
+          <div style={{ marginTop: 8, fontSize: 12, color: "#86868b" }}>
+            <strong>Exemplos comuns:</strong>{" "}
+            <button className="broker-link" onClick={() =>
+              setReplyHeaders([...replyHeaders, { key: "Authorization", value: "Bearer " }])
+            }>Authorization</button>
+            <button className="broker-link" onClick={() =>
+              setReplyHeaders([...replyHeaders, { key: "Client-Token", value: "" }])
+            }>Client-Token (Z-API)</button>
+            <button className="broker-link" onClick={() =>
+              setReplyHeaders([...replyHeaders, { key: "X-API-Key", value: "" }])
+            }>X-API-Key</button>
+            <button className="broker-link" onClick={() =>
+              setReplyHeaders([...replyHeaders, { key: "Content-Type", value: "application/json" }])
+            }>Content-Type</button>
+          </div>
+        </details>
 
         <div className="broker-paths" style={{ marginTop: 14 }}>
           <div className="broker-paths-title">Variáveis disponíveis (clique para usar no corpo)</div>
