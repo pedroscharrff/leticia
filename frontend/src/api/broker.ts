@@ -19,6 +19,7 @@ export interface Integration {
   reply_status_code: number;
   bundle_enabled: boolean;
   bundle_window_seconds: number;
+  skip_rules: { path: string; equals: unknown; comment?: string }[];
 }
 
 export interface FlowConfig {
@@ -31,6 +32,7 @@ export interface FlowConfig {
   reply_status_code?: number;
   bundle_enabled?: boolean;
   bundle_window_seconds?: number;
+  skip_rules?: { path: string; equals: unknown; comment?: string }[];
 }
 
 export interface IntegrationInput {

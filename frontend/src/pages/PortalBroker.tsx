@@ -287,6 +287,12 @@ function FlowTab({ integration, onSaved }: { integration: Integration; onSaved: 
   // Bundling (debounce) config
   const [bundleEnabled, setBundleEnabled] = useState(integration.bundle_enabled || false);
   const [bundleWindow, setBundleWindow] = useState(integration.bundle_window_seconds || 10);
+  // Skip rules (filtros para ignorar mensagens — evita loop bot↔gateway)
+  const [skipRules, setSkipRules] = useState<{ path: string; equals: string; comment?: string }[]>(
+    () => (integration.skip_rules || []).map(r => ({
+      path: r.path, equals: String(r.equals), comment: r.comment,
+    }))
+  );
   const [replyFields, setReplyFields] = useState<{ key: string; expr: string }[]>(() => {
     const existing = integration.reply_body_template || {};
     const entries = Object.entries(existing);
@@ -311,6 +317,9 @@ function FlowTab({ integration, onSaved }: { integration: Integration; onSaved: 
     setReplyHeaders(headerEntries.map(([key, value]) => ({ key, value: String(value) })));
     setBundleEnabled(integration.bundle_enabled || false);
     setBundleWindow(integration.bundle_window_seconds || 10);
+    setSkipRules((integration.skip_rules || []).map(r => ({
+      path: r.path, equals: String(r.equals), comment: r.comment,
+    })));
     const rt = Object.entries(integration.reply_body_template || {});
     setReplyFields(rt.length > 0
       ? rt.map(([key, expr]) => ({ key, expr: String(expr) }))
@@ -383,6 +392,17 @@ function FlowTab({ integration, onSaved }: { integration: Integration; onSaved: 
     replyHeaders.forEach(h => { if (h.key && h.value) reply_headers[h.key] = h.value; });
 
     try {
+      // Converte equals string → tipo correto (true/false/number ou string)
+      const coerce = (v: string): unknown => {
+        if (v === "true") return true;
+        if (v === "false") return false;
+        if (/^-?\d+(\.\d+)?$/.test(v)) return Number(v);
+        return v;
+      };
+      const skip_rules = skipRules
+        .filter(r => r.path && r.equals !== "")
+        .map(r => ({ path: r.path, equals: coerce(r.equals), comment: r.comment }));
+
       await saveFlow(integration.id, {
         inbound_field_map,
         reply_mode: replyMode,
@@ -393,6 +413,7 @@ function FlowTab({ integration, onSaved }: { integration: Integration; onSaved: 
         reply_status_code: replyStatusCode,
         bundle_enabled: bundleEnabled,
         bundle_window_seconds: bundleWindow,
+        skip_rules,
       });
       setSaveMsg("✓ Configuração salva!");
       onSaved();
@@ -760,9 +781,110 @@ function FlowTab({ integration, onSaved }: { integration: Integration; onSaved: 
         </button>
       </div>
 
-      {/* Step 4: Bundling (debounce) — só faz sentido no modo forward */}
+      {/* Step 4: Filtros — IMPORTANTÍSSIMO pra evitar loop bot ↔ gateway */}
+      <div className="broker-card" style={{ borderLeft: "4px solid #ff9800" }}>
+        <h3 className="broker-card-title">
+          🛡 Filtros — ignorar mensagens que não devem ser respondidas
+        </h3>
+        <p className="broker-card-sub">
+          <strong>Crítico pra evitar loops!</strong> Gateways como Z-API e WAHA reenviam
+          como webhook as mensagens que <em>nós mesmos</em> enviamos — sem filtro, o agente
+          responde à própria resposta, gerando um loop infinito.
+        </p>
+
+        <div style={{
+          display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 12,
+        }}>
+          <span style={{ fontSize: 12, color: "#86868b", marginRight: 4, alignSelf: "center" }}>
+            Presets:
+          </span>
+          <button className="broker-tmpl" onClick={() => setSkipRules([
+            ...skipRules,
+            { path: "$.fromMe", equals: "true", comment: "Z-API: ignorar mensagens enviadas pelo bot" }
+          ])}>Z-API: fromMe</button>
+          <button className="broker-tmpl" onClick={() => setSkipRules([
+            ...skipRules,
+            { path: "$.isStatusReply", equals: "true", comment: "Z-API: ignorar replies de status" }
+          ])}>Z-API: status</button>
+          <button className="broker-tmpl" onClick={() => setSkipRules([
+            ...skipRules,
+            { path: "$.event", equals: "message.ack", comment: "WAHA: ignorar acks de entrega" }
+          ])}>WAHA: ack</button>
+          <button className="broker-tmpl" onClick={() => setSkipRules([
+            ...skipRules,
+            { path: "$.fromApi", equals: "true", comment: "Ignorar mensagens originadas da API" }
+          ])}>fromApi</button>
+        </div>
+
+        {skipRules.length === 0 && (
+          <div style={{
+            padding: 12, background: "#fff3e0", borderRadius: 6, fontSize: 13,
+            color: "#e65100", marginBottom: 10,
+          }}>
+            ⚠️ Nenhum filtro configurado. Se você usa Z-API/WAHA/Twilio, configure pelo
+            menos um filtro pra impedir loops. Use os presets acima.
+          </div>
+        )}
+
+        {skipRules.map((r, idx) => (
+          <div key={idx} style={{
+            display: "grid",
+            gridTemplateColumns: "1fr auto 1fr auto",
+            gap: 6, alignItems: "center", marginBottom: 6,
+          }}>
+            <input className="broker-row-key" placeholder="$.fromMe"
+                   value={r.path} onChange={(e) => {
+                     const c = [...skipRules]; c[idx] = { ...c[idx], path: e.target.value }; setSkipRules(c);
+                   }} />
+            <span className="broker-arrow">==</span>
+            <input className="broker-row-expr" placeholder="true"
+                   value={r.equals} onChange={(e) => {
+                     const c = [...skipRules]; c[idx] = { ...c[idx], equals: e.target.value }; setSkipRules(c);
+                   }} />
+            <button className="broker-row-del" onClick={() =>
+              setSkipRules(skipRules.filter((_, i) => i !== idx))
+            }>×</button>
+            <input
+              placeholder="Comentário (opcional, aparece no log)"
+              value={r.comment ?? ""}
+              onChange={(e) => {
+                const c = [...skipRules]; c[idx] = { ...c[idx], comment: e.target.value }; setSkipRules(c);
+              }}
+              style={{
+                gridColumn: "1 / -1",
+                padding: "6px 10px",
+                border: "1px solid var(--color-border, #e5e7eb)",
+                borderRadius: 6, fontSize: 12, color: "#86868b",
+              }}
+            />
+          </div>
+        ))}
+
+        <button className="broker-link" onClick={() =>
+          setSkipRules([...skipRules, { path: "", equals: "", comment: "" }])
+        }>
+          + Adicionar regra
+        </button>
+
+        <details style={{ marginTop: 12, fontSize: 12, color: "#86868b" }}>
+          <summary style={{ cursor: "pointer" }}>Como descobrir o campo certo?</summary>
+          <div style={{ marginTop: 6 }}>
+            Abra a aba <strong>"Eventos recebidos"</strong> e clique numa mensagem que veio
+            do gateway depois do bot responder. No <strong>"Payload bruto"</strong> procure
+            por algum campo que diferencie de mensagens reais do cliente:
+            <ul style={{ marginTop: 6 }}>
+              <li><code>fromMe: true</code> (Z-API, Baileys)</li>
+              <li><code>isFromMe: true</code> (algumas variantes)</li>
+              <li><code>event: "message.ack"</code> ou <code>"message.delivered"</code> (WAHA)</li>
+              <li>Campo <code>statuses</code> presente em vez de <code>messages</code> (WhatsApp Cloud)</li>
+            </ul>
+          </div>
+        </details>
+      </div>
+
+      {/* Step 5: Bundling (debounce) — só faz sentido no modo forward */}
       <div className="broker-card">
-        <h3 className="broker-card-title">4. Agrupar mensagens picadas (debounce)</h3>
+        <h3 className="broker-card-title">5. Agrupar mensagens picadas (debounce)</h3>
         <p className="broker-card-sub">
           Clientes no WhatsApp mandam mensagens em sequência ("Olá", "Bom dia", "Tudo bem?").
           Em vez de chamar o agente 3 vezes, aguardamos alguns segundos de silêncio,

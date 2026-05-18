@@ -88,6 +88,7 @@ class IntegrationOut(BaseModel):
     reply_status_code: int = 200
     bundle_enabled: bool = False
     bundle_window_seconds: int = 10
+    skip_rules: list[dict] = Field(default_factory=list)
 
 
 class FlowConfigIn(BaseModel):
@@ -101,6 +102,7 @@ class FlowConfigIn(BaseModel):
     reply_status_code: int = Field(default=200, ge=100, le=599)
     bundle_enabled: bool = False
     bundle_window_seconds: int = Field(default=10, ge=2, le=120)
+    skip_rules: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class MappingIn(BaseModel):
@@ -258,6 +260,7 @@ def _integration_out(row: dict, ingest_url: str) -> IntegrationOut:
         reply_status_code=row.get("reply_status_code") or 200,
         bundle_enabled=bool(row.get("bundle_enabled")),
         bundle_window_seconds=row.get("bundle_window_seconds") or 10,
+        skip_rules=row.get("skip_rules") or [],
     )
 
 
@@ -341,6 +344,42 @@ async def ingest(
             log.warning("hooks.integration_not_found",
                         tenant=str(tenant["id"]), slug=integration_slug)
             raise HTTPException(404, "Integração não configurada")
+
+        # ── Skip rules: ignora payloads que casarem com qualquer regra ───────
+        # Crítico pra evitar loop bot ↔ gateway (ex: Z-API ecoa nossas msgs)
+        skip_rules = integration.get("skip_rules") or []
+        for rule in skip_rules:
+            path = rule.get("path")
+            expected = rule.get("equals")
+            if not path:
+                continue
+            actual = broker.resolve_path(payload, path)
+            # Comparação case-sensitive como string (mesma semântica do match_rules)
+            if str(actual) == str(expected):
+                log.info("hooks.skipped_by_rule",
+                         tenant=str(tenant["id"]), slug=integration_slug,
+                         rule_path=path, rule_value=str(expected)[:80])
+                # Persiste o evento como skipped pra ficar visível na UI
+                idem = broker.idempotency_hash(payload)
+                await conn.execute(
+                    """
+                    INSERT INTO public.broker_raw_events
+                      (tenant_id, integration_id, integration_slug, direction,
+                       payload, headers, idempotency_key, status, error,
+                       canonical_event, processed_at)
+                    VALUES ($1,$2,$3,'inbound',$4,$5,$6,'skipped',$7,'skipped.by_rule',NOW())
+                    ON CONFLICT DO NOTHING
+                    """,
+                    tenant["id"], integration["id"], integration_slug,
+                    payload, {}, f"skip:{idem}",
+                    f"Ignorado por regra: {path} == {expected}",
+                )
+                return {
+                    "accepted": True,
+                    "skipped": True,
+                    "reason": rule.get("comment") or f"Ignorado: {path} == {expected}",
+                }
+
         log.info("hooks.persisting", tenant=str(tenant["id"]), slug=integration_slug)
 
         # HMAC verification (opt-in)
@@ -784,6 +823,7 @@ async def save_flow(
                 reply_status_code      = $8,
                 bundle_enabled         = $9,
                 bundle_window_seconds  = $10,
+                skip_rules             = $11,
                 updated_at             = NOW()
             WHERE id = $1
             RETURNING *
@@ -798,6 +838,7 @@ async def save_flow(
             body.reply_status_code,
             body.bundle_enabled,
             body.bundle_window_seconds,
+            body.skip_rules,
         )
         tenant = await conn.fetchrow(
             "SELECT api_key FROM public.tenants WHERE id = $1", user.tenant_id,
