@@ -789,12 +789,20 @@ function FlowTab({ integration, onSaved }: { integration: Integration; onSaved: 
         <p className="broker-card-sub">
           <strong>Crítico pra evitar loops!</strong> Gateways como Z-API e WAHA reenviam
           como webhook as mensagens que <em>nós mesmos</em> enviamos — sem filtro, o agente
-          responde à própria resposta, gerando um loop infinito.
+          responde à própria resposta, gerando loop infinito.
         </p>
 
-        <div style={{
-          display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 12,
-        }}>
+        {paths.length === 0 && (
+          <div style={{
+            padding: 10, background: "#e3f2fd", borderRadius: 6, fontSize: 13,
+            color: "#1565c0", marginBottom: 12,
+          }}>
+            💡 Dica: capture um exemplo de webhook no passo 1 (botão "Ativar escuta")
+            pra ver os campos disponíveis nos dropdowns abaixo.
+          </div>
+        )}
+
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 12 }}>
           <span style={{ fontSize: 12, color: "#86868b", marginRight: 4, alignSelf: "center" }}>
             Presets:
           </span>
@@ -804,11 +812,11 @@ function FlowTab({ integration, onSaved }: { integration: Integration; onSaved: 
           ])}>Z-API: fromMe</button>
           <button className="broker-tmpl" onClick={() => setSkipRules([
             ...skipRules,
-            { path: "$.isStatusReply", equals: "true", comment: "Z-API: ignorar replies de status" }
+            { path: "$.isStatusReply", equals: "true", comment: "Z-API: ignorar status replies" }
           ])}>Z-API: status</button>
           <button className="broker-tmpl" onClick={() => setSkipRules([
             ...skipRules,
-            { path: "$.event", equals: "message.ack", comment: "WAHA: ignorar acks de entrega" }
+            { path: "$.event", equals: "message.ack", comment: "WAHA: ignorar acks" }
           ])}>WAHA: ack</button>
           <button className="broker-tmpl" onClick={() => setSkipRules([
             ...skipRules,
@@ -821,63 +829,169 @@ function FlowTab({ integration, onSaved }: { integration: Integration; onSaved: 
             padding: 12, background: "#fff3e0", borderRadius: 6, fontSize: 13,
             color: "#e65100", marginBottom: 10,
           }}>
-            ⚠️ Nenhum filtro configurado. Se você usa Z-API/WAHA/Twilio, configure pelo
-            menos um filtro pra impedir loops. Use os presets acima.
+            ⚠️ Nenhum filtro configurado. Se você usa Z-API/WAHA/Twilio,
+            configure pelo menos um pra impedir loops.
           </div>
         )}
 
-        {skipRules.map((r, idx) => (
-          <div key={idx} style={{
-            display: "grid",
-            gridTemplateColumns: "1fr auto 1fr auto",
-            gap: 6, alignItems: "center", marginBottom: 6,
-          }}>
-            <input className="broker-row-key" placeholder="$.fromMe"
-                   value={r.path} onChange={(e) => {
-                     const c = [...skipRules]; c[idx] = { ...c[idx], path: e.target.value }; setSkipRules(c);
-                   }} />
-            <span className="broker-arrow">==</span>
-            <input className="broker-row-expr" placeholder="true"
-                   value={r.equals} onChange={(e) => {
-                     const c = [...skipRules]; c[idx] = { ...c[idx], equals: e.target.value }; setSkipRules(c);
-                   }} />
-            <button className="broker-row-del" onClick={() =>
-              setSkipRules(skipRules.filter((_, i) => i !== idx))
-            }>×</button>
-            <input
-              placeholder="Comentário (opcional, aparece no log)"
-              value={r.comment ?? ""}
-              onChange={(e) => {
-                const c = [...skipRules]; c[idx] = { ...c[idx], comment: e.target.value }; setSkipRules(c);
-              }}
-              style={{
-                gridColumn: "1 / -1",
-                padding: "6px 10px",
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          {skipRules.map((r, idx) => {
+            const knownPath = paths.find(p => p.path === r.path);
+            const useCustomPath = r.path && !knownPath;
+
+            function updateRule(patch: Partial<typeof r>) {
+              const c = [...skipRules]; c[idx] = { ...c[idx], ...patch }; setSkipRules(c);
+            }
+
+            return (
+              <div key={idx} style={{
                 border: "1px solid var(--color-border, #e5e7eb)",
-                borderRadius: 6, fontSize: 12, color: "#86868b",
-              }}
-            />
-          </div>
-        ))}
+                borderRadius: 8, padding: 10, background: "#fafafa",
+              }}>
+                <div style={{
+                  display: "grid",
+                  gridTemplateColumns: "1fr auto 1fr 32px",
+                  gap: 6, alignItems: "center",
+                }}>
+                  {/* Path: select se temos paths, input manual senão */}
+                  {paths.length > 0 ? (
+                    <select
+                      value={useCustomPath ? "__manual__" : r.path}
+                      onChange={(e) => {
+                        if (e.target.value === "__manual__") {
+                          updateRule({ path: r.path || "$." });
+                        } else {
+                          // Quando seleciona um path, auto-preenche equals com o valor atual
+                          const selected = paths.find(p => p.path === e.target.value);
+                          const suggestedValue = selected?.sample ?? "";
+                          // Limpa aspas se vier em string JSON
+                          const cleanValue = suggestedValue.replace(/^"|"$/g, "");
+                          updateRule({
+                            path: e.target.value,
+                            equals: r.equals || cleanValue,
+                          });
+                        }
+                      }}
+                      style={{
+                        padding: "8px 10px",
+                        border: "1px solid var(--color-border, #e5e7eb)",
+                        borderRadius: 6, fontSize: 13,
+                        fontFamily: r.path ? "monospace" : "inherit",
+                        background: "white",
+                      }}
+                    >
+                      <option value="">— selecione o campo —</option>
+                      {paths.map(p => (
+                        <option key={p.path} value={p.path}>
+                          {p.path}  ·  {p.sample ? `"${p.sample.slice(0, 24)}"` : p.type}
+                        </option>
+                      ))}
+                      <option value="__manual__">✏️ Digitar manualmente...</option>
+                    </select>
+                  ) : (
+                    <input className="broker-row-key" placeholder="$.fromMe"
+                           value={r.path} onChange={(e) => updateRule({ path: e.target.value })} />
+                  )}
+
+                  <span className="broker-arrow">==</span>
+
+                  {/* Equals: dropdown sugerindo valores comuns se for tipo bool */}
+                  {knownPath && knownPath.type === "bool" ? (
+                    <select
+                      value={r.equals}
+                      onChange={(e) => updateRule({ equals: e.target.value })}
+                      style={{
+                        padding: "8px 10px",
+                        border: "1px solid var(--color-border, #e5e7eb)",
+                        borderRadius: 6, fontSize: 13, background: "white",
+                      }}
+                    >
+                      <option value="">—</option>
+                      <option value="true">true</option>
+                      <option value="false">false</option>
+                    </select>
+                  ) : (
+                    <input
+                      className="broker-row-expr"
+                      placeholder={knownPath?.sample
+                        ? `valor recebido: ${knownPath.sample.slice(0, 20)}`
+                        : "true"}
+                      value={r.equals}
+                      onChange={(e) => updateRule({ equals: e.target.value })}
+                    />
+                  )}
+
+                  <button className="broker-row-del" onClick={() =>
+                    setSkipRules(skipRules.filter((_, i) => i !== idx))
+                  }>×</button>
+                </div>
+
+                {/* Comentário e dica do valor atual */}
+                <div style={{ marginTop: 6, display: "flex", gap: 8, alignItems: "center" }}>
+                  <input
+                    placeholder="Comentário (opcional, aparece no log)"
+                    value={r.comment ?? ""}
+                    onChange={(e) => updateRule({ comment: e.target.value })}
+                    style={{
+                      flex: 1,
+                      padding: "6px 10px",
+                      border: "1px solid var(--color-border, #e5e7eb)",
+                      borderRadius: 6, fontSize: 12, color: "#86868b",
+                    }}
+                  />
+                  {knownPath && (
+                    <span style={{
+                      fontSize: 11, color: "#86868b",
+                      padding: "3px 8px", background: "white",
+                      border: "1px solid var(--color-border, #e5e7eb)",
+                      borderRadius: 6,
+                    }} title={`Valor real no último webhook: ${knownPath.sample}`}>
+                      atual: <code>{knownPath.sample?.slice(0, 30) ?? "—"}</code>
+                    </span>
+                  )}
+                </div>
+
+                {/* Custom path input quando user escolheu "Digitar manualmente" */}
+                {useCustomPath && paths.length > 0 && (
+                  <input
+                    type="text"
+                    value={r.path}
+                    onChange={(e) => updateRule({ path: e.target.value })}
+                    placeholder="$.caminho.no.payload"
+                    style={{
+                      marginTop: 6, width: "100%",
+                      padding: "8px 10px",
+                      border: "1px solid var(--color-border, #e5e7eb)",
+                      borderRadius: 6, fontSize: 13, fontFamily: "monospace",
+                      background: "#fffde7",
+                    }}
+                  />
+                )}
+              </div>
+            );
+          })}
+        </div>
 
         <button className="broker-link" onClick={() =>
           setSkipRules([...skipRules, { path: "", equals: "", comment: "" }])
-        }>
+        } style={{ marginTop: 10 }}>
           + Adicionar regra
         </button>
 
         <details style={{ marginTop: 12, fontSize: 12, color: "#86868b" }}>
           <summary style={{ cursor: "pointer" }}>Como descobrir o campo certo?</summary>
           <div style={{ marginTop: 6 }}>
-            Abra a aba <strong>"Eventos recebidos"</strong> e clique numa mensagem que veio
-            do gateway depois do bot responder. No <strong>"Payload bruto"</strong> procure
-            por algum campo que diferencie de mensagens reais do cliente:
+            Após ativar a escuta no passo 1 e receber um webhook que veio
+            <strong> depois do bot responder</strong> (= é a própria resposta sendo
+            ecoada), os campos vão aparecer nos dropdowns acima. Procure por:
             <ul style={{ marginTop: 6 }}>
               <li><code>fromMe: true</code> (Z-API, Baileys)</li>
-              <li><code>isFromMe: true</code> (algumas variantes)</li>
+              <li><code>isFromMe: true</code> (variantes)</li>
               <li><code>event: "message.ack"</code> ou <code>"message.delivered"</code> (WAHA)</li>
               <li>Campo <code>statuses</code> presente em vez de <code>messages</code> (WhatsApp Cloud)</li>
             </ul>
+            Quando você escolhe o campo no dropdown, o valor real recebido aparece
+            como sugestão no campo "== valor".
           </div>
         </details>
       </div>
