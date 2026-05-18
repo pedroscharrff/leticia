@@ -166,8 +166,11 @@ async def vendedor_node(state: AgentState, llm_factory) -> AgentState:
         lc_messages = list(messages)
         last_tool_result = ""
         final_response = ""
+        tool_calls_trace: list[dict] = []
+        iters_used = 0
 
-        for _ in range(max_iters):
+        for i in range(max_iters):
+            iters_used = i + 1
             response = await llm_with_tools.ainvoke(lc_messages)
 
             if not response.tool_calls:
@@ -179,11 +182,25 @@ async def vendedor_node(state: AgentState, llm_factory) -> AgentState:
             for tc in response.tool_calls:
                 tool_map = {t.name: t for t in tools}
                 tool = tool_map.get(tc["name"])
+                tc_record: dict = {
+                    "iter": iters_used,
+                    "name": tc.get("name"),
+                    "args": tc.get("args"),
+                }
                 if tool:
-                    result = await tool.ainvoke(tc["args"])
-                    last_tool_result = str(result)
-                    from langchain_core.messages import ToolMessage
-                    lc_messages.append(ToolMessage(content=last_tool_result, tool_call_id=tc["id"]))
+                    try:
+                        result = await tool.ainvoke(tc["args"])
+                        last_tool_result = str(result)
+                        tc_record["result_preview"] = last_tool_result[:300]
+                        from langchain_core.messages import ToolMessage
+                        lc_messages.append(ToolMessage(content=last_tool_result, tool_call_id=tc["id"]))
+                    except Exception as tool_exc:  # noqa: BLE001
+                        tc_record["error"] = str(tool_exc)
+                        log.warning("vendedor.tool_failed",
+                                    name=tc.get("name"), exc=str(tool_exc))
+                else:
+                    tc_record["error"] = "tool_not_found"
+                tool_calls_trace.append(tc_record)
         else:
             # Excedeu iterações — resposta parcial sem tools
             response = await llm.ainvoke(lc_messages)
@@ -234,8 +251,11 @@ async def vendedor_node(state: AgentState, llm_factory) -> AgentState:
         "node": "skill:vendedor",
         "ts_ms": int(_time.time() * 1000),
         "data": {
-            "cart_items": len(cart.get("items", [])),
-            "handoff_to": handoff_target,
+            "cart_items":  len(cart.get("items", [])),
+            "handoff_to":  handoff_target,
+            "iters":       locals().get("iters_used", 0),
+            "tool_calls":  locals().get("tool_calls_trace", []),
+            "chars":       len(final_response or ""),
         },
     })
 

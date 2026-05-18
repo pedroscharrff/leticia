@@ -708,8 +708,27 @@ async def _invoke_agent_sync(
     }
 
     config = {"configurable": {"thread_id": session_id}}
-    final_state = await graph.ainvoke(initial_state, config=config)
-    return final_state.get("final_response") or "Como posso ajudar?"
+    import time as _time
+    t0 = _time.monotonic()
+    final_state: dict | None = None
+    err: str | None = None
+    try:
+        final_state = await graph.ainvoke(initial_state, config=config)
+        return final_state.get("final_response") or "Como posso ajudar?"
+    except Exception as exc:  # noqa: BLE001
+        err = str(exc)
+        raise
+    finally:
+        from services.agent_traces import persist_trace
+        await persist_trace(
+            schema_name=schema_name,
+            session_key=session_id,
+            phone=phone_clean,
+            message_in=message,
+            final_state=final_state,
+            latency_ms=int((_time.monotonic() - t0) * 1000),
+            error=err,
+        )
 
 
 # ── Portal CRUD ──────────────────────────────────────────────────────────────

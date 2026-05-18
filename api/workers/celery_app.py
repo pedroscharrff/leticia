@@ -163,6 +163,8 @@ async def _run_graph(
 
     t0 = time.monotonic()
     skill_used = "unknown"
+    final_state: dict | None = None
+    trace_error: str | None = None
 
     try:
         final_state = await graph.ainvoke(initial_state, config=config)
@@ -194,6 +196,7 @@ async def _run_graph(
     except Exception as exc:  # noqa: BLE001
         CONV_TOTAL.labels(tenant_id=tenant_id, skill=skill_used, status="error").inc()
         log.error("task.failed", tenant=tenant_id, session=session_id, exc=str(exc))
+        trace_error = str(exc)
         # Best-effort: notify the callback with an error payload
         try:
             await _deliver_response(
@@ -209,6 +212,17 @@ async def _run_graph(
         except Exception:
             pass
         raise
+    finally:
+        from services.agent_traces import persist_trace
+        await persist_trace(
+            schema_name=schema_name,
+            session_key=session_id,
+            phone=phone,
+            message_in=current_message,
+            final_state=final_state,
+            latency_ms=int((time.monotonic() - t0) * 1000),
+            error=trace_error,
+        )
 
 
 # ── Broker bundled task (debounce — agrupa mensagens picadas) ───────────────
@@ -411,6 +425,7 @@ async def _run_broker_flow(
     skill_used = "broker"
     reply_text = ""
     error: str | None = None
+    final_state: dict | None = None
 
     try:
         final_state = await graph.ainvoke(initial_state, config=config)
@@ -423,6 +438,17 @@ async def _run_broker_flow(
         reply_text = "Ocorreu um erro no atendimento. Por favor, tente novamente."
         CONV_TOTAL.labels(tenant_id=tenant_id, skill=skill_used, status="error").inc()
         log.error("broker.flow.agent_failed", tenant=tenant_id, exc=error)
+
+    from services.agent_traces import persist_trace
+    await persist_trace(
+        schema_name=schema_name,
+        session_key=session_id,
+        phone=phone_clean,
+        message_in=message,
+        final_state=final_state,
+        latency_ms=int((time.monotonic() - t0) * 1000),
+        error=error,
+    )
 
     # Build reply body from template
     reply_context = {

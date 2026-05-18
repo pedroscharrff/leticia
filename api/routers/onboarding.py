@@ -83,11 +83,16 @@ async def signup(body: SignupRequest) -> SignupResponse:
             # Create schema + tables
             await conn.execute("SELECT create_tenant_schema($1)", schema_name)
 
-            # Seed skills_config from catalog (only plan-eligible skills, inactive by default)
+            # Seed skills_config from catalog. saudacao + farmaceutico nascem ATIVOS
+            # (são o mínimo viável de atendimento); demais skills ficam inativos
+            # para o dono ativar manualmente no portal.
             await conn.execute(
                 f"""
-                INSERT INTO {schema_name}.skills_config (skill_name)
-                SELECT skill_name FROM public.skill_catalog
+                INSERT INTO {schema_name}.skills_config (skill_name, ativo)
+                SELECT
+                    skill_name,
+                    (skill_name IN ('saudacao', 'farmaceutico')) AS ativo
+                FROM public.skill_catalog
                 WHERE active = TRUE
                   AND plan_min IN (
                       SELECT plan_name FROM public.plans

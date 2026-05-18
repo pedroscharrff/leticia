@@ -48,19 +48,38 @@ def route_to_skill(state: AgentState) -> str:
     return _FALLBACK
 
 
+_MAX_HANDOFFS_PER_TURN = 2  # farmaceutico → vendedor já cobre o caso comum
+
+
 def handoff_router(state: AgentState) -> str:
     """
-    Edge condicional: skill → analyst.
+    Edge condicional: skill → (outro skill | analyst).
 
-    POLÍTICA ATUAL (conversação natural):
-    Não encadeamos múltiplos skills na MESMA resposta. Cada skill responde
-    brevemente, conduz UMA etapa do atendimento, e a próxima etapa acontece
-    quando o cliente responder (em outro turno).
+    Quando uma skill emite [[HANDOFF:X:contexto]], rotamos para a skill X NO
+    MESMO TURNO para que a resposta final seja CONCATENADA (farmaceutico
+    recomenda + vendedor consulta preço, em uma única mensagem ao cliente).
 
-    handoff_to ainda fica armazenado no state como DICA para o orchestrator
-    do próximo turno (futuro: usar como bias na classificação).
+    Limites para evitar loop:
+      • `handoff_count` capado em _MAX_HANDOFFS_PER_TURN
+      • destino precisa estar em `available_skills`
+      • destino não pode ser igual ao último skill executado (anti-loop)
     """
-    return "analyst"
+    handoff_to       = state.get("handoff_to")
+    available        = set(state.get("available_skills", []))
+    handoff_count    = state.get("handoff_count", 0)
+    skill_history    = state.get("skill_history", [])
+    last_skill       = skill_history[-1] if skill_history else None
+
+    if not handoff_to:
+        return "analyst"
+    if handoff_count > _MAX_HANDOFFS_PER_TURN:
+        return "analyst"
+    if handoff_to not in available and handoff_to not in {"guardrails"}:
+        return "analyst"
+    if handoff_to == last_skill:
+        return "analyst"
+
+    return handoff_to
 
 
 def analyst_router(state: AgentState) -> str:

@@ -49,6 +49,8 @@ REGRAS CRÍTICAS — leia com atenção:
 8. **OFF-TOPIC / EMERGÊNCIA / CONTEÚDO IMPRÓPRIO** → guardrails
 
 Exemplos:
+• "Oi" / "Olá" / "Bom dia" (sem histórico de conversa) → saudacao
+• "Tudo bem?" / "Boa tarde, tá aí?" → saudacao
 • "Estou com dor de cabeça" → farmaceutico (sintoma → farmacêutico recomenda)
 • "Você tem Dipirona?" → vendedor (produto nomeado → vendedor checa estoque)
 • "Pra dor de cabeça, vocês têm Dipirona ou Paracetamol?" → farmaceutico
@@ -63,14 +65,36 @@ Se nenhuma skill disponível atender, use "farmaceutico" como fallback.\
 
 _FALLBACK_SKILL = "farmaceutico"
 
+# Saudações puras — se a mensagem for SÓ um cumprimento e não houver histórico,
+# pulamos o LLM e mandamos direto para `saudacao` (quando disponível).
+_GREETING_RE = re.compile(
+    r"^\s*(oi+|ol[aá]+|e[ai]+|hey+|hi+|hello+|bom\s*dia|boa\s*tarde|boa\s*noite|"
+    r"tudo\s*bem|tudo\s*bom|td\s*bem|td\s*bom|opa+|salve+|menina|moça|moco|"
+    r"alo+|al[oô]+)"
+    r"[\s!?.,😊🙂👋]*$",
+    re.IGNORECASE,
+)
+
+
+def _is_pure_greeting(text: str) -> bool:
+    if not text:
+        return False
+    # Limita a mensagens curtas: ninguém escreve "oi tudo bem queria saber X" e
+    # quer ir pra saudacao.
+    if len(text.strip()) > 30:
+        return False
+    return bool(_GREETING_RE.match(text.strip()))
+
 
 def _build_skills_list(available: list[str]) -> str:
     descriptions = {
-        "farmaceutico":   "dúvidas farmacêuticas, bulas, posologia, interações",
+        "saudacao":        "recepção, saudações iniciais, primeiro contato, mensagens ambíguas",
+        "farmaceutico":    "dúvidas farmacêuticas, bulas, posologia, interações, sintomas",
         "principio_ativo": "identificar princípio ativo de medicamentos",
         "genericos":       "buscar alternativas genéricas / similares",
-        "vendedor":        "compras, preços, carrinho, pedidos",
+        "vendedor":        "compras, preços, consulta de estoque, carrinho, pedidos",
         "recuperador":     "reengajamento de clientes inativos",
+        "guardrails":      "off-topic, emergências médicas, conteúdo impróprio",
     }
     lines = []
     for skill in available:
@@ -107,6 +131,34 @@ async def orchestrator(state: AgentState, llm_factory) -> AgentState:
 
     if not available_skills:
         available_skills = [_FALLBACK_SKILL]
+
+    # Fast-path: saudação pura sem histórico → vai direto pra saudacao
+    has_history = bool(messages)
+    if (
+        "saudacao" in available_skills
+        and not has_history
+        and _is_pure_greeting(current_message)
+    ):
+        log.info("orchestrator.fast_path_greeting", message=current_message[:40])
+        import time as _time
+        trace = list(state.get("trace_steps", []))
+        trace.append({
+            "node": "orchestrator",
+            "ts_ms": int(_time.time() * 1000),
+            "data": {
+                "skill": "saudacao",
+                "confidence": 1.0,
+                "intent": "saudação inicial",
+                "fast_path": True,
+            },
+        })
+        return {
+            **state,
+            "selected_skill": "saudacao",
+            "confidence":     1.0,
+            "intent":         "saudação inicial",
+            "trace_steps":    trace,
+        }
 
     # Monta contexto resumido (últimas 4 trocas)
     history_text = ""
