@@ -900,6 +900,7 @@ function EventsTab() {
               <th>Status</th>
               <th>Evento</th>
               <th>Payload</th>
+              <th title="Status HTTP retornado pelo gateway externo (modo forward)">Forward</th>
               <th title="Chave de idempotência (60s bucket + hash do payload)">Idem. Key</th>
               <th></th>
             </tr>
@@ -915,6 +916,20 @@ function EventsTab() {
                   <td>{e.canonical_event ?? "—"}</td>
                   <td className="broker-truncate" style={{ maxWidth: 280, fontFamily: "monospace", fontSize: 11 }}>
                     {e.payload_preview ?? "—"}
+                  </td>
+                  <td style={{ fontFamily: "monospace", fontSize: 12 }}>
+                    {e.forward_status_code != null ? (
+                      <span style={{
+                        padding: "2px 8px", borderRadius: 10, fontWeight: 600,
+                        background: e.forward_status_code >= 200 && e.forward_status_code < 300
+                          ? "#e8f5e9" : "#ffebee",
+                        color: e.forward_status_code >= 200 && e.forward_status_code < 300
+                          ? "#2e7d32" : "#c62828",
+                      }}>
+                        {e.forward_status_code >= 200 && e.forward_status_code < 300 ? "✓ " : "✗ "}
+                        {e.forward_status_code}
+                      </span>
+                    ) : <span style={{ color: "#86868b" }}>—</span>}
                   </td>
                   <td style={{ fontFamily: "monospace", fontSize: 11 }}>
                     {e.idempotency_key
@@ -1001,6 +1016,51 @@ function EventsTab() {
                       background: "#0d0d0e", color: "#90caf9", padding: 12, borderRadius: 8,
                       fontSize: 11, maxHeight: 300, overflow: "auto",
                     }}>{JSON.stringify(detail.canonical_payload, null, 2)}</pre>
+                  </div>
+                )}
+
+                {/* Resposta do gateway externo (modo forward) */}
+                {(detail.forward_url || detail.forward_status_code) && (
+                  <div style={{
+                    border: "1px solid var(--color-border, #e5e7eb)",
+                    borderRadius: 8, padding: 12,
+                    background: detail.forward_status_code && detail.forward_status_code >= 400
+                      ? "#fff5f5" : "#f0f9f4",
+                  }}>
+                    <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 8 }}>
+                      📡 Resposta da API externa (forward)
+                    </div>
+                    <DetailRow label="URL chamada" value={detail.forward_url ?? "—"} mono />
+                    <div style={{ marginTop: 6 }}>
+                      <DetailRow
+                        label="Status HTTP"
+                        value={detail.forward_status_code != null
+                          ? `${detail.forward_status_code} ${
+                              detail.forward_status_code >= 200 && detail.forward_status_code < 300
+                                ? "✓ Sucesso"
+                                : detail.forward_status_code >= 400 && detail.forward_status_code < 500
+                                ? "❌ Erro do cliente (auth, formato, etc.)"
+                                : detail.forward_status_code >= 500
+                                ? "💥 Erro do servidor destino"
+                                : ""
+                            }`
+                          : "— (falhou antes de receber resposta)"}
+                      />
+                    </div>
+                    {detail.forward_response && (
+                      <div style={{ marginTop: 10 }}>
+                        <div style={{ fontSize: 12, fontWeight: 600, color: "#86868b", marginBottom: 4 }}>
+                          Body retornado pelo gateway
+                        </div>
+                        <pre style={{
+                          background: "#0d0d0e",
+                          color: detail.forward_status_code && detail.forward_status_code >= 400
+                            ? "#ff8a80" : "#a5d6a7",
+                          padding: 12, borderRadius: 8,
+                          fontSize: 11, maxHeight: 240, overflow: "auto",
+                        }}>{JSON.stringify(detail.forward_response, null, 2)}</pre>
+                      </div>
+                    )}
                   </div>
                 )}
               </div>

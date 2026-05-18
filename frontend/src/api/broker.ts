@@ -98,6 +98,7 @@ export interface RawEvent {
   created_at: string;
   idempotency_key?: string | null;
   payload_preview?: string | null;
+  forward_status_code?: number | null;
 }
 
 // ── Integrations ──

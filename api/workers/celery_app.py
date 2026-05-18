@@ -440,26 +440,61 @@ async def _run_broker_flow(
         if template else {"reply": reply_text}
     )
 
-    # Persist final state
+    # Forward to external URL if configured — captura status + body
+    forward_status: int | None = None
+    forward_response: dict | None = None
+    forward_error: str | None = None
+
+    if integration["reply_mode"] == "forward" and integration["reply_url"]:
+        method = (integration.get("reply_method") or "POST").upper()
+        headers = {str(k): str(v) for k, v in
+                   (integration.get("reply_headers") or {}).items() if k and v}
+        try:
+            async with httpx.AsyncClient(timeout=15) as client:
+                resp = await client.request(
+                    method, integration["reply_url"],
+                    json=reply_body, headers=headers,
+                )
+            forward_status = resp.status_code
+            try:
+                forward_response = resp.json()
+            except Exception:
+                forward_response = {"_text": resp.text[:2000]}
+
+            if 200 <= resp.status_code < 300:
+                log.info("broker.flow.forwarded",
+                         tenant=tenant_id, url=integration["reply_url"],
+                         status=resp.status_code)
+            else:
+                forward_error = f"Gateway externo retornou {resp.status_code}"
+                log.warning("broker.flow.forward_bad_status",
+                            tenant=tenant_id, url=integration["reply_url"],
+                            status=resp.status_code,
+                            response_preview=str(forward_response)[:300])
+        except Exception as exc:
+            forward_error = f"Falha ao conectar no destino: {exc}"
+            log.warning("broker.flow.forward_failed",
+                        tenant=tenant_id, url=integration["reply_url"], exc=str(exc))
+
+    # Persist final state (com info do forward, se houve)
     canonical_combined = {**reply_context, "_reply_body": reply_body, "_error": error}
+    final_status = (
+        "failed" if (error or forward_error) else "processed"
+    )
+    final_error = error or forward_error
+
     async with get_db_conn() as conn:
         await conn.execute(
             "UPDATE public.broker_raw_events "
             "SET status=$2, canonical_event='agent.message', canonical_payload=$3, "
-            "attempts=attempts+1, processed_at=NOW(), error=$4 "
+            "    attempts=attempts+1, processed_at=NOW(), error=$4, "
+            "    forward_url=$5, forward_status_code=$6, forward_response=$7 "
             "WHERE id=$1",
             raw_event_id,
-            "failed" if error else "processed",
+            final_status,
             canonical_combined,
-            error,
+            final_error,
+            integration["reply_url"] if integration["reply_mode"] == "forward" else None,
+            forward_status,
+            forward_response,
         )
-
-    # Forward to external URL if configured
-    if integration["reply_mode"] == "forward" and integration["reply_url"]:
-        try:
-            await _deliver_response(integration["reply_url"], reply_body)
-            log.info("broker.flow.forwarded",
-                     tenant=tenant_id, url=integration["reply_url"])
-        except Exception as exc:
-            log.warning("broker.flow.forward_failed",
-                        tenant=tenant_id, url=integration["reply_url"], exc=str(exc))

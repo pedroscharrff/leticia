@@ -183,6 +183,7 @@ class RawEventOut(BaseModel):
     created_at: str
     idempotency_key: str | None = None
     payload_preview: str | None = None  # primeiros 200 chars do payload
+    forward_status_code: int | None = None  # status HTTP do POST pra reply_url (forward mode)
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -955,7 +956,8 @@ async def list_events(user: TenantUser, limit: int = 50, status_filter: str | No
             rows = await conn.fetch(
                 """
                 SELECT id, integration_slug, direction, status, canonical_event,
-                       error, attempts, created_at, idempotency_key, payload
+                       error, attempts, created_at, idempotency_key, payload,
+                       forward_status_code
                 FROM public.broker_raw_events
                 WHERE tenant_id = $1 AND status = $2
                 ORDER BY created_at DESC LIMIT $3
@@ -966,7 +968,8 @@ async def list_events(user: TenantUser, limit: int = 50, status_filter: str | No
             rows = await conn.fetch(
                 """
                 SELECT id, integration_slug, direction, status, canonical_event,
-                       error, attempts, created_at, idempotency_key, payload
+                       error, attempts, created_at, idempotency_key, payload,
+                       forward_status_code
                 FROM public.broker_raw_events
                 WHERE tenant_id = $1
                 ORDER BY created_at DESC LIMIT $2
@@ -986,6 +989,7 @@ async def list_events(user: TenantUser, limit: int = 50, status_filter: str | No
             idempotency_key=r["idempotency_key"],
             payload_preview=(json.dumps(r["payload"], ensure_ascii=False)[:200]
                              if r["payload"] is not None else None),
+            forward_status_code=r["forward_status_code"],
         )
         for r in rows
     ]
