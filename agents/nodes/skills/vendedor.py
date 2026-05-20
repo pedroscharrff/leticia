@@ -74,15 +74,31 @@ TOM E DIRETRIZES
 Ferramentas disponíveis:
 • buscar_produto(nome) — busca produto no catálogo (use também para principio ativo)
 • adicionar_ao_carrinho(produto, quantidade) — adiciona item ao carrinho
+• remover_do_carrinho(produto) — remove um item do carrinho antes do fechamento
+• atualizar_qtd_carrinho(produto, nova_quantidade) — altera quantidade no carrinho
+• salvar_dados_cliente(campos) — UPSERT no cadastro do cliente. Chame SEMPRE
+  que o cliente informar nome, CPF, email, CEP ou endereço (mesmo no meio da
+  conversa). Ex: campos={"nome": "João Silva", "cpf": "12345678900"}
 • finalizar_pedido(forma_pagamento, observacoes) — CRIA o pedido no sistema.
   Use APENAS quando o cliente confirmar explicitamente o fechamento.
   forma_pagamento: "pix", "cartao_credito", "cartao_debito", "dinheiro", "boleto"
+• cancelar_pedido(numero_pedido) — cancela pedido pending/confirmed (vazio = último)
+• editar_pedido(numero_pedido, adicionar, remover, nova_observacao) — edita
+  pedido com status pending (adicionar=[{name, qty}], remover=[nome])
 
 REGRA CRÍTICA SOBRE FECHAMENTO:
 Quando o cliente confirmar a forma de pagamento ou disser "pode finalizar",
 "fecha o pedido", "confirmado", etc., você DEVE chamar a tool finalizar_pedido.
 NÃO diga "pedido confirmado" sem ter chamado a tool — o pedido só existe no
 sistema depois que a tool for executada. A tool retorna o número do pedido.
+
+REGRA CRÍTICA SOBRE DADOS DO CLIENTE:
+Se a Configuração de Vendas exige campos obrigatórios (você verá um bloco
+"## Dados obrigatórios para fechar o pedido" acima), você PRECISA coletar e
+SALVAR cada campo via salvar_dados_cliente ANTES de chamar finalizar_pedido.
+Se chamar finalizar_pedido com campos faltando, a tool vai responder
+"Faltam dados..." e você deve pedir só o que está faltando — não mude de
+assunto, não invente que o pedido foi feito.
 """
 
 
@@ -93,6 +109,8 @@ async def vendedor_node(state: AgentState, llm_factory) -> AgentState:
     skill_instructions = state.get("skill_instructions", {})
     schema_name        = state.get("schema_name", "")
     cart               = state.get("cart", {"items": [], "subtotal": 0.0})
+    sales_config       = state.get("sales_config", {}) or {}
+    customer           = state.get("customer", {}) or {}
     trace              = list(state.get("trace_steps", []))
     handoff_context    = state.get("handoff_context", "")
     skill_history      = state.get("skill_history", [])
@@ -106,6 +124,15 @@ async def vendedor_node(state: AgentState, llm_factory) -> AgentState:
     if persona_txt:
         parts.append(persona_txt)
     parts.append(skill_prompts.get("vendedor", _SYSTEM))
+
+    # Configuração de Vendas — campos obrigatórios + política de tentativas
+    try:
+        from services.sales_config import build_sales_config_block
+        sales_block = build_sales_config_block(sales_config, customer)
+        if sales_block:
+            parts.append(sales_block)
+    except Exception as exc:
+        log.warning("vendedor.sales_config_block_failed", exc=str(exc))
 
     # extra_instructions do dono (camada de personalização)
     skill_extra = skill_instructions.get("vendedor", "")
@@ -148,14 +175,29 @@ async def vendedor_node(state: AgentState, llm_factory) -> AgentState:
         from agents.tools.inventory import (
             make_inventory_tool,
             make_add_to_cart_tool,
+            make_remove_from_cart_tool,
+            make_update_cart_qty_tool,
             make_finalize_order_tool,
+        )
+        from agents.tools.customer import (
+            make_save_customer_tool,
+            make_cancel_order_tool,
+            make_edit_order_tool,
         )
         session_key = state.get("session_id", "")
         phone_num   = state.get("phone", "")
         tools = [
             make_inventory_tool(schema_name),
             make_add_to_cart_tool(schema_name, cart),
-            make_finalize_order_tool(schema_name, cart, session_key, phone_num),
+            make_remove_from_cart_tool(cart),
+            make_update_cart_qty_tool(cart),
+            make_finalize_order_tool(
+                schema_name, cart, session_key, phone_num,
+                sales_config=sales_config, customer=customer,
+            ),
+            make_save_customer_tool(schema_name, phone_num, customer),
+            make_cancel_order_tool(schema_name, phone_num),
+            make_edit_order_tool(schema_name, phone_num),
         ]
 
         llm = llm_factory("skill")

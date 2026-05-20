@@ -86,6 +86,18 @@ async def signup(body: SignupRequest) -> SignupResponse:
             await conn.execute(
                 "SELECT public.add_agent_traces_to_schema($1)", schema_name
             )
+            # Garante sales_attempts em cart (idem — migration 010)
+            await conn.execute(
+                "SELECT public.add_sales_attempts_to_cart($1)", schema_name
+            )
+            # Seed default sales_config para o novo tenant
+            await conn.execute(
+                """
+                INSERT INTO public.tenant_sales_config (tenant_id)
+                VALUES ($1) ON CONFLICT DO NOTHING
+                """,
+                tenant_id,
+            )
 
             # Seed skills_config from catalog. saudacao + farmaceutico nascem ATIVOS
             # (são o mínimo viável de atendimento); demais skills ficam inativos

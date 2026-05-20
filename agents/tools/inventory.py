@@ -116,6 +116,80 @@ def make_add_to_cart_tool(schema_name: str, cart: dict):
     return adicionar_ao_carrinho
 
 
+def make_remove_from_cart_tool(cart: dict):
+    """Remove um item do carrinho (zera quantidade)."""
+    @tool
+    async def remover_do_carrinho(produto: str) -> str:
+        """
+        Remove um item do carrinho do cliente.
+        Use quando o cliente disser para tirar/remover/cancelar um item específico.
+
+        Args:
+            produto: Nome (ou parte do nome) do produto a remover.
+        """
+        items = cart.get("items", [])
+        if not items:
+            return "Carrinho está vazio."
+
+        needle = produto.lower().strip()
+        kept: list[dict] = []
+        removed: list[dict] = []
+        for it in items:
+            if needle in it["name"].lower():
+                removed.append(it)
+            else:
+                kept.append(it)
+
+        if not removed:
+            return f"Não encontrei '{produto}' no carrinho."
+
+        cart["items"] = kept
+        cart["subtotal"] = sum(i["price"] * i["qty"] for i in kept)
+        removed_names = ", ".join(f"{i['qty']}x {i['name']}" for i in removed)
+        return (
+            f"✓ Removido: {removed_names}.\n"
+            f"Subtotal atualizado: R$ {cart['subtotal']:.2f}"
+        )
+
+    return remover_do_carrinho
+
+
+def make_update_cart_qty_tool(cart: dict):
+    """Altera a quantidade de um item já no carrinho."""
+    @tool
+    async def atualizar_qtd_carrinho(produto: str, nova_quantidade: int) -> str:
+        """
+        Atualiza a quantidade de um item já existente no carrinho.
+        Use quando o cliente disser 'quero 3 ao invés de 1' ou similar.
+        Se nova_quantidade <= 0, o item é removido.
+
+        Args:
+            produto: Nome (ou parte do nome) do produto.
+            nova_quantidade: Nova quantidade desejada.
+        """
+        items = cart.get("items", [])
+        if not items:
+            return "Carrinho está vazio."
+
+        needle = produto.lower().strip()
+        for it in items:
+            if needle in it["name"].lower():
+                if nova_quantidade <= 0:
+                    cart["items"] = [x for x in items if x is not it]
+                    cart["subtotal"] = sum(i["price"] * i["qty"] for i in cart["items"])
+                    return f"✓ {it['name']} removido. Subtotal: R$ {cart['subtotal']:.2f}"
+                it["qty"] = nova_quantidade
+                cart["subtotal"] = sum(i["price"] * i["qty"] for i in items)
+                return (
+                    f"✓ {it['name']} agora com {nova_quantidade} unidade(s).\n"
+                    f"Subtotal: R$ {cart['subtotal']:.2f}"
+                )
+
+        return f"Não encontrei '{produto}' no carrinho."
+
+    return atualizar_qtd_carrinho
+
+
 # Formas de pagamento aceitas
 _VALID_PAYMENT = {
     "pix":              "PIX",
@@ -133,11 +207,19 @@ def make_finalize_order_tool(
     cart: dict,
     session_key: str,
     phone: str,
+    sales_config: dict | None = None,
+    customer: dict | None = None,
 ):
     """
     Factory — retorna tool que cria o pedido no DB.
     Mutua o `cart` em memória (esvazia) após salvar com sucesso.
+
+    sales_config: política de campos obrigatórios + max_attempts.
+    customer: cadastro atual do cliente (do load_context).
     """
+    sales_config = sales_config or {}
+    customer = customer or {}
+
     @tool
     async def finalizar_pedido(
         forma_pagamento: str = "pix",
@@ -157,6 +239,28 @@ def make_finalize_order_tool(
         """
         if not cart.get("items"):
             return "Carrinho está vazio — adicione um produto antes de finalizar."
+
+        # ── Valida campos obrigatórios da Configuração de Vendas ──────────────
+        from services.sales_config import missing_required_fields, ALLOWED_FIELDS
+        missing = missing_required_fields(sales_config, customer)
+        if missing:
+            attempts = int(cart.get("sales_attempts", 0)) + 1
+            cart["sales_attempts"] = attempts
+            max_attempts = int(sales_config.get("max_attempts") or 3)
+            labels = [ALLOWED_FIELDS.get(f, {}).get("label", f) for f in missing]
+            campos_str = ", ".join(labels)
+            if attempts >= max_attempts:
+                return (
+                    "max_attempts_reached: cliente não forneceu "
+                    f"{campos_str} após {attempts} tentativas. "
+                    "Use o fallback_message definido pelo dono."
+                )
+            return (
+                f"Faltam dados obrigatórios para fechar o pedido: {campos_str}. "
+                f"Peça ao cliente esses dados (tentativa {attempts}/{max_attempts}). "
+                "Use a tool `salvar_dados_cliente` para gravar conforme o cliente "
+                "informar. NÃO chame `finalizar_pedido` enquanto faltar campo."
+            )
 
         forma = forma_pagamento.lower().strip()
         if forma not in _VALID_PAYMENT:
@@ -227,6 +331,7 @@ def make_finalize_order_tool(
             # Esvazia o carrinho em memória para refletir no state
             cart["items"] = []
             cart["subtotal"] = 0.0
+            cart["sales_attempts"] = 0
 
             # Monta resumo para mostrar ao cliente
             lines = [

@@ -37,6 +37,8 @@ class AgentState(TypedDict, total=False):
     # ── Commerce ──────────────────────────────────────────────────────────────
     cart:            dict[str, Any]      # {items: [], subtotal: float}
     stock_mode:      str                 # catalogo | estoque_real
+    sales_config:    dict[str, Any]      # required_fields, max_attempts, fallback_message
+    customer:        dict[str, Any]      # row da tabela customers (id, name, doc, cep, etc.)
 
     # ── Quality control ───────────────────────────────────────────────────────
     analyst_approved: bool

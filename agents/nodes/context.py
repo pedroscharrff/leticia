@@ -88,6 +88,15 @@ async def load_context(state: AgentState) -> AgentState:
                 if r["extra_instructions"]
             }
 
+            # Sales config do tenant (campos obrigatórios + política de tentativas)
+            try:
+                from services.sales_config import load_sales_config
+                updates["sales_config"] = await load_sales_config(tenant_id)
+            except Exception as exc:
+                log.warning("context.sales_config.load_failed",
+                            tenant=tenant_id, exc=str(exc))
+                updates["sales_config"] = {}
+
             # Perfil do cliente + carrinho persistido (tabelas do schema do tenant)
             try:
                 await conn.execute(f"SET search_path = {schema_name}, public")
@@ -98,9 +107,29 @@ async def load_context(state: AgentState) -> AgentState:
                 if session_row and session_row["customer_profile"]:
                     updates["customer_profile"] = session_row["customer_profile"]
 
+                # Cadastro do cliente (por telefone) — usado p/ checar campos obrigatórios
+                phone = state.get("phone", "")
+                if phone:
+                    cust_row = await conn.fetchrow(
+                        """
+                        SELECT id, phone, name, email, doc, cep, street,
+                               street_number, complement, neighborhood,
+                               city, state, notes
+                        FROM customers WHERE phone = $1
+                        """,
+                        phone,
+                    )
+                    if cust_row:
+                        cust = dict(cust_row)
+                        cust["id"] = str(cust["id"])  # UUID → str p/ JSON-safe
+                        updates["customer"] = cust
+                    else:
+                        updates["customer"] = {"phone": phone}
+
                 # Carrinho persistido — recupera o que está salvo na DB
                 cart_row = await conn.fetchrow(
-                    "SELECT items, subtotal, stock_mode FROM cart WHERE session_key = $1",
+                    "SELECT items, subtotal, stock_mode, sales_attempts "
+                    "FROM cart WHERE session_key = $1",
                     session_id,
                 )
                 if cart_row:
@@ -108,14 +137,16 @@ async def load_context(state: AgentState) -> AgentState:
                     if isinstance(items, str):
                         items = json.loads(items)
                     updates["cart"] = {
-                        "items":    items or [],
-                        "subtotal": float(cart_row["subtotal"] or 0),
+                        "items":          items or [],
+                        "subtotal":       float(cart_row["subtotal"] or 0),
+                        "sales_attempts": int(cart_row["sales_attempts"] or 0),
                     }
                     if cart_row["stock_mode"]:
                         updates["stock_mode"] = cart_row["stock_mode"]
-            except Exception:
+            except Exception as exc:
                 # Tabelas ainda não existem nesse schema — ignora
-                pass
+                log.warning("context.tenant_schema.load_skipped",
+                            schema=schema_name, exc=str(exc))
 
     except Exception as exc:
         log.warning("context.db.load_failed", tenant=tenant_id, exc=str(exc))
@@ -171,18 +202,21 @@ async def save_context(state: AgentState) -> AgentState:
             cart = state.get("cart") or {"items": [], "subtotal": 0.0}
             await conn.execute(
                 """
-                INSERT INTO cart (session_key, items, subtotal, stock_mode, updated_at)
-                VALUES ($1, $2::jsonb, $3, $4, NOW())
+                INSERT INTO cart (session_key, items, subtotal, stock_mode,
+                                  sales_attempts, updated_at)
+                VALUES ($1, $2::jsonb, $3, $4, $5, NOW())
                 ON CONFLICT (session_key) DO UPDATE
-                SET items      = EXCLUDED.items,
-                    subtotal   = EXCLUDED.subtotal,
-                    stock_mode = COALESCE(EXCLUDED.stock_mode, cart.stock_mode),
-                    updated_at = NOW()
+                SET items          = EXCLUDED.items,
+                    subtotal       = EXCLUDED.subtotal,
+                    stock_mode     = COALESCE(EXCLUDED.stock_mode, cart.stock_mode),
+                    sales_attempts = EXCLUDED.sales_attempts,
+                    updated_at     = NOW()
                 """,
                 session_id,
                 json.dumps(cart.get("items", [])),
                 float(cart.get("subtotal", 0) or 0),
                 state.get("stock_mode") or "catalogo",
+                int(cart.get("sales_attempts", 0) or 0),
             )
 
             # Log de conversa
