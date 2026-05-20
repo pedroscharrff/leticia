@@ -82,6 +82,10 @@ async def signup(body: SignupRequest) -> SignupResponse:
 
             # Create schema + tables
             await conn.execute("SELECT create_tenant_schema($1)", schema_name)
+            # Garante agent_traces (não está em create_tenant_schema; adicionada pela migration 020)
+            await conn.execute(
+                "SELECT public.add_agent_traces_to_schema($1)", schema_name
+            )
 
             # Seed skills_config from catalog. saudacao + farmaceutico nascem ATIVOS
             # (são o mínimo viável de atendimento); demais skills ficam inativos
