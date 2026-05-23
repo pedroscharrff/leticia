@@ -89,12 +89,20 @@ def analyst_router(state: AgentState) -> str:
     Retorna:
     - "escalate"  → cliente precisa de atendimento humano (prioridade máxima)
     - "approved"  → resposta aprovada, segue para save_context
-    - "retry"     → resposta reprovada, volta para o skill regenerar
+    - "<skill>"   → resposta reprovada, volta para o ÚLTIMO skill executado
+                    para regenerar (mapeado em analyst_routing no graph_builder).
+                    Fallback "retry" → "farmaceutico" se não houver histórico.
     """
     if state.get("escalate", False):
         return "escalate"
 
     if state.get("analyst_approved", True):
         return "approved"
+
+    history = state.get("skill_history") or []
+    if history:
+        last_skill = history[-1]
+        if last_skill in _KNOWN_SKILLS:
+            return last_skill
 
     return "retry"

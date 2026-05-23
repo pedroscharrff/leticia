@@ -68,6 +68,18 @@ class Settings(BaseSettings):
     default_skill_provider: str = "anthropic"
     default_skill_model: str = "claude-sonnet-4-6"
 
+    # Multimodal ingestion (image + audio from WhatsApp)
+    # Transcription provider: 'groq' (whisper-large-v3) or 'openai' (whisper-1)
+    media_transcription_provider: str = "groq"
+    media_transcription_model: str = "whisper-large-v3"
+    groq_api_key: str = ""
+    # Vision provider: uses the tenant's default skill LLM (Anthropic/Google) by default
+    media_vision_provider: str = "anthropic"
+    media_vision_model: str = "claude-sonnet-4-6"
+    # Hard limits to avoid abuse (bytes)
+    media_max_audio_bytes: int = 16 * 1024 * 1024   # 16 MB
+    media_max_image_bytes: int = 5 * 1024 * 1024    # 5 MB
+
     # External medication/bulas API (used by farmaceutico tool-skill)
     bulas_api_base_url: str = ""
     bulas_api_key: str = ""
@@ -80,7 +92,7 @@ class Settings(BaseSettings):
     celery_workers_concurrency: int = 16
     session_ttl_seconds: int = 1800
     max_context_messages: int = 10
-    analyst_max_retries: int = 1
+    analyst_max_retries: int = 2
     llm_timeout_seconds: int = 30
     # 0.0 = fully deterministic, 1.0 = highly creative.
     # 0.2 keeps the agent on-script while allowing minor phrasing variation.

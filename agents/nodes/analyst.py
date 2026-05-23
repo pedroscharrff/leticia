@@ -108,14 +108,25 @@ async def analyst(state: AgentState, llm_factory, max_retries: int = 1) -> Agent
         log.warning("analyst.failed", exc=str(exc))
         approved, reason = True, ""
 
+    will_retry      = (not approved) and (retry_count < max_retries)
+    final_approved  = approved or not will_retry  # se não vai retentar, "deixa passar"
+    forced_through  = (not approved) and (not will_retry)
+
     import time as _time
     trace.append({
         "node": "analyst",
         "ts_ms": int(_time.time() * 1000),
-        "data": {"approved": approved, "reason": reason},
+        "data": {
+            "approved":       approved,         # veredito do LLM
+            "final_approved": final_approved,   # decisão efetiva do nó
+            "forced_through": forced_through,   # True = reprovado mas passou por esgotar retries
+            "retry_count":    retry_count,
+            "max_retries":    max_retries,
+            "reason":         reason,
+        },
     })
 
-    if not approved and retry_count < max_retries:
+    if will_retry:
         log.info("analyst.retry", reason=reason, retry_count=retry_count + 1)
         return {
             **state,
@@ -124,5 +135,13 @@ async def analyst(state: AgentState, llm_factory, max_retries: int = 1) -> Agent
             "final_response":   "",   # limpa para forçar regeneração
             "trace_steps":      trace,
         }
+
+    if forced_through:
+        log.warning(
+            "analyst.forced_through",
+            session=state.get("session_id"),
+            retries=retry_count,
+            reason=reason,
+        )
 
     return {**state, "analyst_approved": True, "trace_steps": trace}

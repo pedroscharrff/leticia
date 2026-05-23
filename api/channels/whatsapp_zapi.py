@@ -25,14 +25,56 @@ class WhatsAppZAPIAdapter(ChannelAdapter):
             if payload.get("type") != "ReceivedCallback":
                 return None
             phone = payload["phone"]
-            text = payload.get("text", {}).get("message", "")
+
+            # Texto puro
+            text = (payload.get("text") or {}).get("message", "")
+
+            # Z-API payload shapes for media:
+            #   { audio: { audioUrl, mimeType } }
+            #   { image: { imageUrl, caption, mimeType } }
+            audio = payload.get("audio") or {}
+            image = payload.get("image") or {}
+            video = payload.get("video") or {}
+            document = payload.get("document") or {}
+
+            if audio:
+                return InboundMessage(
+                    phone=phone, text="", channel_type=self.channel_type, raw=payload,
+                    media_type="audio",
+                    media_mime=audio.get("mimeType") or "audio/ogg",
+                    media_url=audio.get("audioUrl"),
+                )
+            if image:
+                return InboundMessage(
+                    phone=phone,
+                    text=image.get("caption", "") or "",
+                    channel_type=self.channel_type, raw=payload,
+                    media_type="image",
+                    media_mime=image.get("mimeType") or "image/jpeg",
+                    media_url=image.get("imageUrl"),
+                )
+            if video:
+                return InboundMessage(
+                    phone=phone, text=video.get("caption", "") or "",
+                    channel_type=self.channel_type, raw=payload,
+                    media_type="video",
+                    media_mime=video.get("mimeType"),
+                    media_url=video.get("videoUrl"),
+                )
+            if document:
+                return InboundMessage(
+                    phone=phone, text=document.get("caption", "") or "",
+                    channel_type=self.channel_type, raw=payload,
+                    media_type="document",
+                    media_mime=document.get("mimeType"),
+                    media_url=document.get("documentUrl"),
+                )
+
             if not text:
                 return None
             return InboundMessage(
-                phone=phone,
-                text=text,
-                channel_type=self.channel_type,
-                raw=payload,
+                phone=phone, text=text,
+                channel_type=self.channel_type, raw=payload,
             )
         except (KeyError, TypeError):
             return None

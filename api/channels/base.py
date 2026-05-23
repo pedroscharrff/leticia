@@ -10,9 +10,14 @@ from dataclasses import dataclass
 @dataclass
 class InboundMessage:
     phone: str          # sender's phone / user identifier
-    text: str           # message body
+    text: str           # message body (caption for media, or transcript placeholder)
     channel_type: str   # e.g. 'whatsapp_cloud'
     raw: dict           # original payload for debugging
+    # Media payload (None for plain text). Either media_url OR media_bytes is set.
+    media_type: str | None = None   # 'image' | 'audio' | 'voice' | 'video' | 'document'
+    media_mime: str | None = None   # e.g. 'audio/ogg; codecs=opus', 'image/jpeg'
+    media_url: str | None = None    # direct URL (Z-API) or fetched short-lived URL (WA Cloud)
+    media_id: str | None = None     # provider-side id (WA Cloud media_id)
 
 
 @dataclass

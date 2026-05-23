@@ -464,6 +464,11 @@ async def ingest(
     if inbound_map:
         try:
             canonical_input = broker.apply_mapping(inbound_map, payload)
+            # Auto-injeta media_* se o payload bruto contém áudio/imagem
+            # e o mapping ainda não cobriu — funciona out-of-the-box para
+            # Z-API, WhatsApp Cloud, WAHA e variantes comuns.
+            from services.media_detect import enrich_canonical_with_media
+            enrich_canonical_with_media(canonical_input, payload)
         except Exception as exc:
             async with get_db_conn() as conn:
                 await conn.execute(

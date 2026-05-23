@@ -52,5 +52,14 @@ class AgentState(TypedDict, total=False):
     skill_prompts:     dict[str, str]    # SUBSTITUI prompt base (tenant override completo)
     skill_instructions: dict[str, str]   # APPENDA ao prompt (instruções extras do dono)
 
+    # ── Multimodal ingestion (WhatsApp image/audio) ───────────────────────────
+    media_type:        str | None         # 'image' | 'audio' | 'video' | 'document'
+    media_mime:        str | None
+    media_url:         str | None         # direct URL (Z-API) — fetchable without auth
+    media_id:          str | None         # provider id (WA Cloud) — needs token to resolve
+    media_b64:         str | None         # base64 bytes injected by webhook when token-fetched
+    media_transcript:  str                # filled by ingest_media for audio
+    media_description: str                # filled by ingest_media for image
+
     # ── Observability ─────────────────────────────────────────────────────────
     trace_steps:     list[str]

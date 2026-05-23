@@ -137,7 +137,8 @@ def build_graph_for_tenant(cfg: TenantConfig, redis: Any = None):
         Grafo compilado com suporte a ainvoke().
     """
     from config import settings
-    from agents.nodes.context      import load_context, save_context
+    from agents.nodes.context       import load_context, save_context
+    from agents.nodes.ingest_media  import ingest_media
     from agents.nodes.orchestrator import orchestrator
     from agents.nodes.analyst      import analyst
     from agents.nodes.skills.farmaceutico    import farmaceutico_node
@@ -183,6 +184,7 @@ def build_graph_for_tenant(cfg: TenantConfig, redis: Any = None):
 
     # Nodes fixos (sempre presentes)
     graph.add_node("load_context", load_context)
+    graph.add_node("ingest_media", ingest_media)
     graph.add_node("orchestrator", orch_node)
     graph.add_node("analyst",      analyst_node)
     graph.add_node("save_context", save_context)
@@ -194,7 +196,8 @@ def build_graph_for_tenant(cfg: TenantConfig, redis: Any = None):
 
     # ── Arestas fixas ─────────────────────────────────────────────────────────
     graph.set_entry_point("load_context")
-    graph.add_edge("load_context", "orchestrator")
+    graph.add_edge("load_context", "ingest_media")
+    graph.add_edge("ingest_media", "orchestrator")
 
     # orchestrator → skill (via route_to_skill)
     routing_map = {**{s: s for s in active_skills}, "guardrails": "guardrails"}

@@ -83,6 +83,7 @@ def process_message(
     phone: str,
     session_id: str,
     current_message: str,
+    media: dict | None = None,
 ) -> None:
     asyncio.run(
         _run_graph(
@@ -92,6 +93,7 @@ def process_message(
             phone=phone,
             session_id=session_id,
             current_message=current_message,
+            media=media,
         )
     )
 
@@ -103,6 +105,7 @@ async def _run_graph(
     phone: str,
     session_id: str,
     current_message: str,
+    media: dict | None = None,
 ) -> None:
     from db.postgres import get_db_conn, init_pool
     from db.redis_client import get_redis, init_redis
@@ -158,6 +161,15 @@ async def _run_graph(
         "persona": {},
         "skill_prompts": {},
     }
+
+    if media:
+        initial_state.update({
+            "media_type": media.get("media_type"),
+            "media_mime": media.get("media_mime"),
+            "media_url":  media.get("media_url"),
+            "media_id":   media.get("media_id"),
+            "media_b64":  media.get("media_b64"),
+        })
 
     config = {"configurable": {"thread_id": session_id}}
 
@@ -293,13 +305,19 @@ async def _run_bundle(
     items = [_json.loads(i) for i in items_raw]
     combined_message = "\n".join(it["msg"].strip()
                                  for it in items if (it.get("msg") or "").strip())
-    if not combined_message:
-        return
 
     # Usa o canonical_input da última mensagem como base e sobrescreve message
     base_input = items[-1].get("input") or {}
-    canonical_input = {**base_input, "message": combined_message}
     last_event_id = items[-1].get("event_id") or ""
+
+    # Se o último item carrega mídia (áudio/imagem), preservamos a mídia
+    # mesmo sem texto — o ingest_media node vai transcrever/descrever.
+    has_media = bool(base_input.get("media_type"))
+    if not combined_message and not has_media:
+        # Nada útil para processar
+        return
+
+    canonical_input = {**base_input, "message": combined_message}
 
     log.info("bundle.processing",
              bundle_key=bundle_key,
@@ -419,6 +437,16 @@ async def _run_broker_flow(
         "persona": {},
         "skill_prompts": {},
     }
+
+    # Pass-through de mídia mapeada pelo broker (Z-API/WA Cloud → canonical)
+    if canonical_input.get("media_type"):
+        initial_state.update({
+            "media_type": canonical_input.get("media_type"),
+            "media_mime": canonical_input.get("media_mime"),
+            "media_url":  canonical_input.get("media_url"),
+            "media_id":   canonical_input.get("media_id"),
+            "media_b64":  canonical_input.get("media_b64"),
+        })
 
     config = {"configurable": {"thread_id": session_id}}
     t0 = time.monotonic()

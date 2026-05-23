@@ -20,8 +20,13 @@ router = APIRouter(prefix="/webhook", tags=["webhook"])
 
 class InboundMessage(BaseModel):
     phone: str
-    message: str
+    message: str = ""
     session_id: str | None = None  # caller may supply; generated if absent
+    # Optional media payload (sender included image/audio etc.)
+    media_type: str | None = None    # 'image' | 'audio' | 'video' | 'document'
+    media_mime: str | None = None
+    media_url: str | None = None     # direct URL (public)
+    media_b64: str | None = None     # base64 bytes (when caller already downloaded)
 
 
 async def _resolve_tenant_by_token(webhook_token: str) -> TenantRow:
@@ -54,6 +59,12 @@ async def receive_message(
         phone=body.phone,
         session_id=session_id,
         current_message=body.message,
+        media={
+            "media_type": body.media_type,
+            "media_mime": body.media_mime,
+            "media_url":  body.media_url,
+            "media_b64":  body.media_b64,
+        } if body.media_type else None,
     )
 
     log.info(
