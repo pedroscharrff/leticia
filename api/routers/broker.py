@@ -89,6 +89,7 @@ class IntegrationOut(BaseModel):
     bundle_enabled: bool = False
     bundle_window_seconds: int = 10
     skip_rules: list[dict] = Field(default_factory=list)
+    handoff_config: dict = Field(default_factory=dict)
 
 
 class FlowConfigIn(BaseModel):
@@ -103,6 +104,7 @@ class FlowConfigIn(BaseModel):
     bundle_enabled: bool = False
     bundle_window_seconds: int = Field(default=10, ge=2, le=120)
     skip_rules: list[dict[str, Any]] = Field(default_factory=list)
+    handoff_config: dict[str, Any] = Field(default_factory=dict)
 
 
 class MappingIn(BaseModel):
@@ -261,6 +263,7 @@ def _integration_out(row: dict, ingest_url: str) -> IntegrationOut:
         bundle_enabled=bool(row.get("bundle_enabled")),
         bundle_window_seconds=row.get("bundle_window_seconds") or 10,
         skip_rules=row.get("skip_rules") or [],
+        handoff_config=row.get("handoff_config") or {},
     )
 
 
@@ -845,6 +848,16 @@ async def save_flow(
     if body.reply_mode == "forward" and not body.reply_url:
         raise HTTPException(422, "URL de destino é obrigatória no modo 'forward'")
 
+    # Validação opcional do bloco de handoff: se enabled=True, exige base_url/token/queue_id.
+    handoff = body.handoff_config or {}
+    if handoff.get("enabled"):
+        missing = [k for k in ("base_url", "token", "queue_id") if not handoff.get(k)]
+        if missing:
+            raise HTTPException(
+                422,
+                f"Para ativar transferência ao atendente, preencha: {', '.join(missing)}",
+            )
+
     async with get_db_conn() as conn:
         row = await conn.fetchrow(
             """
@@ -859,6 +872,7 @@ async def save_flow(
                 bundle_enabled         = $9,
                 bundle_window_seconds  = $10,
                 skip_rules             = $11,
+                handoff_config         = $12,
                 updated_at             = NOW()
             WHERE id = $1
             RETURNING *
@@ -874,6 +888,7 @@ async def save_flow(
             body.bundle_enabled,
             body.bundle_window_seconds,
             body.skip_rules,
+            body.handoff_config,
         )
         tenant = await conn.fetchrow(
             "SELECT api_key FROM public.tenants WHERE id = $1", user.tenant_id,
@@ -1011,6 +1026,32 @@ async def delete_outbound(target_id: str, user: TenantUser) -> Response:
 
 
 # Preview / Discover / Logs ----------------------------------------------------
+
+class HandoffTestIn(BaseModel):
+    phone: str = Field(min_length=4, max_length=20)
+    message: str | None = None
+
+
+@portal_router.post("/integrations/{integration_id}/handoff/test")
+async def test_handoff(integration_id: str, body: HandoffTestIn, user: TenantUser):
+    """
+    Dispara uma transferência de teste usando a config salva da integração.
+    Útil pro usuário validar token / queue_id antes de jogar em produção.
+    """
+    user.assert_role("manager")
+    integration = await _own_integration(integration_id, user.tenant_id)
+    cfg = integration.get("handoff_config") or {}
+    if not cfg.get("enabled"):
+        raise HTTPException(400, "Transferência está desativada nesta integração. Ative e salve antes de testar.")
+
+    from services.handoff import transfer_to_human
+    phone_clean = "".join(c for c in body.phone if c.isdigit())
+    result = await transfer_to_human(cfg, phone=phone_clean, custom_message=body.message)
+    await log_event("broker.handoff.tested", actor_id=user.email,
+                    tenant_id=user.tenant_id, target=str(integration_id),
+                    meta={"ok": result.get("ok"), "status_code": result.get("status_code")})
+    return result
+
 
 @portal_router.post("/preview", response_model=PreviewOut)
 async def preview(body: PreviewIn, _user: TenantUser):

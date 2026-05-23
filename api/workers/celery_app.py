@@ -488,6 +488,43 @@ async def _run_broker_flow(
         CONV_TOTAL.labels(tenant_id=tenant_id, skill=skill_used, status="error").inc()
         log.error("broker.flow.agent_failed", tenant=tenant_id, exc=error)
 
+    # ── Handoff p/ atendente humano (balcão) ─────────────────────────────────
+    # Roda DEPOIS do agente. Decide se transfere com base em:
+    #   - escalate=True sinalizado pelo agente (guardrails, analyst, etc.)
+    #   - palavra-chave configurada batendo na mensagem do cliente
+    # Se transferir, sobrescreve reply_text pela mensagem de transferência
+    # e dispara o POST para a API externa (ClickMassa / TalkFarma / ...).
+    handoff_cfg = integration.get("handoff_config") or {}
+    agent_escalate = bool(final_state.get("escalate")) if final_state else False
+    handoff_result: dict | None = None
+    try:
+        from services.handoff import should_handoff, transfer_to_human
+        do_handoff, reason = should_handoff(
+            handoff_cfg,
+            agent_escalate=agent_escalate,
+            user_message=message,
+        )
+        if do_handoff:
+            log.info("broker.flow.handoff_triggered",
+                     tenant=tenant_id, reason=reason, phone_prefix=phone_clean[:4])
+            handoff_result = await transfer_to_human(
+                handoff_cfg, phone=phone_clean,
+                # Se o agente já gerou uma resposta de despedida, prefere ela;
+                # senão usa a transfer_message configurada.
+                custom_message=reply_text if reply_text and agent_escalate else None,
+            )
+            # Mostra ao cliente a mensagem de transferência (em vez da resposta
+            # padrão do agente) só quando o agente NÃO foi quem pediu — quando
+            # o agente já respondeu algo sensato (ex: emergência), mantemos.
+            if not agent_escalate:
+                reply_text = (handoff_cfg.get("transfer_message")
+                              or "Estou te transferindo para um atendente agora. Um momento, por favor.")
+            skill_used = "handoff"
+    except Exception as exc:
+        log.error("broker.flow.handoff_dispatch_failed", error=str(exc))
+        handoff_result = {"ok": False, "error": f"Erro no dispatcher de handoff: {exc}",
+                          "status_code": None, "response": None}
+
     from services.agent_traces import persist_trace
     await persist_trace(
         schema_name=schema_name,
@@ -553,6 +590,8 @@ async def _run_broker_flow(
 
     # Persist final state (com info do forward, se houve)
     canonical_combined = {**reply_context, "_reply_body": reply_body, "_error": error}
+    if handoff_result is not None:
+        canonical_combined["_handoff"] = handoff_result
     final_status = (
         "failed" if (error or forward_error) else "processed"
     )

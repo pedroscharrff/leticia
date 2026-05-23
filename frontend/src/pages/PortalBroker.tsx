@@ -3,6 +3,7 @@ import { PortalLayout } from "../components/PortalLayout";
 import { Spinner } from "../components/Spinner";
 import {
   type DiscoveredPath,
+  type HandoffConfig,
   type Integration,
   type RawEvent,
   createIntegration,
@@ -13,10 +14,11 @@ import {
   listRawEvents,
   replayEvent,
   saveFlow,
+  testHandoff,
 } from "../api/broker";
 import "./PortalBroker.css";
 
-type Tab = "connect" | "flow" | "events";
+type Tab = "connect" | "flow" | "handoff" | "events";
 
 export function PortalBroker() {
   const [tab, setTab] = useState<Tab>("connect");
@@ -103,7 +105,7 @@ export function PortalBroker() {
           {selected && !showNew && (
             <>
               <div className="broker-tabs">
-                {(["connect", "flow", "events"] as Tab[]).map((t) => (
+                {(["connect", "flow", "handoff", "events"] as Tab[]).map((t) => (
                   <button
                     key={t}
                     className={`broker-tab ${tab === t ? "is-active" : ""}`}
@@ -111,6 +113,7 @@ export function PortalBroker() {
                   >
                     {t === "connect" && "1. Conectar"}
                     {t === "flow" && "2. Configurar fluxo"}
+                    {t === "handoff" && "3. Transferir p/ atendente"}
                     {t === "events" && "Eventos recebidos"}
                   </button>
                 ))}
@@ -130,6 +133,7 @@ export function PortalBroker() {
 
               {tab === "connect" && <ConnectTab integration={selected} />}
               {tab === "flow" && <FlowTab integration={selected} onSaved={refresh} />}
+              {tab === "handoff" && <HandoffTab integration={selected} onSaved={refresh} />}
               {tab === "events" && <EventsTab />}
             </>
           )}
@@ -414,6 +418,8 @@ function FlowTab({ integration, onSaved }: { integration: Integration; onSaved: 
         bundle_enabled: bundleEnabled,
         bundle_window_seconds: bundleWindow,
         skip_rules,
+        // Preserva config de handoff (editada na aba "Transferir p/ atendente")
+        handoff_config: integration.handoff_config || {},
       });
       setSaveMsg("✓ Configuração salva!");
       onSaved();
@@ -1114,6 +1120,314 @@ function FlowTab({ integration, onSaved }: { integration: Integration; onSaved: 
           </button>
         </div>
       </div>
+    </div>
+  );
+}
+
+
+// ── Tab 3: Handoff (transferência para atendente humano / balcão) ──────────
+
+const DEFAULT_TRIGGER_KEYWORDS = [
+  "atendente", "humano", "pessoa", "balcão", "balcao",
+  "falar com alguém", "falar com alguem", "atendimento humano",
+];
+
+function HandoffTab({ integration, onSaved }: { integration: Integration; onSaved: () => void }) {
+  const cfg = integration.handoff_config || {};
+  const [enabled, setEnabled] = useState<boolean>(!!cfg.enabled);
+  const [baseUrl, setBaseUrl] = useState<string>(cfg.base_url ?? "");
+  const [token, setToken] = useState<string>(cfg.token ?? "");
+  const [queueId, setQueueId] = useState<string>(
+    cfg.queue_id != null ? String(cfg.queue_id) : ""
+  );
+  const [transferMessage, setTransferMessage] = useState<string>(
+    cfg.transfer_message ?? "Vou te transferir para um de nossos atendentes agora. Um momento, por favor."
+  );
+  const [keywordsText, setKeywordsText] = useState<string>(
+    (cfg.trigger_keywords && cfg.trigger_keywords.length
+      ? cfg.trigger_keywords
+      : DEFAULT_TRIGGER_KEYWORDS
+    ).join(", ")
+  );
+
+  const [saving, setSaving] = useState(false);
+  const [saveMsg, setSaveMsg] = useState<string>("");
+
+  // Teste de transferência
+  const [testPhone, setTestPhone] = useState<string>("");
+  const [testMsg, setTestMsg] = useState<string>("");
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState<any>(null);
+
+  useEffect(() => {
+    const c = integration.handoff_config || {};
+    setEnabled(!!c.enabled);
+    setBaseUrl(c.base_url ?? "");
+    setToken(c.token ?? "");
+    setQueueId(c.queue_id != null ? String(c.queue_id) : "");
+    setTransferMessage(c.transfer_message ?? "Vou te transferir para um de nossos atendentes agora. Um momento, por favor.");
+    setKeywordsText((c.trigger_keywords && c.trigger_keywords.length
+      ? c.trigger_keywords
+      : DEFAULT_TRIGGER_KEYWORDS
+    ).join(", "));
+    setTestResult(null);
+    setSaveMsg("");
+  }, [integration.id]);
+
+  function parseKeywords(): string[] {
+    return keywordsText.split(",").map(s => s.trim()).filter(Boolean);
+  }
+
+  async function save() {
+    setSaving(true); setSaveMsg("");
+    const handoff_config: HandoffConfig = {
+      enabled,
+      provider: "clickmassa",
+      base_url: baseUrl.trim(),
+      token: token.trim(),
+      queue_id: queueId.trim() ? Number(queueId.trim()) : undefined,
+      transfer_message: transferMessage.trim(),
+      trigger_keywords: parseKeywords(),
+    };
+    try {
+      // Reaproveita o saveFlow — passa os demais campos da integração sem alteração
+      await saveFlow(integration.id, {
+        inbound_field_map: integration.inbound_field_map || {},
+        reply_mode: integration.reply_mode,
+        reply_url: integration.reply_url,
+        reply_method: integration.reply_method,
+        reply_headers: integration.reply_headers || {},
+        reply_body_template: integration.reply_body_template || {},
+        reply_status_code: integration.reply_status_code,
+        bundle_enabled: integration.bundle_enabled,
+        bundle_window_seconds: integration.bundle_window_seconds,
+        skip_rules: integration.skip_rules || [],
+        handoff_config,
+      });
+      setSaveMsg("✓ Configuração de transferência salva!");
+      onSaved();
+    } catch (e: any) {
+      setSaveMsg("✗ Erro: " + (e?.response?.data?.detail ?? e.message));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function runTest() {
+    setTesting(true); setTestResult(null);
+    try {
+      const result = await testHandoff(integration.id, testPhone, testMsg || undefined);
+      setTestResult(result);
+    } catch (e: any) {
+      setTestResult({
+        ok: false,
+        error: e?.response?.data?.detail ?? e.message,
+        status_code: null,
+        response: null,
+      });
+    } finally {
+      setTesting(false);
+    }
+  }
+
+  const exampleUrl = baseUrl && token
+    ? `${baseUrl.replace(/\/+$/, "")}/?token=${token.slice(0, 16)}...`
+    : "https://chatapi.talkfarma.pro/v1/api/external/<UUID>/?token=<JWT>";
+
+  return (
+    <div className="broker-mapper">
+      {/* Bloco 1: ativar + provider */}
+      <div className="broker-card">
+        <h3 className="broker-card-title">Transferir conversa para atendente humano</h3>
+        <p className="broker-card-sub">
+          Quando o agente decidir escalar (emergência, fora de escopo) ou o cliente
+          pedir explicitamente ("quero falar com atendente"), nós paramos de responder
+          e disparamos a transferência para o seu sistema de atendimento (PDV/CRM).
+          Hoje suportamos a integração com <strong>ClickMassa / TalkFarma</strong>.
+        </p>
+
+        <label className="agent-field" style={{ cursor: "pointer" }}>
+          <div className="agent-field-icon">🤝</div>
+          <div className="agent-field-info">
+            <div className="agent-field-label">Ativar transferência para o balcão</div>
+            <div className="agent-field-desc">
+              Sem isso, o agente continua respondendo mesmo em casos de escalonamento.
+            </div>
+          </div>
+          <div className="agent-field-mapping">
+            <input
+              type="checkbox"
+              checked={enabled}
+              onChange={(e) => setEnabled(e.target.checked)}
+              style={{ width: 22, height: 22, cursor: "pointer" }}
+            />
+          </div>
+        </label>
+      </div>
+
+      {/* Bloco 2: credenciais */}
+      <div className="broker-card">
+        <h3 className="broker-card-title">Credenciais do ClickMassa / TalkFarma</h3>
+        <p className="broker-card-sub">
+          Cole abaixo a URL externa <strong>sem</strong> o token, e o token JWT no campo separado.
+          Nós montamos a URL final: <code style={{ fontSize: 11 }}>{exampleUrl}</code>
+        </p>
+
+        <label className="broker-field">
+          <span>URL base (sem token)</span>
+          <input
+            value={baseUrl}
+            onChange={(e) => setBaseUrl(e.target.value)}
+            placeholder="https://chatapi.talkfarma.pro/v1/api/external/828c8f53-4a31-461d-bac7-124411779618"
+          />
+        </label>
+
+        <label className="broker-field">
+          <span>Token JWT</span>
+          <input
+            value={token}
+            onChange={(e) => setToken(e.target.value)}
+            placeholder="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+            style={{ fontFamily: "monospace", fontSize: 12 }}
+          />
+        </label>
+
+        <label className="broker-field">
+          <span>Número do departamento (queueId)</span>
+          <input
+            type="number"
+            value={queueId}
+            onChange={(e) => setQueueId(e.target.value)}
+            placeholder="Ex: 4"
+            style={{ maxWidth: 200 }}
+          />
+          <small style={{ color: "#86868b", fontSize: 12 }}>
+            ID da fila/setor no ClickMassa pra onde o ticket será encaminhado.
+          </small>
+        </label>
+      </div>
+
+      {/* Bloco 3: mensagem + keywords */}
+      <div className="broker-card">
+        <h3 className="broker-card-title">Comportamento da transferência</h3>
+
+        <label className="broker-field">
+          <span>Mensagem mostrada ao cliente no momento da transferência</span>
+          <textarea
+            value={transferMessage}
+            onChange={(e) => setTransferMessage(e.target.value)}
+            rows={3}
+            placeholder="Vou te transferir para um de nossos atendentes agora. Um momento, por favor."
+            style={{
+              width: "100%", padding: "8px 10px",
+              border: "1px solid var(--color-border, #e5e7eb)",
+              borderRadius: 6, fontSize: 14, fontFamily: "inherit",
+              resize: "vertical",
+            }}
+          />
+          <small style={{ color: "#86868b", fontSize: 12 }}>
+            Esta mensagem é enviada como <code>body</code> no POST para o ClickMassa
+            e também aparece na conversa do WhatsApp.
+          </small>
+        </label>
+
+        <label className="broker-field">
+          <span>Palavras-chave que disparam a transferência automaticamente</span>
+          <input
+            value={keywordsText}
+            onChange={(e) => setKeywordsText(e.target.value)}
+            placeholder="atendente, humano, balcão"
+          />
+          <small style={{ color: "#86868b", fontSize: 12 }}>
+            Lista separada por vírgula. Se a mensagem do cliente contiver qualquer
+            uma destas palavras (case-insensitive), a transferência é disparada antes
+            mesmo do agente responder. Deixe vazio para depender apenas do escalate
+            do agente.
+          </small>
+        </label>
+      </div>
+
+      {/* Save */}
+      <div className="broker-card">
+        <div className="broker-actions" style={{ justifyContent: "space-between" }}>
+          <div style={{
+            fontSize: 13,
+            color: saveMsg.includes("✓") ? "#2e7d32" : saveMsg.includes("✗") ? "#c62828" : "#86868b",
+          }}>
+            {saveMsg || (enabled
+              ? "Confira as credenciais antes de salvar."
+              : "Transferência desativada — o agente sempre responderá.")}
+          </div>
+          <button className="broker-primary" onClick={save} disabled={saving}>
+            {saving ? "Salvando..." : "Salvar configuração"}
+          </button>
+        </div>
+      </div>
+
+      {/* Bloco 4: testar */}
+      {enabled && (
+        <div className="broker-card" style={{ borderLeft: "4px solid #0a84ff" }}>
+          <h3 className="broker-card-title">🧪 Testar transferência</h3>
+          <p className="broker-card-sub">
+            Salva a configuração e dispara um POST de teste para o ClickMassa
+            usando os dados acima. Útil para validar token, queueId e URL antes
+            de receber mensagens reais.
+          </p>
+
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 2fr auto", gap: 8, alignItems: "end" }}>
+            <label className="broker-field" style={{ marginBottom: 0 }}>
+              <span>Telefone de teste</span>
+              <input
+                value={testPhone}
+                onChange={(e) => setTestPhone(e.target.value)}
+                placeholder="5511999998888"
+              />
+            </label>
+            <label className="broker-field" style={{ marginBottom: 0 }}>
+              <span>Mensagem (opcional — usa a configurada se vazio)</span>
+              <input
+                value={testMsg}
+                onChange={(e) => setTestMsg(e.target.value)}
+                placeholder="Mensagem customizada de teste"
+              />
+            </label>
+            <button
+              className="broker-primary"
+              onClick={runTest}
+              disabled={!testPhone || testing}
+              style={{ height: 38 }}
+            >
+              {testing ? "Enviando..." : "Disparar teste"}
+            </button>
+          </div>
+
+          {testResult && (
+            <div style={{
+              marginTop: 14, padding: 12, borderRadius: 8,
+              background: testResult.ok ? "#e8f5e9" : "#ffebee",
+              border: `1px solid ${testResult.ok ? "#81c784" : "#ef9a9a"}`,
+              fontSize: 13,
+            }}>
+              <div style={{ fontWeight: 600, marginBottom: 6 }}>
+                {testResult.ok ? "✓ Transferência aceita pelo ClickMassa" : "✗ Falha na transferência"}
+              </div>
+              {testResult.status_code != null && (
+                <div>Status HTTP: <code>{testResult.status_code}</code></div>
+              )}
+              {testResult.error && (
+                <div style={{ color: "#c62828" }}>Erro: {testResult.error}</div>
+              )}
+              {testResult.response && (
+                <pre style={{
+                  marginTop: 8, background: "#0d0d0e", color: "#a5d6a7",
+                  padding: 10, borderRadius: 6, fontSize: 11,
+                  maxHeight: 200, overflow: "auto",
+                }}>{JSON.stringify(testResult.response, null, 2)}</pre>
+              )}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }

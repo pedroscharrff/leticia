@@ -20,6 +20,17 @@ export interface Integration {
   bundle_enabled: boolean;
   bundle_window_seconds: number;
   skip_rules: { path: string; equals: unknown; comment?: string }[];
+  handoff_config: HandoffConfig;
+}
+
+export interface HandoffConfig {
+  enabled?: boolean;
+  provider?: "clickmassa";
+  base_url?: string;
+  token?: string;
+  queue_id?: number | string;
+  transfer_message?: string;
+  trigger_keywords?: string[];
 }
 
 export interface FlowConfig {
@@ -33,6 +44,7 @@ export interface FlowConfig {
   bundle_enabled?: boolean;
   bundle_window_seconds?: number;
   skip_rules?: { path: string; equals: unknown; comment?: string }[];
+  handoff_config?: HandoffConfig;
 }
 
 export interface IntegrationInput {
@@ -118,6 +130,24 @@ export const deleteIntegration = (id: string) =>
 
 export const saveFlow = (id: string, body: FlowConfig) =>
   api.put<Integration>(`/portal/broker/integrations/${id}/flow`, body).then((r) => r.data);
+
+// ── Handoff (transferência para atendente humano) ──
+export interface HandoffTestResult {
+  ok: boolean;
+  status_code: number | null;
+  response: unknown;
+  error: string | null;
+}
+
+export const testHandoff = (
+  integrationId: string,
+  phone: string,
+  message?: string,
+) =>
+  api.post<HandoffTestResult>(
+    `/portal/broker/integrations/${integrationId}/handoff/test`,
+    { phone, message },
+  ).then((r) => r.data);
 
 // ── Mappings ──
 export const listMappings = (integrationId: string) =>
