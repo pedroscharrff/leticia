@@ -145,6 +145,7 @@ async def transfer_to_human(
         "body": transfer_message,
         "forceTicketToDepartment": True,
         "queueId": queue_id_int,
+        "externalKey": "123456",
     }
 
     log.info("handoff.dispatching", url_prefix=base_url, queue_id=queue_id_int,
