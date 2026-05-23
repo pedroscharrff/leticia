@@ -59,18 +59,30 @@ def detect_media(payload: Any) -> dict | None:
     except (KeyError, IndexError, TypeError):
         pass
 
-    # ── WAHA / Evolution API e variantes ────────────────────────────────────
-    # { event: "message", message: { type, mediaUrl, mimetype } }
+    # ── ClickMassa / WAHA / Evolution API e variantes ───────────────────────
+    # ClickMassa: { message: { mediaType: "image", mediaUrl: "...", body: "caption" } }
+    # WAHA:       { message: { type: "image", mediaUrl: "...", mimetype: "..." } }
     msg = payload.get("message") if isinstance(payload.get("message"), dict) else None
     if msg:
-        mtype = msg.get("type")
-        if mtype in ("audio", "image", "video", "document", "ptt"):
-            norm = "audio" if mtype == "ptt" else mtype
-            url = msg.get("mediaUrl") or msg.get("url")
+        # mediaType (ClickMassa) tem precedência; cai pra type (WAHA) se faltar
+        mtype = msg.get("mediaType") or msg.get("type")
+        if mtype in ("audio", "image", "video", "document", "ptt", "voice"):
+            norm = "audio" if mtype in ("ptt", "voice") else mtype
+            url = (msg.get("mediaUrl") or msg.get("url")
+                   or msg.get("audioUrl") or msg.get("imageUrl"))
+            # Mime pode estar no próprio msg ou aninhado em raw.Message.*Message
+            mime = msg.get("mimetype") or msg.get("mimeType")
+            if not mime:
+                raw_msg = (msg.get("raw") or {}).get("Message") or {}
+                for k in ("imageMessage", "audioMessage", "videoMessage",
+                          "documentMessage"):
+                    if isinstance(raw_msg.get(k), dict):
+                        mime = raw_msg[k].get("mimetype")
+                        break
             if url:
                 return {
                     "media_type": norm,
-                    "media_mime": msg.get("mimetype") or msg.get("mimeType"),
+                    "media_mime": mime,
                     "media_url":  url,
                     "media_id":   None,
                 }
