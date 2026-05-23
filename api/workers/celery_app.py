@@ -394,6 +394,27 @@ async def _run_broker_flow(
     message = canonical_input.get("message") or ""
     session_id = canonical_input.get("session_id") or phone_clean
 
+    # Safety net: se canonical_input não trouxer mídia, tenta auto-detectar
+    # no payload bruto do evento (cobre o caso de canonical antigo ou
+    # bundling com versão anterior do código).
+    if not canonical_input.get("media_type") and raw_event_id:
+        try:
+            from services.media_detect import detect_media
+            async with get_db_conn() as conn:
+                raw_row = await conn.fetchrow(
+                    "SELECT payload FROM public.broker_raw_events WHERE id = $1",
+                    raw_event_id,
+                )
+            if raw_row and raw_row["payload"]:
+                detected = detect_media(raw_row["payload"])
+                if detected:
+                    canonical_input.update(detected)
+                    log.info("broker.flow.media_recovered_from_raw",
+                             media_type=detected["media_type"],
+                             event_id=raw_event_id)
+        except Exception as exc:
+            log.warning("broker.flow.media_recovery_failed", exc=str(exc))
+
     # Load active skills + LLM config
     async with get_db_conn() as conn:
         await conn.execute(f"SET search_path = {schema_name}, public")

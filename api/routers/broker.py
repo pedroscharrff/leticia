@@ -469,6 +469,17 @@ async def ingest(
             # Z-API, WhatsApp Cloud, WAHA e variantes comuns.
             from services.media_detect import enrich_canonical_with_media
             enrich_canonical_with_media(canonical_input, payload)
+            if canonical_input.get("media_type"):
+                log.info("broker.media_detected",
+                         media_type=canonical_input["media_type"],
+                         has_url=bool(canonical_input.get("media_url")),
+                         has_id=bool(canonical_input.get("media_id")),
+                         event_id=str(event_id))
+            else:
+                log.info("broker.no_media_in_payload",
+                         payload_keys=list(payload.keys())
+                                      if isinstance(payload, dict) else None,
+                         event_id=str(event_id))
         except Exception as exc:
             async with get_db_conn() as conn:
                 await conn.execute(

@@ -7,6 +7,12 @@ x-api-env: &api-env
   RABBITMQ_URL:                amqp://farmacia:${RABBITMQ_PASS}@rabbitmq:5672/
   ANTHROPIC_API_KEY:           ${ANTHROPIC_API_KEY}
   GOOGLE_API_KEY:              ${GOOGLE_API_KEY:-}
+  OPENAI_API_KEY:              ${OPENAI_API_KEY:-}
+  GROQ_API_KEY:                ${GROQ_API_KEY:-}
+  MEDIA_TRANSCRIPTION_PROVIDER: ${MEDIA_TRANSCRIPTION_PROVIDER:-groq}
+  MEDIA_TRANSCRIPTION_MODEL:   ${MEDIA_TRANSCRIPTION_MODEL:-whisper-large-v3}
+  MEDIA_VISION_PROVIDER:       ${MEDIA_VISION_PROVIDER:-anthropic}
+  MEDIA_VISION_MODEL:          ${MEDIA_VISION_MODEL:-claude-sonnet-4-6}
   SECRET_KEY:                  ${SECRET_KEY}
   ENVIRONMENT:                 ${ENVIRONMENT:-production}
   LOG_LEVEL:                   ${LOG_LEVEL:-INFO}

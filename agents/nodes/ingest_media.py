@@ -49,6 +49,11 @@ async def ingest_media(state: AgentState) -> AgentState:
 
 async def _do_ingest(state: AgentState) -> AgentState:
     media_type = state.get("media_type")
+    log.info("ingest_media.start",
+             media_type=media_type,
+             has_url=bool(state.get("media_url")),
+             has_b64=bool(state.get("media_b64")),
+             mime=state.get("media_mime"))
     # Lazy imports — keep cold-start lean for plain-text traffic
     from services.media import (
         transcribe_audio, describe_image, fetch_media_bytes,
