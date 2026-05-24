@@ -20,6 +20,23 @@ log = structlog.get_logger()
 # Regex para detectar handoff: [[HANDOFF:skill]] ou [[HANDOFF:skill:contexto]]
 _HANDOFF_RE = re.compile(r"\[\[HANDOFF:([a-z_]+)(?::([^\]]+))?\]\]", re.IGNORECASE)
 
+# Regex para detectar pedido de escalation humana ([[ESCALATE]]).
+_ESCALATE_RE = re.compile(r"\[\[ESCALATE\]\]", re.IGNORECASE)
+
+
+def _parse_escalate(response: str) -> tuple[str, bool]:
+    """Detecta marcador [[ESCALATE]] na resposta.
+
+    Retorna (resposta_limpa, True) se o agente pediu escalation humana,
+    senão (resposta_original, False).
+    """
+    if not response:
+        return response, False
+    if _ESCALATE_RE.search(response):
+        cleaned = _ESCALATE_RE.sub("", response).strip()
+        return cleaned, True
+    return response, False
+
 
 def _extract_text(content) -> str:
     """

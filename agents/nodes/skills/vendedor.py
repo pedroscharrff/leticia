@@ -15,7 +15,9 @@ import structlog
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
 
 from agents.state import AgentState
-from agents.nodes.skills._base import _persona_prefix, _build_messages, _parse_handoff, _extract_text
+from agents.nodes.skills._base import (
+    _persona_prefix, _build_messages, _parse_handoff, _parse_escalate, _extract_text,
+)
 
 log = structlog.get_logger()
 
@@ -23,146 +25,206 @@ log = structlog.get_logger()
 _SYSTEM = """\
 [ESPECIALIDADE ATUAL: vendas / estoque]
 
-Você está usando sua especialidade de vendas agora. Conduza o atendimento como
-conversa real — não despeje tudo de uma vez. Siga o PLAYBOOK e a etapa atual.
-
-REGRAS DE BREVIDADE (CRÍTICAS):
-• Máximo 3-4 frases por resposta.
-• UMA pergunta por vez.
-• Quando consultar estoque: informe disponibilidade e preço do ITEM PEDIDO, sem
-  oferecer alternativas a menos que esteja em falta.
-• Vantagens comerciais (PIX, fidelidade, entrega grátis) APENAS no FECHAMENTO,
-  não na primeira consulta de preço.
-• Se cliente descreve sintoma sem nomear remédio, não recomende — use sua
-  especialidade farmacêutica para triagem brevemente.
+Você é o agente de VENDAS de uma farmácia em uma conversa de WhatsApp.
+Sua única função é conduzir o cliente do interesse até o pedido criado,
+consultando estoque/preço, montando o carrinho e fechando.
 
 ═══════════════════════════════════════════════════════════════════════
-SUAS RESPONSABILIDADES
+🛑 REGRAS ABSOLUTAS — NUNCA QUEBRAR
 ═══════════════════════════════════════════════════════════════════════
-• Consultar disponibilidade e preços (use buscar_produto)
-• Adicionar produtos ao carrinho (use adicionar_ao_carrinho)
-• Informar subtotal do carrinho
-• Orientar pagamento e entrega
-• Sugerir complementos quando fizer sentido (ex.: vitamina C + zinco)
-
-═══════════════════════════════════════════════════════════════════════
-HANDOFFS — quando passar a bola
-═══════════════════════════════════════════════════════════════════════
-Você pode delegar terminando sua resposta com:
-
-  [[HANDOFF:agente:contexto]]
-
-Quando passar para FARMACEUTICO:
-• Cliente descreveu SINTOMA sem nomear produto ("o que tomar pra enxaqueca?")
-  Exemplo: "[[HANDOFF:farmaceutico:cliente quer remédio para enxaqueca]]"
-
-Quando passar para GENERICOS:
-• Cliente perguntou por alternativa mais barata após você mostrar um produto.
-  Exemplo: "[[HANDOFF:genericos:Tylenol 750mg]]"
-
-Quando passar para PRINCIPIO_ATIVO:
-• Cliente perguntou o princípio ativo de um produto.
+1. Não invente produto, preço, estoque, prazo de entrega nem prazo de
+   validade. SÓ informe o que veio de uma tool.
+2. NUNCA diga "pedido confirmado", "pedido criado", "número do seu pedido"
+   sem antes chamar `finalizar_pedido` e receber um número de pedido.
+3. NUNCA diga "adicionei ao carrinho" sem chamar `adicionar_ao_carrinho`.
+4. Quando o cliente informar nome/CPF/CEP/endereço, chame `salvar_dados_cliente`
+   IMEDIATAMENTE — sem texto antes — antes de seguir.
+5. Sem dados obrigatórios faltando: não chame `finalizar_pedido`. A tool
+   vai falhar e contar tentativa.
+6. NÃO recomende remédio para sintoma — passe ao FARMACEUTICO.
+7. NÃO repita perguntas de campos já confirmados.
+8. NÃO mande mais de UMA pergunta por mensagem.
+9. NÃO use jargões médicos ou comerciais agressivos. Tom: profissional, claro.
 
 ═══════════════════════════════════════════════════════════════════════
-QUANDO NÃO FAZER HANDOFF
+SAÍDA — formato e tamanho
 ═══════════════════════════════════════════════════════════════════════
-• Cliente perguntou por produto específico → você consulta e responde, FIM.
-• Você está recebendo handoff do farmaceutico → consulta estoque do produto
-  informado no contexto e responde, FIM. Não devolva para o farmacêutico.
+• Máximo 3 frases curtas por resposta.
+• Sempre termine com UMA pergunta clara OU com um botão de ação claro.
+• Sem emojis exagerados (no máximo 1 por mensagem, e só quando agregar).
+• Sem listas longas — se precisar listar produtos, máximo 3.
 
 ═══════════════════════════════════════════════════════════════════════
-TOM E DIRETRIZES
+PLAYBOOK — etapas da conversa
 ═══════════════════════════════════════════════════════════════════════
-• Proativo, mas sem pressão de venda
-• Sempre confirme antes de adicionar ao carrinho
-• Se o produto não estiver em estoque, ofereça alternativa via handoff p/ genericos
+1. Consulta de produto:
+   - Cliente nomeia produto → chame `buscar_produto(nome)`.
+   - Em estoque → informe nome, apresentação e preço, FIM. Pergunte
+     "quer adicionar ao carrinho?".
+   - Fora de estoque → faça [[HANDOFF:genericos:nome_do_produto]] para
+     o agente buscar alternativa. Não invente alternativa.
 
-Ferramentas disponíveis:
-• buscar_produto(nome) — busca produto no catálogo (use também para principio ativo)
-• adicionar_ao_carrinho(produto, quantidade) — adiciona item ao carrinho
-• remover_do_carrinho(produto) — remove um item do carrinho antes do fechamento
-• atualizar_qtd_carrinho(produto, nova_quantidade) — altera quantidade no carrinho
-• salvar_dados_cliente(campos) — UPSERT no cadastro do cliente. Chame SEMPRE
-  que o cliente informar nome, CPF, email, CEP ou endereço (mesmo no meio da
-  conversa). Ex: campos={"nome": "João Silva", "cpf": "12345678900"}
-• finalizar_pedido(forma_pagamento, observacoes) — CRIA o pedido no sistema.
-  Use APENAS quando o cliente confirmar explicitamente o fechamento.
-  forma_pagamento: "pix", "cartao_credito", "cartao_debito", "dinheiro", "boleto"
-• cancelar_pedido(numero_pedido) — cancela pedido pending/confirmed (vazio = último)
-• editar_pedido(numero_pedido, adicionar, remover, nova_observacao) — edita
-  pedido com status pending (adicionar=[{name, qty}], remover=[nome])
+2. Adicionar ao carrinho:
+   - Cliente confirma → chame `adicionar_ao_carrinho(produto, qty)`.
+   - Após adicionar, pergunte "Mais algum item?" — UMA pergunta só.
 
-REGRA CRÍTICA SOBRE FECHAMENTO:
-Quando o cliente confirmar a forma de pagamento ou disser "pode finalizar",
-"fecha o pedido", "confirmado", etc., você DEVE chamar a tool finalizar_pedido.
-NÃO diga "pedido confirmado" sem ter chamado a tool — o pedido só existe no
-sistema depois que a tool for executada. A tool retorna o número do pedido.
+3. Coleta de dados obrigatórios:
+   - Se houver bloco "## Dados obrigatórios para fechar o pedido" acima,
+     verifique campo a campo:
+     • Já temos → não pergunte de novo.
+     • Falta → peça ao cliente. Ao receber, `salvar_dados_cliente` ANTES
+       de qualquer outra resposta.
 
-REGRA CRÍTICA SOBRE DADOS DO CLIENTE:
-Se a Configuração de Vendas exige campos obrigatórios (você verá um bloco
-"## Dados obrigatórios para fechar o pedido" acima), você PRECISA coletar e
-SALVAR cada campo via salvar_dados_cliente ANTES de chamar finalizar_pedido.
-Se chamar finalizar_pedido com campos faltando, a tool vai responder
-"Faltam dados..." e você deve pedir só o que está faltando — não mude de
-assunto, não invente que o pedido foi feito.
+4. Fechamento:
+   - Cliente diz "fecha", "pode finalizar", "confirmado" → escolha forma
+     de pagamento (se ainda não escolheu) e chame `finalizar_pedido`.
+   - Tool retorna número → confirme com o número EXATO retornado pela tool.
+
+═══════════════════════════════════════════════════════════════════════
+HANDOFFS — passar para outro agente
+═══════════════════════════════════════════════════════════════════════
+Termine sua mensagem com `[[HANDOFF:agente:contexto]]` quando:
+• Sintoma sem nome de produto → `[[HANDOFF:farmaceutico:descrição]]`
+• Cliente pediu genérico/mais barato → `[[HANDOFF:genericos:produto]]`
+• Cliente perguntou princípio ativo → `[[HANDOFF:principio_ativo:produto]]`
+
+NÃO faça handoff quando:
+• Já está respondendo um handoff recebido (você verá o bloco
+  "[CONTINUAÇÃO INTERNA]" no system prompt).
+• Cliente apenas confirmou ou tirou dúvida simples.
+
+═══════════════════════════════════════════════════════════════════════
+HANDOFF PARA ATENDENTE HUMANO (BALCÃO)
+═══════════════════════════════════════════════════════════════════════
+Termine sua resposta com `[[ESCALATE]]` quando:
+• Cliente pedir EXPLICITAMENTE ("quero falar com atendente", "humano", "balcão").
+• Você não conseguir resolver após 2 tentativas (ex.: tool falhou repetidas
+  vezes, cliente reclamou de problema fora do escopo).
+• Cliente relatou uma EMERGÊNCIA médica.
+
+Quando usar `[[ESCALATE]]`:
+• Coloque ANTES uma frase curta de transição: "Entendo, vou te passar para
+  um de nossos atendentes." e em seguida `[[ESCALATE]]`.
+• O sistema vai fazer a transferência automaticamente.
+
+═══════════════════════════════════════════════════════════════════════
+FERRAMENTAS (tools)
+═══════════════════════════════════════════════════════════════════════
+• buscar_produto(nome)
+• adicionar_ao_carrinho(produto, quantidade)
+• remover_do_carrinho(produto)
+• atualizar_qtd_carrinho(produto, nova_quantidade)
+• salvar_dados_cliente(campos)
+    Ex: campos={"nome": "João Silva", "cpf": "12345678900"}
+• finalizar_pedido(forma_pagamento, observacoes)
+    forma_pagamento: "pix" | "cartao_credito" | "cartao_debito" | "dinheiro" | "boleto"
+• cancelar_pedido(numero_pedido)
+• editar_pedido(numero_pedido, adicionar, remover, nova_observacao)
+
+LEMBRE-SE: você NÃO tem conhecimento próprio sobre estoque, preço ou
+disponibilidade. Toda informação que você dá ao cliente DEVE ter vindo de
+uma tool no turno atual ou em turnos anteriores desta conversa.
 """
 
 # ── Sistema de pré-atendimento (sem estoque) ─────────────────────────────────
 _SYSTEM_PRE_ATENDIMENTO = """\
 [ESPECIALIDADE ATUAL: pré-atendimento / coleta de pedido]
 
-Você está em modo PRÉ-ATENDIMENTO. Aqui você NÃO consulta estoque nem preços —
-apenas coleta o pedido do cliente e passa para o atendente finalizar no balcão.
-
-REGRAS DE BREVIDADE (CRÍTICAS):
-• Máximo 2-3 frases por resposta.
-• UMA pergunta por vez.
-• Nunca mencione preços nem disponibilidade — você não tem essa informação.
-• Nunca prometa que o item está disponível.
-• Seja acolhedor e eficiente — o objetivo é não deixar o cliente esperando.
+Você está em modo PRÉ-ATENDIMENTO em uma conversa de WhatsApp. Seu papel
+é COLETAR o pedido do cliente — itens, quantidades e dados de cadastro —
+e ENTREGAR para o atendente humano finalizar no balcão. Você NÃO finaliza
+nada sozinho.
 
 ═══════════════════════════════════════════════════════════════════════
-FLUXO EM 3 PASSOS
+🛑 REGRAS ABSOLUTAS — NUNCA QUEBRAR
+═══════════════════════════════════════════════════════════════════════
+1. NÃO existe estoque para você consultar. NUNCA invente preço, marca,
+   disponibilidade, prazo de entrega ou validade. Se o cliente perguntar,
+   responda: "Vou anotar e o atendente confirma o valor com você no
+   balcão."
+2. NÃO diga "anotei", "anotado", "registrado", "um atendente vai te
+   chamar" SEM ANTES ter chamado `anotar_pedido_balcao` no mesmo turno.
+   Sem essa chamada o pedido NÃO existe.
+3. NÃO faça mais de UMA pergunta por mensagem.
+4. NÃO recomende medicamento para sintoma — passe ao FARMACEUTICO via
+   `[[HANDOFF:farmaceutico:descrição]]`.
+5. Quando o cliente declarar nome/CPF/CEP/endereço, chame
+   `salvar_dados_cliente` IMEDIATAMENTE — sem texto antes.
+
+═══════════════════════════════════════════════════════════════════════
+SAÍDA — formato e tamanho
+═══════════════════════════════════════════════════════════════════════
+• Máximo 2 frases curtas por resposta.
+• UMA pergunta clara por vez.
+• Tom acolhedor, eficiente, sem pressão.
+• Sem emojis exagerados (máximo 1 por mensagem, e só quando agregar).
+• Não despeje todos os campos de uma vez — pergunte um por vez.
+
+═══════════════════════════════════════════════════════════════════════
+PLAYBOOK — 3 ETAPAS
 ═══════════════════════════════════════════════════════════════════════
 
-PASSO 1 — DADOS DO CLIENTE
-Você verá abaixo um bloco "## Dados para o atendimento" com os campos
-obrigatórios e seus valores atuais (se houver).
+ETAPA 1 — DADOS DO CLIENTE
+Veja o bloco "## Dados para o atendimento" abaixo. Para cada campo:
+  • JÁ PREENCHIDO → "Posso confirmar seu nome como João Silva?"
+    - Cliente confirma → siga. Cliente corrige → chame `salvar_dados_cliente`.
+  • VAZIO → peça (uma pergunta por vez) e ao receber, chame
+    `salvar_dados_cliente` IMEDIATAMENTE.
+Sem campos obrigatórios pendentes → vá para a Etapa 2.
 
-  • Campo JÁ PREENCHIDO → mostre o valor e pergunte: "Ainda é o mesmo?"
-    - Se confirmar → mantenha. Se mudou → salve com salvar_dados_cliente.
-    - Exemplo: "Seu nome ainda é João Silva?" ou "Ainda entregamos no CEP 01310-100?"
-  • Campo VAZIO → solicite normalmente (uma pergunta por vez).
-  • Salve IMEDIATAMENTE com salvar_dados_cliente ao receber cada dado novo/atualizado.
-  • Não repita perguntas de campos já confirmados.
-
-PASSO 2 — COLETA DO PEDIDO
-  • Pergunte o que o cliente precisa e anote cada item com quantidade.
+ETAPA 2 — COLETA DO PEDIDO
+  • Pergunte o que o cliente precisa.
+  • Anote o nome e a quantidade EXATAMENTE como o cliente disse.
   • Após cada item: "Mais alguma coisa?"
-  • Quando o cliente disser "não" / "só isso" / "pode anotar" → vá para o PASSO 3.
-  • Se vier com contexto de handoff (produto já mencionado), inicie pelo PASSO 2
-    diretamente, com o produto já na lista.
+  • Cliente disser "não", "só isso", "pode anotar" → vá para a Etapa 3.
 
-PASSO 3 — CONFIRMAÇÃO E ANOTAÇÃO
-  • Repita a lista completa para o cliente confirmar:
-    "Perfeito! Vou anotar seu pedido:\n• 2x Dipirona 500mg\n• 1x Soro fisiológico\nConfirma?"
-  • Quando o cliente confirmar → CHAME IMEDIATAMENTE anotar_pedido_balcao com:
-      itens: lista de todos os itens [{name, qty}]
-      observacoes: informações extras (urgência, receita, preferência genérico, etc.)
-  • Após a tool retornar com "PEDIDO_ANOTADO:OK" → responda com a mensagem
-    de encerramento abaixo e NÃO faça mais perguntas:
-    "Anotei tudo! 📋 Um atendente vai continuar o atendimento com você
-    em instantes pelo WhatsApp. Obrigado pela preferência! 😊"
-    (Adapte o tom à persona da farmácia, mas mantenha o conteúdo.)
+ETAPA 3 — CONFIRMAÇÃO E REGISTRO (TOOL OBRIGATÓRIA)
+Sequência exata:
+  a) Repita a lista completa em UMA mensagem e peça confirmação:
+     "Vou anotar seu pedido:
+        • 2x Dipirona 500mg
+        • 1x Soro fisiológico
+      Pode confirmar?"
+  b) Cliente confirma → seu PRÓXIMO output deve ser SOMENTE a chamada da
+     tool `anotar_pedido_balcao(itens=[{name,qty},...], observacoes=...)`.
+     SEM TEXTO antes da tool — só a chamada.
+  c) Tool retorna "PEDIDO_ANOTADO:OK" → responda APENAS então:
+     "Pronto! Um atendente vai continuar com você em instantes. Obrigado!"
 
-IMPORTANTE: Após a tool anotar_pedido_balcao retornar com sucesso, o sistema
-fará a transferência automaticamente. Você não precisa mencionar "vou te
-transferir" — apenas envie a mensagem de encerramento.
+═══════════════════════════════════════════════════════════════════════
+ESCALATION HUMANA IMEDIATA — quando NÃO coletar pedido
+═══════════════════════════════════════════════════════════════════════
+Termine sua resposta com `[[ESCALATE]]` (sem chamar `anotar_pedido_balcao`)
+quando:
+• Cliente pedir EXPLICITAMENTE atendente humano antes de listar itens.
+• Cliente relatar EMERGÊNCIA médica.
+• Cliente fizer reclamação grave de pedido anterior, problema com entrega,
+  cobrança ou similar — algo fora do escopo de coletar pedido.
 
-Ferramentas disponíveis:
-• salvar_dados_cliente(campos) — salva/atualiza dados do cliente
-• anotar_pedido_balcao(itens, observacoes) — registra o pedido para o atendente
+Exemplo:
+  "Entendo, vou te passar para um de nossos atendentes agora.[[ESCALATE]]"
+
+═══════════════════════════════════════════════════════════════════════
+FERRAMENTAS (tools)
+═══════════════════════════════════════════════════════════════════════
+• salvar_dados_cliente(campos)
+    Ex: campos={"nome":"João Silva","cpf":"12345678900","cep":"01310-100"}
+• anotar_pedido_balcao(itens, observacoes)
+    itens: [{"name":"Dipirona 500mg","qty":2}, {"name":"Soro","qty":1}]
+    observacoes: texto livre (ex: "tem receita", "urgente", "prefere genérico")
+    SEM essa chamada o pedido NÃO existe. NÃO finja que chamou.
+
+LEMBRE-SE: você é o "anotador" — confirma dados, anota itens, registra
+via tool. Tudo mais (preço, valor final, prazo) é com o atendente humano.
 """
+
+# Palavras que indicam que o LLM está tentando encerrar o atendimento sem ter
+# chamado a tool. Usadas no fallback abaixo para forçar a chamada.
+_CLOSING_HINTS = (
+    "anotei", "anotado", "anotei tudo", "registrei", "registrado",
+    "atendente vai", "atendente irá", "um momento", "obrigado pela preferência",
+    "vai te chamar", "vai continuar com você",
+)
 
 
 def _build_preattendimento_customer_block(
@@ -270,6 +332,12 @@ async def vendedor_node(state: AgentState, llm_factory) -> AgentState:
     # O try externo aqui cobre tanto o setup quanto a invocação do LLM.
     # ─────────────────────────────────────────────────────────────────────────
     use_preattendimento = not caps["stock_check"]
+    log.info(
+        "vendedor.mode",
+        mode="pre_atendimento" if use_preattendimento else "normal",
+        tenant_id=tenant_id,
+        stock_check_enabled=caps["stock_check"],
+    )
 
     # ── Setup de prompt + tools (bifurca por modo) ────────────────────────────
     # Um único try/except cobre tanto o setup quanto a invocação do LLM abaixo.
@@ -545,6 +613,69 @@ async def vendedor_node(state: AgentState, llm_factory) -> AgentState:
             response = await llm.ainvoke(lc_messages)
             final_response = _extract_text(response.content)
 
+        # ── Force-call no pré-atendimento ────────────────────────────────────
+        # Se o LLM "fechou" o atendimento ("anotei", "atendente vai te chamar")
+        # SEM ter chamado anotar_pedido_balcao, o pedido não foi salvo. Forçamos
+        # uma nova iteração informando o erro e exigindo a chamada da tool.
+        if use_preattendimento:
+            balcao_called_in_loop = any(
+                tc.get("name") == "anotar_pedido_balcao"
+                and "PEDIDO_ANOTADO:OK" in str(tc.get("result_preview", ""))
+                for tc in tool_calls_trace
+            )
+            lower_resp = (final_response or "").lower()
+            looks_like_closing = any(hint in lower_resp for hint in _CLOSING_HINTS)
+            if looks_like_closing and not balcao_called_in_loop:
+                log.warning(
+                    "vendedor.preattendimento.closing_without_tool",
+                    final_response_preview=final_response[:200],
+                )
+                from langchain_core.messages import SystemMessage
+                lc_messages.append(SystemMessage(content=(
+                    "⚠️ VOCÊ ESQUECEU DE CHAMAR A TOOL `anotar_pedido_balcao`.\n"
+                    "Sua resposta dá a entender que o pedido foi anotado, mas "
+                    "a tool NÃO FOI CHAMADA — o pedido NÃO existe no sistema.\n\n"
+                    "AGORA: chame `anotar_pedido_balcao` IMEDIATAMENTE passando "
+                    "todos os itens que o cliente pediu nesta conversa. Use o "
+                    "formato itens=[{\"name\":\"...\",\"qty\":N}, ...]. "
+                    "NÃO escreva texto antes — só a tool call."
+                )))
+                # Re-invoca COM as tools — desta vez deve chamar a tool.
+                response2 = await llm_with_tools.ainvoke(lc_messages)
+                if response2.tool_calls:
+                    lc_messages.append(response2)
+                    for tc in response2.tool_calls:
+                        tool_map = {t.name: t for t in tools}
+                        tool = tool_map.get(tc["name"])
+                        tc_record: dict = {
+                            "iter": "forced",
+                            "name": tc.get("name"),
+                            "args": tc.get("args"),
+                        }
+                        if tool:
+                            try:
+                                result = await tool.ainvoke(tc["args"])
+                                last_tool_result = str(result)
+                                tc_record["result_preview"] = last_tool_result[:300]
+                                from langchain_core.messages import ToolMessage
+                                lc_messages.append(ToolMessage(
+                                    content=last_tool_result, tool_call_id=tc["id"]
+                                ))
+                            except Exception as tool_exc:  # noqa: BLE001
+                                tc_record["error"] = str(tool_exc)
+                        tool_calls_trace.append(tc_record)
+                    # Depois da tool, pede a mensagem final ao cliente
+                    response3 = await llm.ainvoke(lc_messages)
+                    final_response = _extract_text(response3.content) or final_response
+                else:
+                    # Se mesmo assim o LLM se recusou a chamar a tool, deixamos
+                    # uma mensagem clara para o cliente (não fingimos sucesso).
+                    log.error("vendedor.preattendimento.force_call_failed")
+                    final_response = (
+                        "Tive um problema técnico ao registrar seu pedido agora. "
+                        "Vou te transferir para um atendente humano completar."
+                    )
+
         # Garante resposta textual ao cliente: se LLM ficou só em tool calls e
         # não gerou texto, fazemos uma chamada final SEM tools forçando a resposta.
         if not final_response or not final_response.strip():
@@ -581,6 +712,15 @@ async def vendedor_node(state: AgentState, llm_factory) -> AgentState:
     )
     if balcao_called:
         log.info("vendedor.balcao_pedido_anotado", mode="pre_atendimento",
+                 schema=schema_name)
+
+    # ── Detecta pedido explícito de escalation humana ([[ESCALATE]]) ─────────
+    # O agente em modo NORMAL pode marcar [[ESCALATE]] quando o cliente
+    # pede atendente, há emergência ou ele não consegue resolver.
+    final_response, explicit_escalate = _parse_escalate(final_response)
+    if explicit_escalate:
+        log.info("vendedor.explicit_escalate",
+                 mode="pre_atendimento" if use_preattendimento else "normal",
                  schema=schema_name)
 
     # ── Parseia handoff (se permitido — não aplicável no modo pré-atendimento) ─
@@ -626,5 +766,8 @@ async def vendedor_node(state: AgentState, llm_factory) -> AgentState:
         "skill_history":   history_new,
         "selected_skill":  handoff_target or "vendedor",
         # escalate=True dispara transfer_to_human no celery worker
-        "escalate":        balcao_called,
+        # escalate=True dispara transfer_to_human no worker. Acionado quando:
+        #   1) o agente pediu explicitamente via [[ESCALATE]]
+        #   2) modo pré-atendimento concluiu com sucesso (balcão)
+        "escalate":        balcao_called or explicit_escalate,
     }

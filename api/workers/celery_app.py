@@ -223,6 +223,71 @@ async def _run_graph(
         LATENCY.labels(tenant_id=tenant_id, skill=skill_used).observe(elapsed)
         CONV_TOTAL.labels(tenant_id=tenant_id, skill=skill_used, status="ok").inc()
 
+        # ── Handoff p/ atendente humano (balcão) ─────────────────────────────
+        # Para webhooks nativos (POST /webhook/{token}) lemos o handoff_config
+        # do PRIMEIRO canal ativo do tenant que tenha handoff habilitado.
+        # (Tenants com 1 canal — a maioria — sempre cai no canal certo.)
+        agent_escalate = bool(final_state.get("escalate", False))
+        handoff_cfg: dict = {}
+        try:
+            async with get_db_conn() as conn:
+                ch_row = await conn.fetchrow(
+                    """
+                    SELECT handoff_config
+                      FROM public.tenant_channels
+                     WHERE tenant_id = $1
+                       AND active = TRUE
+                       AND handoff_config IS NOT NULL
+                       AND handoff_config != '{}'::jsonb
+                     ORDER BY created_at
+                     LIMIT 1
+                    """,
+                    tenant_id,
+                )
+            if ch_row and ch_row["handoff_config"]:
+                cfg_raw = ch_row["handoff_config"]
+                if isinstance(cfg_raw, str):
+                    handoff_cfg = json.loads(cfg_raw) or {}
+                else:
+                    handoff_cfg = dict(cfg_raw)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("webhook.handoff.lookup_failed", tenant=tenant_id, exc=str(exc))
+
+        try:
+            from services.handoff import should_handoff, transfer_to_human
+            do_handoff, reason = should_handoff(
+                handoff_cfg,
+                agent_escalate=agent_escalate,
+                user_message=current_message,
+            )
+            if do_handoff:
+                log.info(
+                    "webhook.handoff.triggered",
+                    tenant=tenant_id, reason=reason,
+                    phone_prefix=phone[:4], agent_escalate=agent_escalate,
+                )
+                phone_clean = "".join(c for c in phone if c.isdigit())
+                hresult = await transfer_to_human(
+                    handoff_cfg, phone=phone_clean,
+                    # Quando o próprio agente já mandou uma resposta de fechamento,
+                    # ela é a melhor mensagem de transição. Caso contrário usamos
+                    # a transfer_message configurada.
+                    custom_message=response_text if response_text and agent_escalate else None,
+                )
+                # Substitui o texto enviado ao cliente só quando NÃO foi o
+                # agente que pediu — quando foi o agente, ele já gerou um
+                # texto de despedida apropriado e queremos mantê-lo.
+                if not agent_escalate:
+                    response_text = (
+                        handoff_cfg.get("transfer_message")
+                        or "Estou te transferindo para um atendente agora. Um momento, por favor."
+                    )
+                skill_used = "handoff"
+                log.info("webhook.handoff.result", ok=hresult.get("ok"),
+                         status_code=hresult.get("status_code"))
+        except Exception as exc:  # noqa: BLE001
+            log.error("webhook.handoff.dispatch_failed", tenant=tenant_id, exc=str(exc))
+
         await _deliver_response(
             callback_url,
             {
