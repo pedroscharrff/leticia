@@ -57,15 +57,15 @@ else
 fi
 
 # ── 2. Build apenas das imagens da aplicação ──────────────────────────────────
-step "2/4  Fazendo build das imagens"
+step "2/5  Fazendo build das imagens"
 
 info "Rebuilding: api, worker, admin (infra não muda)"
 docker compose build --pull api worker admin
 
 success "Build concluído"
 
-# ── 3. Restart com zero-downtime ──────────────────────────────────────────────
-step "3/4  Aplicando atualização"
+# ── 3. Subir containers + rodar migrations pendentes ──────────────────────────
+step "3/5  Aplicando atualização"
 
 info "Subindo novos containers..."
 docker compose up -d --no-deps api worker admin
@@ -79,8 +79,29 @@ docker image prune -f &>/dev/null || true
 
 success "Containers atualizados"
 
-# ── 4. Health check ───────────────────────────────────────────────────────────
-step "4/4  Verificando saúde"
+# ── 4. Rodar migrations pendentes ─────────────────────────────────────────────
+step "4/5  Aplicando migrations do banco"
+
+info "Esperando Postgres ficar pronto..."
+PG_TRIES=0
+while [[ $PG_TRIES -lt 15 ]]; do
+    if docker compose exec -T postgres pg_isready -U farmacia -d saas_farmacia &>/dev/null; then
+        break
+    fi
+    sleep 2
+    ((PG_TRIES++))
+done
+
+info "Executando scripts/run_migrations.py (idempotente — só aplica pendentes)..."
+if docker compose exec -T api python /app/scripts/run_migrations.py; then
+    success "Migrations aplicadas"
+else
+    warn "Falha ao rodar migrations. Verifique manualmente:"
+    warn "  docker compose exec api python /app/scripts/run_migrations.py"
+fi
+
+# ── 5. Health check ───────────────────────────────────────────────────────────
+step "5/5  Verificando saúde"
 
 info "Aguardando API ficar pronta..."
 ATTEMPTS=0
