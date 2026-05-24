@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { PortalLayout } from "../components/PortalLayout";
 import { Spinner } from "../components/Spinner";
 import {
@@ -21,6 +22,8 @@ import "./PortalBroker.css";
 type Tab = "connect" | "flow" | "handoff" | "events";
 
 export function PortalBroker() {
+  const [params] = useSearchParams();
+  const preSelectedId = params.get("selected");
   const [tab, setTab] = useState<Tab>("connect");
   const [integrations, setIntegrations] = useState<Integration[]>([]);
   const [selected, setSelected] = useState<Integration | null>(null);
@@ -30,12 +33,18 @@ export function PortalBroker() {
   const refresh = useCallback(async () => {
     const list = await listIntegrations();
     setIntegrations(list);
+    // Se veio ?selected=<id> via query (vindo do hub Canais & Integrações),
+    // pré-seleciona aquela integração. Senão, mantém o comportamento padrão.
+    if (preSelectedId && (!selected || selected.id !== preSelectedId)) {
+      const target = list.find((i) => i.id === preSelectedId);
+      if (target) { setSelected(target); return; }
+    }
     if (!selected && list.length) setSelected(list[0]);
     if (selected) {
       const updated = list.find((i) => i.id === selected.id);
       if (updated) setSelected(updated);
     }
-  }, [selected]);
+  }, [selected, preSelectedId]);
 
   useEffect(() => {
     refresh().finally(() => setLoading(false));

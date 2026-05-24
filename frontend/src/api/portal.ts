@@ -94,12 +94,27 @@ export async function listTenantUsers(tenantId: string): Promise<TenantUser[]> {
 
 // ── Channels ──────────────────────────────────────────────────────────────────
 
+/**
+ * Bloco de configuração de transferência ao atendente humano (balcão).
+ * Igual ao usado em integrações webhook (broker), agora também por canal nativo.
+ */
+export interface HandoffConfig {
+  enabled?: boolean;
+  provider?: "clickmassa";        // único provider hoje
+  base_url?: string;
+  token?: string;
+  queue_id?: number | string;
+  transfer_message?: string;
+  trigger_keywords?: string[];
+}
+
 export interface Channel {
   id: string;
   channel_type: string;
   display_name: string | null;
   active: boolean;
   config_json: Record<string, unknown>;
+  handoff_config: HandoffConfig;
   webhook_url: string;
 }
 
@@ -112,16 +127,28 @@ export async function createChannel(data: {
   display_name?: string;
   credentials: Record<string, string>;
   config_json?: Record<string, unknown>;
+  handoff_config?: HandoffConfig;
 }): Promise<Channel> {
   return (await api.post<Channel>("/portal/channels", data)).data;
 }
 
-export async function updateChannel(id: string, data: Partial<Channel> & { credentials?: Record<string, string> }): Promise<Channel> {
+export async function updateChannel(
+  id: string,
+  data: Partial<Channel> & { credentials?: Record<string, string> },
+): Promise<Channel> {
   return (await api.patch<Channel>(`/portal/channels/${id}`, data)).data;
 }
 
 export async function deleteChannel(id: string): Promise<void> {
   await api.delete(`/portal/channels/${id}`);
+}
+
+/** Testa a config de handoff persistida no canal disparando um envio real. */
+export async function testChannelHandoff(
+  channelId: string,
+  payload: { phone: string; message?: string },
+): Promise<{ ok: boolean; status_code: number | null; error: string | null }> {
+  return (await api.post(`/portal/channels/${channelId}/handoff/test`, payload)).data as any;
 }
 
 // ── Inventory / Products ──────────────────────────────────────────────────────

@@ -73,11 +73,9 @@ const NAV_SECTIONS: NavSection[] = [
     title: "Configuração",
     icon: "⚙️",
     items: [
-      { path: "/portal/canais",     label: "Canais",          icon: "📡", key: "canais"     },
-      { path: "/portal/ia-config",  label: "Modelos de IA",   icon: "🤖", key: "ia-config"  },
-      { path: "/portal/integracao", label: "Integração & API",icon: "🔗", key: "integracao" },
-      { path: "/portal/broker",     label: "Webhooks",        icon: "⚡", key: "broker"     },
-      { path: "/portal/billing",    label: "Plano & Cobrança",icon: "💳", key: "billing"    },
+      { path: "/portal/canais",    label: "Canais & Integrações", icon: "📡", key: "canais"    },
+      { path: "/portal/ia-config", label: "Modelos de IA",         icon: "🤖", key: "ia-config" },
+      { path: "/portal/billing",   label: "Plano & Cobrança",      icon: "💳", key: "billing"   },
     ],
   },
 ];

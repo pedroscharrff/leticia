@@ -530,7 +530,14 @@ async def _run_broker_flow(
     #   - palavra-chave configurada batendo na mensagem do cliente
     # Se transferir, sobrescreve reply_text pela mensagem de transferência
     # e dispara o POST para a API externa (ClickMassa / TalkFarma / ...).
+    # handoff_config pode vir como dict (asyncpg JSONB) ou string (legacy)
     handoff_cfg = integration.get("handoff_config") or {}
+    if isinstance(handoff_cfg, str):
+        try:
+            import json as _json
+            handoff_cfg = _json.loads(handoff_cfg) or {}
+        except Exception:
+            handoff_cfg = {}
     agent_escalate = bool(final_state.get("escalate")) if final_state else False
     handoff_result: dict | None = None
     try:
