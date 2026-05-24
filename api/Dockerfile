@@ -20,6 +20,7 @@ RUN pip install --no-cache-dir -r api/requirements.txt
 COPY agents/ ./agents/
 COPY llm/     ./llm/
 COPY api/     ./api/
+COPY scripts/ ./scripts/
 
 WORKDIR /app/api
 
