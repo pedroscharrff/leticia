@@ -14,7 +14,7 @@ import { PortalLogin }      from "./pages/PortalLogin";
 import { PortalDashboard }  from "./pages/PortalDashboard";
 import { PortalSkills }     from "./pages/PortalSkills";
 import { PortalLogs }       from "./pages/PortalLogs";
-import { PortalIntegracao } from "./pages/PortalIntegracao";
+// PortalIntegracao foi descontinuada — seu conteúdo virou bloco em PortalCanais
 import { PortalBilling }    from "./pages/PortalBilling";
 import { PortalEstoque }    from "./pages/PortalEstoque";
 import { PortalClientes }   from "./pages/PortalClientes";
@@ -71,7 +71,8 @@ export function App() {
       <Route path="/portal/clientes"   element={<TenantRoute><PortalClientes /></TenantRoute>} />
       <Route path="/portal/clientes/:id" element={<TenantRoute><PortalClienteDetalhe /></TenantRoute>} />
       <Route path="/portal/logs"       element={<TenantRoute><PortalLogs /></TenantRoute>} />
-      <Route path="/portal/integracao" element={<TenantRoute><PortalIntegracao /></TenantRoute>} />
+      {/* Página antiga "Integração & API" virou bloco interno em /portal/canais */}
+      <Route path="/portal/integracao" element={<Navigate to="/portal/canais" replace />} />
       <Route path="/portal/billing"    element={<TenantRoute><PortalBilling /></TenantRoute>} />
       <Route path="/portal/traces"     element={<TenantRoute><PortalTraces /></TenantRoute>} />
       <Route path="/portal/ia-config"  element={<TenantRoute><PortalLLMConfig /></TenantRoute>} />

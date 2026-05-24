@@ -1,19 +1,263 @@
-.canais-page { padding: 24px; }
-.canais-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px; }
-.page-title { font-size: 22px; font-weight: 700; margin: 0; }
-.channels-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 16px; }
-.channel-card { border: 1px solid var(--color-border); border-radius: 12px; padding: 20px; }
-.channel-card__top { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 12px; }
-.channel-card__type { font-weight: 600; font-size: 15px; }
-.channel-card__name { color: var(--color-secondary); font-size: 14px; }
-.channel-card__webhook { background: var(--color-bg); border-radius: 8px; padding: 8px 12px; font-size: 12px; display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 12px; word-break: break-all; }
-.channel-card__actions { display: flex; gap: 8px; }
-.empty-state { color: var(--color-secondary); text-align: center; padding: 48px 0; }
-.error-banner { background: #fee2e2; color: #991b1b; padding: 10px 16px; border-radius: 8px; margin-bottom: 16px; }
-.modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.4); display: flex; align-items: center; justify-content: center; z-index: 100; }
-.modal-box { background: var(--color-surface); border-radius: 16px; padding: 28px; width: 440px; max-width: 95vw; }
-.modal-box h2 { font-size: 18px; font-weight: 700; margin-bottom: 20px; }
-.form-label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; font-weight: 500; }
-.form-input { padding: 8px 12px; border: 1px solid var(--color-border); border-radius: 8px; font-size: 14px; }
-.modal-footer { display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px; }
-.btn-icon { background: none; border: none; cursor: pointer; font-size: 16px; padding: 2px 4px; }
+/* PortalCanais — hub unificado de conexões */
+
+.canais-section {
+  margin-bottom: 36px;
+}
+.canais-section__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 12px;
+}
+.canais-section__title {
+  margin: 0 0 4px 0;
+  font-size: 1.15rem;
+  font-weight: 600;
+}
+.canais-section__hint {
+  margin: 0;
+  font-size: 0.88rem;
+  color: var(--color-text-muted, #6b7280);
+  max-width: 560px;
+  line-height: 1.5;
+}
+
+.canais-empty {
+  background: #f9fafb;
+  border: 1px dashed #d1d5db;
+  border-radius: 10px;
+  padding: 24px;
+  text-align: center;
+  color: #6b7280;
+  font-size: 0.92rem;
+}
+
+.canais-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 14px;
+}
+
+.canais-card {
+  display: flex;
+  gap: 14px;
+  align-items: flex-start;
+  background: #fff;
+  border: 1px solid var(--color-border, #e5e7eb);
+  border-radius: 12px;
+  padding: 16px;
+  text-align: left;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.canais-card:hover {
+  border-color: var(--color-primary, #2563eb);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
+  transform: translateY(-1px);
+}
+.canais-card--webhook {
+  border-left: 3px solid #8b5cf6;
+}
+.canais-card__icon {
+  font-size: 28px;
+  line-height: 1;
+}
+.canais-card__body {
+  flex: 1;
+  min-width: 0;
+}
+.canais-card__title {
+  font-weight: 600;
+  font-size: 0.95rem;
+  color: #111827;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.canais-card__subtitle {
+  font-size: 0.8rem;
+  color: #6b7280;
+  margin-top: 2px;
+}
+.canais-card__badges {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+  flex-wrap: wrap;
+}
+
+.canais-badge {
+  font-size: 0.72rem;
+  padding: 2px 8px;
+  border-radius: 12px;
+  background: #f3f4f6;
+  color: #374151;
+}
+.canais-badge--on      { background: #dcfce7; color: #166534; }
+.canais-badge--off     { background: #f3f4f6; color: #6b7280; }
+.canais-badge--handoff { background: #fff7ed; color: #9a3412; }
+
+/* ── API block (colapsável) ────────────────────────────────────────────── */
+.canais-api {
+  background: #f9fafb;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  padding: 16px;
+}
+.canais-api__toggle {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  cursor: pointer;
+  user-select: none;
+}
+.canais-api__chevron {
+  font-size: 18px;
+  color: #6b7280;
+}
+.canais-api__body {
+  margin-top: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.canais-code {
+  background: #1f2937;
+  border-radius: 8px;
+  padding: 10px 12px;
+  color: #e5e7eb;
+}
+.canais-code__head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 0.78rem;
+  color: #9ca3af;
+  margin-bottom: 6px;
+}
+.canais-code pre {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-all;
+  font-size: 0.82rem;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+}
+
+/* ── Modal genérico ─────────────────────────────────────────────────────── */
+.modal-backdrop {
+  position: fixed; inset: 0;
+  background: rgba(15, 23, 42, 0.45);
+  display: flex; align-items: center; justify-content: center;
+  z-index: 100;
+}
+.modal-card {
+  background: #fff;
+  border-radius: 12px;
+  width: min(640px, 92vw);
+  max-height: 90vh;
+  overflow-y: auto;
+  padding: 24px;
+}
+.modal-head {
+  display: flex; justify-content: space-between; align-items: center;
+  margin-bottom: 16px;
+}
+.modal-head h2 { margin: 0; font-size: 1.2rem; }
+.modal-close {
+  background: none; border: none;
+  font-size: 24px; cursor: pointer; color: #6b7280;
+}
+.modal-actions {
+  display: flex; justify-content: flex-end; gap: 8px;
+  margin-top: 20px;
+}
+
+.canais-type-picker {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 8px;
+  margin-top: 6px;
+}
+.canais-type-btn {
+  border: 2px solid #e5e7eb;
+  background: #fff;
+  border-radius: 10px;
+  padding: 12px;
+  cursor: pointer;
+  text-align: left;
+  display: flex; flex-direction: column; gap: 4px;
+  transition: all 0.15s ease;
+}
+.canais-type-btn:hover { border-color: #9ca3af; }
+.canais-type-btn.is-selected {
+  border-color: var(--color-primary, #2563eb);
+  background: #eff6ff;
+}
+.canais-type-btn strong { font-size: 0.9rem; }
+.canais-type-btn small { color: #6b7280; font-size: 0.78rem; line-height: 1.3; }
+
+/* ── Drawer (edição do canal) ───────────────────────────────────────────── */
+.drawer-backdrop {
+  position: fixed; inset: 0;
+  background: rgba(15, 23, 42, 0.4);
+  display: flex; justify-content: flex-end;
+  z-index: 50;
+}
+.drawer {
+  background: #fff;
+  width: min(640px, 100%);
+  height: 100%;
+  overflow-y: auto;
+  display: flex; flex-direction: column;
+  animation: drawer-in 200ms ease-out;
+}
+@keyframes drawer-in {
+  from { transform: translateX(30px); opacity: 0.6; }
+  to   { transform: translateX(0); opacity: 1; }
+}
+.drawer__head {
+  padding: 20px 24px 12px;
+  display: flex; justify-content: space-between; align-items: flex-start;
+  border-bottom: 1px solid #e5e7eb;
+}
+.drawer__head h2 { margin: 0; font-size: 1.15rem; }
+.drawer__head small { color: #6b7280; }
+
+.drawer__tabs {
+  display: flex; gap: 0;
+  border-bottom: 1px solid #e5e7eb;
+  padding: 0 24px;
+  background: #f9fafb;
+}
+.drawer__tabs button {
+  background: none; border: none;
+  padding: 12px 14px;
+  font-size: 0.88rem;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  color: #6b7280;
+  display: flex; align-items: center; gap: 6px;
+}
+.drawer__tabs button:hover { color: #111827; }
+.drawer__tabs button.is-active {
+  border-bottom-color: var(--color-primary, #2563eb);
+  color: var(--color-primary, #2563eb);
+  font-weight: 600;
+}
+
+.dot-on { color: #16a34a; font-size: 16px; line-height: 1; }
+
+.drawer__body { padding: 20px 24px; }
+.drawer-row { margin-bottom: 16px; }
+
+.canais-steps {
+  margin: 8px 0 16px;
+  padding-left: 20px;
+  line-height: 1.7;
+  color: #374151;
+}
+.canais-steps li { margin-bottom: 6px; }
+.canais-link { color: var(--color-primary, #2563eb); text-decoration: none; }
+.canais-link:hover { text-decoration: underline; }

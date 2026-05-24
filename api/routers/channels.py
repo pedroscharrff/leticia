@@ -1,15 +1,20 @@
 """
 Channel management for tenant portal.
 GET/POST/PATCH/DELETE tenant channels, manage credentials stored as secrets.
+
+Inclui também a config de transferência ao balcão (handoff_config) por canal —
+permite que cada canal nativo (loja A, loja B, WhatsApp principal vs secundário)
+tenha sua própria fila de atendentes humanos.
 """
 from __future__ import annotations
 
+import json
 import secrets
-from typing import Annotated
+from typing import Annotated, Any
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from db.postgres import get_db_conn
 from security import require_tenant_user, TenantUserContext
@@ -24,12 +29,15 @@ TenantUser = Annotated[TenantUserContext, Depends(require_tenant_user)]
 SUPPORTED_CHANNELS = ["whatsapp_cloud", "whatsapp_zapi", "telegram", "instagram", "web_widget"]
 
 
+# ── Schemas ──────────────────────────────────────────────────────────────────
+
 class ChannelOut(BaseModel):
     id: str
     channel_type: str
     display_name: str | None
     active: bool
     config_json: dict
+    handoff_config: dict
     webhook_url: str  # constructed, not stored
 
 
@@ -37,7 +45,8 @@ class ChannelCreate(BaseModel):
     channel_type: str
     display_name: str | None = None
     credentials: dict  # will be stored encrypted, not returned
-    config_json: dict = {}
+    config_json: dict = Field(default_factory=dict)
+    handoff_config: dict = Field(default_factory=dict)
 
 
 class ChannelUpdate(BaseModel):
@@ -45,11 +54,44 @@ class ChannelUpdate(BaseModel):
     credentials: dict | None = None
     active: bool | None = None
     config_json: dict | None = None
+    handoff_config: dict | None = None
+
+
+class HandoffTestIn(BaseModel):
+    """Body para testar a transferência usando a config persistida do canal."""
+    phone: str = Field(min_length=4, max_length=20)
+    message: str | None = None
 
 
 def _webhook_url(tenant_id: str, channel_type: str, channel_id: str) -> str:
     return f"/webhook/{channel_type}/{tenant_id}/{channel_id}"
 
+
+def _row_to_out(tenant_id: str, r: Any) -> ChannelOut:
+    return ChannelOut(
+        id=str(r["id"]),
+        channel_type=r["channel_type"],
+        display_name=r["display_name"],
+        active=r["active"],
+        config_json=r["config_json"] or {},
+        handoff_config=r["handoff_config"] or {},
+        webhook_url=_webhook_url(tenant_id, r["channel_type"], str(r["id"])),
+    )
+
+
+def _validate_handoff(cfg: dict | None) -> None:
+    """Mesma validação usada em broker.py — se enabled=True, exige campos básicos."""
+    if not cfg or not cfg.get("enabled"):
+        return
+    missing = [k for k in ("base_url", "token", "queue_id") if not cfg.get(k)]
+    if missing:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Para ativar transferência ao atendente, preencha: {', '.join(missing)}",
+        )
+
+
+# ── CRUD ─────────────────────────────────────────────────────────────────────
 
 @router.get("", response_model=list[ChannelOut])
 async def list_channels(user: TenantUser) -> list[ChannelOut]:
@@ -60,18 +102,8 @@ async def list_channels(user: TenantUser) -> list[ChannelOut]:
                 user.tenant_id,
             )
     except Exception:
-        return []  # table not yet created (migration pending)
-    return [
-        ChannelOut(
-            id=str(r["id"]),
-            channel_type=r["channel_type"],
-            display_name=r["display_name"],
-            active=r["active"],
-            config_json=r["config_json"] or {},
-            webhook_url=_webhook_url(user.tenant_id, r["channel_type"], str(r["id"])),
-        )
-        for r in rows
-    ]
+        return []  # tabela ainda não criada (migration pendente)
+    return [_row_to_out(user.tenant_id, r) for r in rows]
 
 
 @router.post("", response_model=ChannelOut, status_code=status.HTTP_201_CREATED)
@@ -80,7 +112,9 @@ async def create_channel(body: ChannelCreate, user: TenantUser) -> ChannelOut:
     if body.channel_type not in SUPPORTED_CHANNELS:
         raise HTTPException(status_code=400, detail=f"Canal '{body.channel_type}' não suportado")
 
-    # Check plan allows this channel type (features column added in migration 003)
+    _validate_handoff(body.handoff_config)
+
+    # Validação de plano: features.channels indica quais canais o plano libera.
     features: dict = {}
     try:
         async with get_db_conn() as conn:
@@ -97,7 +131,7 @@ async def create_channel(body: ChannelCreate, user: TenantUser) -> ChannelOut:
             f = plan_row["features"]
             features = f if isinstance(f, dict) else {}
     except Exception:
-        pass  # migration 003 not yet applied — allow all channels
+        pass
     allowed = features.get("channels") or SUPPORTED_CHANNELS
     if body.channel_type not in allowed:
         raise HTTPException(status_code=402, detail=f"Canal '{body.channel_type}' requer upgrade de plano")
@@ -109,33 +143,28 @@ async def create_channel(body: ChannelCreate, user: TenantUser) -> ChannelOut:
         row = await conn.fetchrow(
             """
             INSERT INTO public.tenant_channels
-                (tenant_id, channel_type, display_name, credentials_ref, webhook_secret, config_json)
-            VALUES ($1, $2, $3, $4, $5, $6)
+                (tenant_id, channel_type, display_name, credentials_ref,
+                 webhook_secret, config_json, handoff_config)
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
             RETURNING *
             """,
             user.tenant_id, body.channel_type, body.display_name,
-            creds_key, webhook_secret, body.config_json,
+            creds_key, webhook_secret,
+            json.dumps(body.config_json),
+            json.dumps(body.handoff_config),
         )
 
-    # Store credentials encrypted
-    import json
     await sec_svc.set_secret(user.tenant_id, creds_key, json.dumps(body.credentials))
-
     await log_event("channel.created", user.email, tenant_id=user.tenant_id, target=body.channel_type)
-
-    return ChannelOut(
-        id=str(row["id"]),
-        channel_type=row["channel_type"],
-        display_name=row["display_name"],
-        active=row["active"],
-        config_json=row["config_json"] or {},
-        webhook_url=_webhook_url(user.tenant_id, row["channel_type"], str(row["id"])),
-    )
+    return _row_to_out(user.tenant_id, row)
 
 
 @router.patch("/{channel_id}", response_model=ChannelOut)
 async def update_channel(channel_id: str, body: ChannelUpdate, user: TenantUser) -> ChannelOut:
     user.assert_role("manager")
+
+    if body.handoff_config is not None:
+        _validate_handoff(body.handoff_config)
 
     async with get_db_conn() as conn:
         existing = await conn.fetchrow(
@@ -146,44 +175,32 @@ async def update_channel(channel_id: str, body: ChannelUpdate, user: TenantUser)
         raise HTTPException(status_code=404, detail="Canal não encontrado")
 
     if body.credentials:
-        import json
         creds_key = existing["credentials_ref"] or f"channel_creds_{existing['channel_type']}"
         await sec_svc.set_secret(user.tenant_id, creds_key, json.dumps(body.credentials))
 
-    updates: dict = {}
+    # Constrói SET parts dinâmicos
+    set_parts: list[str] = []
+    vals: list[Any] = [channel_id]
+    idx = 2
     if body.display_name is not None:
-        updates["display_name"] = body.display_name
+        set_parts.append(f"display_name = ${idx}"); vals.append(body.display_name); idx += 1
     if body.active is not None:
-        updates["active"] = body.active
+        set_parts.append(f"active = ${idx}"); vals.append(body.active); idx += 1
     if body.config_json is not None:
-        updates["config_json"] = body.config_json
-    updates["updated_at"] = "NOW()"
+        set_parts.append(f"config_json = ${idx}::jsonb"); vals.append(json.dumps(body.config_json)); idx += 1
+    if body.handoff_config is not None:
+        set_parts.append(f"handoff_config = ${idx}::jsonb"); vals.append(json.dumps(body.handoff_config)); idx += 1
+    set_parts.append("updated_at = NOW()")
 
-    if updates:
-        raw_updates = {k: v for k, v in updates.items() if v != "NOW()"}
-        set_parts = []
-        vals = [channel_id]
-        for i, (k, v) in enumerate(raw_updates.items(), start=2):
-            set_parts.append(f"{k} = ${i}")
-            vals.append(v)
-        set_parts.append("updated_at = NOW()")
-        async with get_db_conn() as conn:
-            row = await conn.fetchrow(
-                f"UPDATE public.tenant_channels SET {', '.join(set_parts)} WHERE id = $1 RETURNING *",
-                *vals,
-            )
-    else:
-        row = existing
+    async with get_db_conn() as conn:
+        row = await conn.fetchrow(
+            f"UPDATE public.tenant_channels SET {', '.join(set_parts)} "
+            "WHERE id = $1 RETURNING *",
+            *vals,
+        )
 
     await log_event("channel.updated", user.email, tenant_id=user.tenant_id, target=channel_id)
-    return ChannelOut(
-        id=str(row["id"]),
-        channel_type=row["channel_type"],
-        display_name=row["display_name"],
-        active=row["active"],
-        config_json=row["config_json"] or {},
-        webhook_url=_webhook_url(user.tenant_id, row["channel_type"], str(row["id"])),
-    )
+    return _row_to_out(user.tenant_id, row)
 
 
 @router.delete("/{channel_id}", status_code=status.HTTP_204_NO_CONTENT, response_model=None)
@@ -195,3 +212,38 @@ async def delete_channel(channel_id: str, user: TenantUser) -> None:
             channel_id, user.tenant_id,
         )
     await log_event("channel.deleted", user.email, tenant_id=user.tenant_id, target=channel_id)
+
+
+# ── Test handoff ─────────────────────────────────────────────────────────────
+
+@router.post("/{channel_id}/handoff/test")
+async def test_channel_handoff(channel_id: str, body: HandoffTestIn, user: TenantUser):
+    """
+    Dispara uma transferência de teste usando o handoff_config persistido do canal.
+    Útil para validar token / queue_id antes de jogar em produção.
+    """
+    user.assert_role("manager")
+
+    async with get_db_conn() as conn:
+        row = await conn.fetchrow(
+            "SELECT handoff_config FROM public.tenant_channels "
+            "WHERE id = $1 AND tenant_id = $2",
+            channel_id, user.tenant_id,
+        )
+    if not row:
+        raise HTTPException(404, "Canal não encontrado")
+
+    cfg = row["handoff_config"] or {}
+    if isinstance(cfg, str):
+        try: cfg = json.loads(cfg)
+        except Exception: cfg = {}
+    if not cfg.get("enabled"):
+        raise HTTPException(400, "Transferência está desativada neste canal. Ative e salve antes de testar.")
+
+    from services.handoff import transfer_to_human
+    phone_clean = "".join(c for c in body.phone if c.isdigit())
+    result = await transfer_to_human(cfg, phone=phone_clean, custom_message=body.message)
+    await log_event("channel.handoff.tested", actor_id=user.email,
+                    tenant_id=user.tenant_id, target=channel_id,
+                    meta={"ok": result.get("ok"), "status_code": result.get("status_code")})
+    return result
