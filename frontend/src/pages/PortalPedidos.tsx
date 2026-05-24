@@ -15,28 +15,42 @@ import {
 import "./PortalPedidos.css";
 
 const STATUS_LABELS: Record<OrderStatus, string> = {
-  pending:    "Pendente",
-  confirmed:  "Confirmado",
-  processing: "Em preparo",
-  shipped:    "Enviado",
-  delivered:  "Entregue",
-  cancelled:  "Cancelado",
+  aguardando_balcao: "Aguardando Balcão",
+  pending:           "Pendente",
+  confirmed:         "Confirmado",
+  processing:        "Em preparo",
+  shipped:           "Enviado",
+  delivered:         "Entregue",
+  cancelled:         "Cancelado",
+};
+
+/** Ícone curto exibido no badge — deixa o status mais legível na listagem */
+const STATUS_ICONS: Record<OrderStatus, string> = {
+  aguardando_balcao: "🏪",
+  pending:           "🕐",
+  confirmed:         "✅",
+  processing:        "🔧",
+  shipped:           "🚚",
+  delivered:         "📦",
+  cancelled:         "❌",
 };
 
 const ALL_STATUSES: OrderStatus[] = [
+  "aguardando_balcao",
   "pending", "confirmed", "processing", "shipped", "delivered", "cancelled",
 ];
 
 const STATUS_FILTERS: { key: string; label: string }[] = [
-  { key: "",          label: "Todos"      },
-  { key: "open",      label: "Em aberto"  },
-  { key: "closed",    label: "Concluídos" },
-  { key: "pending",   label: "Pendentes"  },
-  { key: "confirmed", label: "Confirmados"},
-  { key: "processing",label: "Em preparo" },
-  { key: "shipped",   label: "Enviados"   },
-  { key: "delivered", label: "Entregues"  },
-  { key: "cancelled", label: "Cancelados" },
+  { key: "",                  label: "Todos"             },
+  { key: "open",              label: "Em aberto"         },
+  { key: "aguardando_balcao", label: "Aguardando Balcão" },
+  { key: "closed",            label: "Concluídos"        },
+  { key: "pending",           label: "Pendentes"         },
+  { key: "confirmed",         label: "Confirmados"       },
+  { key: "processing",        label: "Em preparo"        },
+  { key: "shipped",           label: "Enviados"          },
+  { key: "delivered",         label: "Entregues"         },
+  { key: "cancelled",         label: "Cancelados"        },
 ];
 
 const fmtMoney = (n: number) =>
@@ -138,6 +152,13 @@ export function PortalPedidos() {
 
       {/* ── Metric cards ───────────────────────────────────────────────── */}
       <div className="pedidos-metrics">
+        {(metrics?.by_status["aguardando_balcao"] ?? 0) > 0 && (
+          <MetricCard
+            label="🏪 Aguardando Balcão"
+            value={metrics!.by_status["aguardando_balcao"]}
+            accent="balcao"
+          />
+        )}
         <MetricCard label="Em aberto"     value={metrics?.open_count ?? 0}    accent="warning" />
         <MetricCard label="Concluídos"    value={metrics?.closed_count ?? 0}  accent="success" />
         <MetricCard label="Total"         value={metrics?.total_orders ?? 0}                />
@@ -223,7 +244,7 @@ export function PortalPedidos() {
             <span><strong>{fmtMoney(o.total)}</strong></span>
             <span>
               <span className={`pedidos-status pedidos-status--${o.status}`}>
-                {STATUS_LABELS[o.status]}
+                {STATUS_ICONS[o.status]} {STATUS_LABELS[o.status]}
               </span>
             </span>
             <span>{fmtDateTime(o.created_at)}</span>
@@ -251,6 +272,15 @@ export function PortalPedidos() {
               <>
                 <section className="pedidos-drawer__section">
                   <h3>Status</h3>
+
+                  {/* Banner especial para pedidos de pré-atendimento */}
+                  {selected.status === "aguardando_balcao" && (
+                    <div className="pedidos-balcao-banner">
+                      🏪 <strong>Pedido de Pré-atendimento</strong> — coletado pelo bot sem consulta de estoque.
+                      Verifique os itens abaixo, acerte preços e confirme com o cliente pelo WhatsApp antes de avançar o status.
+                    </div>
+                  )}
+
                   <div className="pedidos-status-buttons">
                     {ALL_STATUSES.map((s) => (
                       <button
@@ -259,7 +289,7 @@ export function PortalPedidos() {
                         className={`pedidos-status-btn pedidos-status-btn--${s} ${selected.status === s ? "is-current" : ""}`}
                         onClick={() => changeStatus(s)}
                       >
-                        {STATUS_LABELS[s]}
+                        {STATUS_ICONS[s]} {STATUS_LABELS[s]}
                       </button>
                     ))}
                   </div>

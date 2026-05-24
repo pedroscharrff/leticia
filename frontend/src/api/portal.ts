@@ -516,6 +516,7 @@ export async function adminUpdateSalesConfig(
 // ── Orders ────────────────────────────────────────────────────────────────────
 
 export type OrderStatus =
+  | "aguardando_balcao"
   | "pending" | "confirmed" | "processing" | "shipped" | "delivered" | "cancelled";
 
 export interface OrderListItem {

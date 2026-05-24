@@ -268,15 +268,63 @@ class GoogleSheetsConnector(InventoryConnector):
 
         export_url = _build_google_sheets_csv_url(url_or_id, gid)
 
-        async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
-            resp = await client.get(export_url)
+        # User-Agent de navegador — sem isso o Google pode devolver HTML de login
+        # em vez do CSV (especialmente quando o request sai de IP de datacenter).
+        headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/120.0 Safari/537.36"
+            ),
+            "Accept": "text/csv, */*;q=0.5",
+        }
+
+        try:
+            async with httpx.AsyncClient(timeout=60, follow_redirects=True) as client:
+                resp = await client.get(export_url, headers=headers)
+        except httpx.HTTPError as exc:
+            raise RuntimeError(
+                f"Falha de rede ao acessar Google Sheets ({exc.__class__.__name__}: {exc}). "
+                "Verifique a conectividade do servidor com docs.google.com."
+            ) from exc
+
+        final_url = str(resp.url)
+        content_type = resp.headers.get("content-type", "")
+        body_preview = resp.text[:200].replace("\n", " ") if resp.text else ""
+
         if resp.status_code != 200:
             raise RuntimeError(
-                f"Google Sheets retornou {resp.status_code}. "
-                "Confirme que a planilha está com 'Qualquer pessoa com link pode visualizar'."
+                f"Google Sheets retornou HTTP {resp.status_code}. "
+                "Confirme que a planilha está com 'Qualquer pessoa com o link — Leitor' "
+                f"(URL final: {final_url}). Trecho da resposta: {body_preview!r}"
+            )
+
+        # Quando o sheet não está público o Google responde 200 com HTML
+        # (página de login ou aviso). Detectamos para devolver erro útil.
+        looks_like_html = (
+            "text/html" in content_type.lower()
+            or body_preview.lstrip().lower().startswith(("<!doctype", "<html"))
+        )
+        if looks_like_html:
+            log.warning(
+                "inventory.google_sheets.html_response",
+                final_url=final_url,
+                content_type=content_type,
+                preview=body_preview,
+            )
+            raise RuntimeError(
+                "Google Sheets devolveu HTML em vez de CSV — significa que o "
+                "compartilhamento não está aberto. Abra a planilha → Compartilhar "
+                "→ \"Acesso geral\" → \"Qualquer pessoa com o link — Leitor\". "
+                "Em contas Workspace, confirme que o admin permite compartilhamento externo. "
+                f"(URL final: {final_url})"
             )
 
         rows = _read_csv_rows(resp.content)
+        if not rows:
+            raise RuntimeError(
+                f"Planilha lida com sucesso, mas 0 linhas encontradas. "
+                f"Confira se a aba (gid={gid}) tem cabeçalho + dados."
+            )
         return [_apply_mapping(r, mapping) for r in rows]
 
 
