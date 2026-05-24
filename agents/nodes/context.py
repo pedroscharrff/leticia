@@ -107,14 +107,19 @@ async def load_context(state: AgentState) -> AgentState:
                 if session_row and session_row["customer_profile"]:
                     updates["customer_profile"] = session_row["customer_profile"]
 
-                # Cadastro do cliente (por telefone) — usado p/ checar campos obrigatórios
+                # Cadastro do cliente (por telefone) — usado p/ checar campos
+                # obrigatórios e carregar memória de longo prazo (alergias,
+                # medicamentos contínuos, preferências, segmento, LTV).
                 phone = state.get("phone", "")
                 if phone:
                     cust_row = await conn.fetchrow(
                         """
                         SELECT id, phone, name, email, doc, cep, street,
                                street_number, complement, neighborhood,
-                               city, state, notes
+                               city, state, notes,
+                               allergies, continuous_meds, preferences,
+                               tags, segment, total_orders, total_spent,
+                               ltv, last_purchase_at
                         FROM customers WHERE phone = $1
                         """,
                         phone,
@@ -122,6 +127,16 @@ async def load_context(state: AgentState) -> AgentState:
                     if cust_row:
                         cust = dict(cust_row)
                         cust["id"] = str(cust["id"])  # UUID → str p/ JSON-safe
+                        # Normaliza JSONB que pode vir como string do asyncpg
+                        for k in ("continuous_meds", "preferences"):
+                            v = cust.get(k)
+                            if isinstance(v, str):
+                                try:
+                                    cust[k] = json.loads(v)
+                                except json.JSONDecodeError:
+                                    cust[k] = [] if k == "continuous_meds" else {}
+                        if cust.get("last_purchase_at"):
+                            cust["last_purchase_at"] = cust["last_purchase_at"].isoformat()
                         updates["customer"] = cust
                     else:
                         updates["customer"] = {"phone": phone}

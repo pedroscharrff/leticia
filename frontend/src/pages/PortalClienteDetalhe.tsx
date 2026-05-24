@@ -12,6 +12,12 @@ import {
   type CustomerConversation,
   type OrderStatus,
 } from "../api/portal";
+import {
+  getCustomerMemory,
+  updateCustomerMemory,
+  type CustomerMemory,
+  type ContinuousMed,
+} from "../api/customer_memory";
 import "./PortalClienteDetalhe.css";
 
 const STATUS_LABELS: Record<OrderStatus, string> = {
@@ -26,7 +32,14 @@ const fmtDateTime = (iso: string | null) =>
 const fmtDate = (iso: string | null) =>
   iso ? new Date(iso).toLocaleDateString("pt-BR") : "—";
 
-type Tab = "dados" | "pedidos" | "conversas";
+type Tab = "dados" | "memoria" | "pedidos" | "conversas";
+
+const SEGMENT_LABEL: Record<string, string> = {
+  esporadico: "Esporádico",
+  recorrente: "Recorrente",
+  vip:        "VIP",
+  em_risco:   "Em risco",
+};
 
 export function PortalClienteDetalhe() {
   const { id } = useParams<{ id: string }>();
@@ -42,6 +55,16 @@ export function PortalClienteDetalhe() {
   // dados form state
   const [form, setForm] = useState<Partial<CustomerDetail> & { _addr?: any }>({});
   const [saving, setSaving] = useState(false);
+
+  // memória do cliente (capability attendance.customer_memory)
+  const [memory, setMemory] = useState<CustomerMemory | null>(null);
+  const [memDraft, setMemDraft] = useState<{
+    allergies: string;
+    continuous_meds: ContinuousMed[];
+    preferences_json: string;
+    segment: string;
+  }>({ allergies: "", continuous_meds: [], preferences_json: "{}", segment: "esporadico" });
+  const [memSaving, setMemSaving] = useState(false);
 
   useEffect(() => {
     if (!id) return;
@@ -61,6 +84,65 @@ export function PortalClienteDetalhe() {
     if (tab !== "conversas" || !id || conversations) return;
     listCustomerConversations(id).then(setConversations).catch(() => setConversations([]));
   }, [tab, id, conversations]);
+
+  useEffect(() => {
+    if (tab !== "memoria" || !id || memory) return;
+    getCustomerMemory(id)
+      .then((m) => {
+        setMemory(m);
+        setMemDraft({
+          allergies: (m.allergies || []).join(", "),
+          continuous_meds: [...(m.continuous_meds || [])],
+          preferences_json: JSON.stringify(m.preferences || {}, null, 2),
+          segment: m.segment || "esporadico",
+        });
+      })
+      .catch(() => setMemory({ allergies: [], continuous_meds: [], preferences: {}, segment: "esporadico", ltv: 0, last_purchase_at: null }));
+  }, [tab, id, memory]);
+
+  async function saveMemory() {
+    if (!id) return;
+    let prefs: Record<string, unknown> = {};
+    try { prefs = JSON.parse(memDraft.preferences_json || "{}"); }
+    catch { setError("Preferências precisam ser JSON válido."); return; }
+
+    setMemSaving(true);
+    setError("");
+    try {
+      const updated = await updateCustomerMemory(id, {
+        allergies: memDraft.allergies.split(",").map((s) => s.trim()).filter(Boolean),
+        continuous_meds: memDraft.continuous_meds,
+        preferences: prefs,
+        segment: memDraft.segment,
+      });
+      setMemory(updated);
+    } catch (e: any) {
+      setError(e?.response?.data?.detail || "Erro ao salvar memória.");
+    } finally {
+      setMemSaving(false);
+    }
+  }
+
+  function addContinuousMed() {
+    setMemDraft((d) => ({
+      ...d,
+      continuous_meds: [...d.continuous_meds, { name: "", frequency_days: 30 }],
+    }));
+  }
+
+  function updateContinuousMed(idx: number, patch: Partial<ContinuousMed>) {
+    setMemDraft((d) => ({
+      ...d,
+      continuous_meds: d.continuous_meds.map((m, i) => i === idx ? { ...m, ...patch } : m),
+    }));
+  }
+
+  function removeContinuousMed(idx: number) {
+    setMemDraft((d) => ({
+      ...d,
+      continuous_meds: d.continuous_meds.filter((_, i) => i !== idx),
+    }));
+  }
 
   const stats = useMemo(() => {
     if (!orders) return null;
@@ -127,6 +209,7 @@ export function PortalClienteDetalhe() {
 
       <nav className="cliente-tabs">
         <TabBtn active={tab === "dados"}    onClick={() => setTab("dados")}>Dados</TabBtn>
+        <TabBtn active={tab === "memoria"}  onClick={() => setTab("memoria")}>🧠 Memória</TabBtn>
         <TabBtn active={tab === "pedidos"}  onClick={() => setTab("pedidos")}>Pedidos {customer.total_orders > 0 && <span className="cliente-tab-count">{customer.total_orders}</span>}</TabBtn>
         <TabBtn active={tab === "conversas"} onClick={() => setTab("conversas")}>Conversas</TabBtn>
       </nav>
@@ -176,6 +259,105 @@ export function PortalClienteDetalhe() {
             <button className="btn btn-primary" disabled={saving}>{saving ? <Spinner size={14} /> : "Salvar"}</button>
           </div>
         </form>
+      )}
+
+      {tab === "memoria" && (
+        <div className="cliente-card">
+          {!memory ? (
+            <div className="portal-loading"><Spinner size={28} /></div>
+          ) : (
+            <>
+              <p className="cliente-help">
+                💡 Esta é a memória de longo prazo do cliente. Os agentes consultam aqui
+                em cada conversa para personalizar o atendimento e evitar recomendar
+                medicamentos perigosos. <strong>Requer a capability
+                "Memória de Clientes" ativada</strong> em <em>Recursos do seu Robô</em>.
+              </p>
+
+              <div className="cliente-stats" style={{ marginBottom: 16 }}>
+                <Aggregate label="Segmento" value={SEGMENT_LABEL[memDraft.segment] || memDraft.segment} />
+                <Aggregate label="LTV" value={fmtMoney(memory.ltv)} />
+                <Aggregate label="Última compra" value={fmtDate(memory.last_purchase_at)} />
+              </div>
+
+              <Field label="⚠️ Alergias (separadas por vírgula — princípio ativo ou nome do medicamento)">
+                <input
+                  className="form-input"
+                  placeholder="ex.: dipirona, penicilina, AAS"
+                  value={memDraft.allergies}
+                  onChange={(e) => setMemDraft({ ...memDraft, allergies: e.target.value })}
+                />
+              </Field>
+
+              <Field label="💊 Medicamentos de uso contínuo">
+                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                  {memDraft.continuous_meds.length === 0 && (
+                    <small style={{ color: "#6b7280" }}>
+                      Nenhum medicamento contínuo registrado. Adicione para que o robô
+                      possa avisar o cliente quando a cartela estiver acabando.
+                    </small>
+                  )}
+                  {memDraft.continuous_meds.map((m, idx) => (
+                    <div key={idx} style={{ display: "grid", gridTemplateColumns: "2fr 1fr auto", gap: 8, alignItems: "center" }}>
+                      <input
+                        className="form-input"
+                        placeholder="Ex.: Losartana 50mg"
+                        value={m.name}
+                        onChange={(e) => updateContinuousMed(idx, { name: e.target.value })}
+                      />
+                      <input
+                        className="form-input"
+                        type="number"
+                        min={1}
+                        max={365}
+                        placeholder="dias"
+                        value={m.frequency_days}
+                        onChange={(e) => updateContinuousMed(idx, { frequency_days: parseInt(e.target.value, 10) || 30 })}
+                      />
+                      <button type="button" className="btn btn-secondary btn-sm" onClick={() => removeContinuousMed(idx)}>
+                        Remover
+                      </button>
+                    </div>
+                  ))}
+                  <button type="button" className="btn btn-secondary btn-sm" onClick={addContinuousMed} style={{ alignSelf: "flex-start" }}>
+                    + Adicionar medicamento contínuo
+                  </button>
+                </div>
+              </Field>
+
+              <Field label="Segmento">
+                <select
+                  className="form-input"
+                  value={memDraft.segment}
+                  onChange={(e) => setMemDraft({ ...memDraft, segment: e.target.value })}
+                >
+                  <option value="esporadico">Esporádico</option>
+                  <option value="recorrente">Recorrente</option>
+                  <option value="vip">VIP</option>
+                  <option value="em_risco">Em risco</option>
+                </select>
+              </Field>
+
+              <Field label="Preferências (JSON)">
+                <textarea
+                  className="form-textarea"
+                  rows={5}
+                  value={memDraft.preferences_json}
+                  onChange={(e) => setMemDraft({ ...memDraft, preferences_json: e.target.value })}
+                  style={{ fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace", fontSize: 12 }}
+                />
+              </Field>
+
+              {error && <div className="form-error">{error}</div>}
+
+              <div className="cliente-form-actions">
+                <button className="btn btn-primary" disabled={memSaving} onClick={saveMemory}>
+                  {memSaving ? <Spinner size={14} /> : "Salvar memória"}
+                </button>
+              </div>
+            </>
+          )}
+        </div>
       )}
 
       {tab === "pedidos" && (

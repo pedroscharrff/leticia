@@ -189,11 +189,26 @@ async def run_skill(
     prev_skill         = (state.get("skill_history") or [None])[-1] if state.get("skill_history") else None
     prev_response      = state.get("final_response", "") if prev_skill and prev_skill != skill_name else ""
 
-    # Monta system prompt: persona + prompt customizado (se houver) + base + extra instructions
+    # Monta system prompt: persona + memória do cliente (se capability ON) +
+    # prompt customizado (se houver) + base + extra instructions
     parts = []
     persona_txt = _persona_prefix(persona)
     if persona_txt:
         parts.append(persona_txt)
+
+    # Bloco "o que sabemos sobre este cliente" — só injetado quando a
+    # capability `attendance.customer_memory` está ativa para o tenant.
+    # Tolerante a falhas: qualquer erro no service de capabilities cai em
+    # bloco vazio (cliente segue sendo atendido sem memória).
+    try:
+        from services import capabilities as cap_svc
+        from services.persona import build_customer_memory_block
+        if await cap_svc.is_enabled(state.get("tenant_id"), "attendance.customer_memory"):
+            mem_block = build_customer_memory_block(state.get("customer") or {})
+            if mem_block:
+                parts.append(mem_block)
+    except Exception as _exc:  # noqa: BLE001
+        log.warning("skill.customer_memory_block.failed", exc=str(_exc))
 
     # Prompt do skill — custom (tenant) substitui o base; senão usa base
     custom_prompt = skill_prompts.get(skill_name, "")

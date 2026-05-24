@@ -4,9 +4,12 @@ import { Spinner } from "../components/Spinner";
 import { Badge } from "../components/Badge";
 import {
   listProducts, createProduct, updateProduct, deleteProduct, importProductsCsv,
-  triggerSync, type Product,
+  importProductsXlsx, previewImport, listPdvTemplates, configureGoogleSheets,
+  triggerSync, type Product, type ImportPreview, type PdvTemplate,
 } from "../api/portal";
 import "./PortalEstoque.css";
+
+type ImportKind = "csv" | "xlsx";
 
 export function PortalEstoque() {
   const [products, setProducts] = useState<Product[]>([]);
@@ -17,7 +20,22 @@ export function PortalEstoque() {
   const [syncLoading, setSyncLoading] = useState("");
   const [importMsg, setImportMsg] = useState("");
   const [error, setError] = useState("");
+
   const fileRef = useRef<HTMLInputElement>(null);
+  const [pendingKind, setPendingKind] = useState<ImportKind>("csv");
+  const [previewFile, setPreviewFile] = useState<File | null>(null);
+  const [preview, setPreview] = useState<ImportPreview | null>(null);
+  const [previewMapping, setPreviewMapping] = useState<Record<string, string>>({});
+  const [previewTemplate, setPreviewTemplate] = useState<string>("");
+  const [previewLoading, setPreviewLoading] = useState(false);
+
+  const [showSheetsModal, setShowSheetsModal] = useState(false);
+  const [templates, setTemplates] = useState<PdvTemplate[]>([]);
+  const [sheetsUrl, setSheetsUrl] = useState("");
+  const [sheetsGid, setSheetsGid] = useState("0");
+  const [sheetsTemplate, setSheetsTemplate] = useState<string>("");
+  const [sheetsDeactivate, setSheetsDeactivate] = useState(false);
+  const [sheetsSaving, setSheetsSaving] = useState(false);
 
   const [form, setForm] = useState({ name: "", sku: "", category: "", price: "", stock_qty: "0", unit: "un" });
 
@@ -31,6 +49,10 @@ export function PortalEstoque() {
   }
 
   useEffect(() => { load(); }, []);
+
+  useEffect(() => {
+    listPdvTemplates().then(setTemplates).catch(() => {});
+  }, []);
 
   function openNew() {
     setEditing(null);
@@ -72,15 +94,61 @@ export function PortalEstoque() {
     setProducts((ps) => ps.filter((p) => p.id !== id));
   }
 
-  async function handleCsvImport(e: React.ChangeEvent<HTMLInputElement>) {
+  function pickFile(kind: ImportKind) {
+    setPendingKind(kind);
+    if (fileRef.current) {
+      fileRef.current.accept = kind === "csv" ? ".csv" : ".xlsx,.xlsm";
+      fileRef.current.value = "";
+      fileRef.current.click();
+    }
+  }
+
+  async function handleFilePicked(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     if (!file) return;
+    setPreviewFile(file);
+    setPreview(null);
+    setPreviewMapping({});
+    setPreviewTemplate("");
+    setPreviewLoading(true);
+    setImportMsg("");
+    try {
+      const p = await previewImport(file);
+      setPreview(p);
+      setPreviewMapping(p.suggested_mapping);
+    } catch (err: any) {
+      setImportMsg(`Erro lendo arquivo: ${err?.response?.data?.detail ?? err.message}`);
+      setPreviewFile(null);
+    } finally {
+      setPreviewLoading(false);
+    }
+  }
+
+  function applyTemplate(tplId: string) {
+    setPreviewTemplate(tplId);
+    if (!tplId) return;
+    const tpl = templates.find((t) => t.id === tplId);
+    if (tpl) setPreviewMapping(tpl.field_mapping);
+  }
+
+  async function confirmImport() {
+    if (!previewFile) return;
     setImportMsg("Importando…");
     try {
-      const result = await importProductsCsv(file);
-      setImportMsg(`Importados: ${result.records_upd} de ${result.records_in}${result.errors.length ? ` (${result.errors.length} erros)` : ""}`);
+      const mapping = previewMapping;
+      const result = pendingKind === "csv"
+        ? await importProductsCsv(previewFile, mapping)
+        : await importProductsXlsx(previewFile, { mapping });
+      setImportMsg(
+        `Importados: ${result.records_upd} de ${result.records_in}` +
+        (result.errors.length ? ` (${result.errors.length} erros)` : ""),
+      );
+      setPreviewFile(null);
+      setPreview(null);
       load();
-    } catch { setImportMsg("Erro na importação"); }
+    } catch (err: any) {
+      setImportMsg(`Erro na importação: ${err?.response?.data?.detail ?? err.message}`);
+    }
   }
 
   async function handleSync(type: string) {
@@ -92,6 +160,40 @@ export function PortalEstoque() {
     } catch { setImportMsg("Erro ao sincronizar"); }
     finally { setSyncLoading(""); }
   }
+
+  async function saveGoogleSheets() {
+    if (!sheetsUrl.trim()) {
+      setImportMsg("Cole a URL da planilha do Google Sheets");
+      return;
+    }
+    setSheetsSaving(true);
+    setImportMsg("Conectando ao Google Sheets…");
+    try {
+      const result = await configureGoogleSheets({
+        sheet_url: sheetsUrl.trim(),
+        gid: sheetsGid || "0",
+        template_id: sheetsTemplate || null,
+        deactivate_missing: sheetsDeactivate,
+        sync_now: true,
+      });
+      setImportMsg(
+        `Google Sheets sincronizado: ${result.records_upd} de ${result.records_in}` +
+        (result.records_deactivated ? ` · ${result.records_deactivated} desativados` : "") +
+        (result.errors.length ? ` (${result.errors.length} erros)` : ""),
+      );
+      setShowSheetsModal(false);
+      load();
+    } catch (err: any) {
+      setImportMsg(`Erro: ${err?.response?.data?.detail ?? err.message}`);
+    } finally {
+      setSheetsSaving(false);
+    }
+  }
+
+  const mappableFields = [
+    "sku", "name", "barcode", "brand", "category", "description",
+    "price", "stock_qty", "unit", "principio_ativo", "fabricante",
+  ];
 
   return (
     <PortalLayout active="estoque">
@@ -105,12 +207,21 @@ export function PortalEstoque() {
               value={search}
               onChange={(e) => { setSearch(e.target.value); load(e.target.value); }}
             />
-            <button className="btn btn--secondary btn--sm" onClick={() => fileRef.current?.click()}>
+            <button className="btn btn--secondary btn--sm" onClick={() => pickFile("csv")}>
               Importar CSV
             </button>
-            <input ref={fileRef} type="file" accept=".csv" hidden onChange={handleCsvImport} />
+            <button className="btn btn--secondary btn--sm" onClick={() => pickFile("xlsx")}>
+              Importar Excel
+            </button>
+            <button className="btn btn--secondary btn--sm" onClick={() => setShowSheetsModal(true)}>
+              Google Sheets
+            </button>
+            <input ref={fileRef} type="file" hidden onChange={handleFilePicked} />
             <button className="btn btn--secondary btn--sm" onClick={() => handleSync("rest_api")} disabled={syncLoading === "rest_api"}>
               {syncLoading === "rest_api" ? "Sincronizando…" : "Sincronizar API"}
+            </button>
+            <button className="btn btn--secondary btn--sm" onClick={() => handleSync("google_sheets")} disabled={syncLoading === "google_sheets"}>
+              {syncLoading === "google_sheets" ? "Sincronizando…" : "Sync Sheets"}
             </button>
             <button className="btn btn--primary btn--sm" onClick={openNew}>
               + Novo produto
@@ -168,6 +279,138 @@ export function PortalEstoque() {
             <div className="modal-footer">
               <button className="btn btn--secondary" onClick={() => setShowModal(false)}>Cancelar</button>
               <button className="btn btn--primary" onClick={saveProduct}>Salvar</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal de preview antes do import (CSV ou Excel) */}
+      {(previewFile || previewLoading) && (
+        <div className="modal-overlay" onClick={() => { if (!previewLoading) { setPreviewFile(null); setPreview(null); } }}>
+          <div className="modal-box modal-box--wide" onClick={(e) => e.stopPropagation()}>
+            <h2>Pré-visualizar importação ({pendingKind.toUpperCase()})</h2>
+            {previewLoading && <Spinner />}
+            {preview && (
+              <>
+                <p className="muted">
+                  {preview.total_rows} linha(s) detectada(s). Confira o mapeamento antes de importar.
+                </p>
+                <label className="form-label">
+                  <span>Template de PDV (opcional)</span>
+                  <select
+                    className="form-input"
+                    value={previewTemplate}
+                    onChange={(e) => applyTemplate(e.target.value)}
+                  >
+                    <option value="">— Auto-detectado —</option>
+                    {templates.map((t) => (
+                      <option key={t.id} value={t.id}>{t.label}</option>
+                    ))}
+                  </select>
+                </label>
+
+                <div className="mapping-grid">
+                  {mappableFields.map((f) => (
+                    <label key={f} className="form-label">
+                      <span>{f}</span>
+                      <select
+                        className="form-input"
+                        value={previewMapping[f] ?? ""}
+                        onChange={(e) => setPreviewMapping((m) => ({ ...m, [f]: e.target.value }))}
+                      >
+                        <option value="">— não mapear —</option>
+                        {preview.headers.map((h) => (
+                          <option key={h} value={h}>{h}</option>
+                        ))}
+                      </select>
+                    </label>
+                  ))}
+                </div>
+
+                <details>
+                  <summary>Ver amostra ({preview.rows.length} primeiras linhas)</summary>
+                  <table className="products-table">
+                    <thead>
+                      <tr>{preview.headers.map((h) => <th key={h}>{h}</th>)}</tr>
+                    </thead>
+                    <tbody>
+                      {preview.rows.map((r, i) => (
+                        <tr key={i}>
+                          {preview.headers.map((h) => (
+                            <td key={h}>{r[h] == null ? "—" : String(r[h])}</td>
+                          ))}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </details>
+              </>
+            )}
+            <div className="modal-footer">
+              <button className="btn btn--secondary" onClick={() => { setPreviewFile(null); setPreview(null); }}>
+                Cancelar
+              </button>
+              <button className="btn btn--primary" onClick={confirmImport} disabled={!preview}>
+                Importar {preview ? `${preview.total_rows} linhas` : ""}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal Google Sheets */}
+      {showSheetsModal && (
+        <div className="modal-overlay" onClick={() => !sheetsSaving && setShowSheetsModal(false)}>
+          <div className="modal-box" onClick={(e) => e.stopPropagation()}>
+            <h2>Conectar Google Sheets</h2>
+            <p className="muted">
+              A planilha precisa estar com <b>"Qualquer pessoa com o link pode visualizar"</b>.
+            </p>
+            <label className="form-label">
+              <span>URL da planilha</span>
+              <input
+                className="form-input"
+                placeholder="https://docs.google.com/spreadsheets/d/…"
+                value={sheetsUrl}
+                onChange={(e) => setSheetsUrl(e.target.value)}
+              />
+            </label>
+            <label className="form-label">
+              <span>GID da aba (default: 0)</span>
+              <input
+                className="form-input"
+                value={sheetsGid}
+                onChange={(e) => setSheetsGid(e.target.value)}
+              />
+            </label>
+            <label className="form-label">
+              <span>Template do PDV</span>
+              <select
+                className="form-input"
+                value={sheetsTemplate}
+                onChange={(e) => setSheetsTemplate(e.target.value)}
+              >
+                <option value="">— Nenhum (colunas já em português) —</option>
+                {templates.map((t) => (
+                  <option key={t.id} value={t.id}>{t.label} — {t.description}</option>
+                ))}
+              </select>
+            </label>
+            <label className="form-label" style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+              <input
+                type="checkbox"
+                checked={sheetsDeactivate}
+                onChange={(e) => setSheetsDeactivate(e.target.checked)}
+              />
+              <span>Desativar produtos que sumirem da planilha</span>
+            </label>
+            <div className="modal-footer">
+              <button className="btn btn--secondary" onClick={() => setShowSheetsModal(false)} disabled={sheetsSaving}>
+                Cancelar
+              </button>
+              <button className="btn btn--primary" onClick={saveGoogleSheets} disabled={sheetsSaving}>
+                {sheetsSaving ? "Sincronizando…" : "Salvar e sincronizar"}
+              </button>
             </div>
           </div>
         </div>
