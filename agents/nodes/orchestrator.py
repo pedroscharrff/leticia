@@ -63,7 +63,22 @@ Responda APENAS com JSON válido, sem explicações:
 Se nenhuma skill disponível atender, use "farmaceutico" como fallback.\
 """
 
-_FALLBACK_SKILL = "farmaceutico"
+_HARD_FALLBACK_SKILL = "farmaceutico"
+
+
+def _resolve_fallback_skill(available: list[str]) -> str:
+    """
+    Escolhe o skill de fallback respeitando o que o tenant tem ATIVO.
+
+    Importante: se o tenant tem só um agente (ex.: só `vendedor` no plano
+    básico, ou só `saudacao`), o fallback PRECISA ser esse agente — caso
+    contrário o roteamento manda para um node que não existe no grafo.
+    """
+    if not available:
+        return _HARD_FALLBACK_SKILL
+    if _HARD_FALLBACK_SKILL in available:
+        return _HARD_FALLBACK_SKILL
+    return available[0]
 
 # Saudações puras — se a mensagem for SÓ um cumprimento e não houver histórico,
 # pulamos o LLM e mandamos direto para `saudacao` (quando disponível).
@@ -125,12 +140,44 @@ async def orchestrator(state: AgentState, llm_factory) -> AgentState:
     Classifica a intenção e seleciona a skill.
     llm_factory é injetado pelo graph_builder via functools.partial.
     """
-    available_skills = state.get("available_skills", [_FALLBACK_SKILL])
+    available_skills = state.get("available_skills") or []
     current_message  = state.get("current_message", "")
     messages         = state.get("messages", [])
 
     if not available_skills:
-        available_skills = [_FALLBACK_SKILL]
+        available_skills = [_HARD_FALLBACK_SKILL]
+
+    fallback_skill = _resolve_fallback_skill(available_skills)
+
+    # Fast-path: tenant rodando com UM ÚNICO agente (atendimento simples).
+    # Pular o LLM de classificação economiza ~300-800ms e o custo do call;
+    # e — crucialmente — evita o orquestrador escolher um skill que NÃO
+    # existe no grafo (ex.: ele decide "farmaceutico" mas o tenant só tem
+    # "vendedor" ativo). Guardrails segue sendo aplicado pelos próprios
+    # skills via [[HANDOFF:guardrails]] quando necessário.
+    non_safety = [s for s in available_skills if s != "guardrails"]
+    if len(non_safety) == 1:
+        only_skill = non_safety[0]
+        log.info("orchestrator.single_skill_fast_path", skill=only_skill)
+        import time as _time
+        trace = list(state.get("trace_steps", []))
+        trace.append({
+            "node": "orchestrator",
+            "ts_ms": int(_time.time() * 1000),
+            "data": {
+                "skill": only_skill,
+                "confidence": 1.0,
+                "intent": "tenant com agente único",
+                "fast_path": "single_skill",
+            },
+        })
+        return {
+            **state,
+            "selected_skill": only_skill,
+            "confidence":     1.0,
+            "intent":         current_message[:120],
+            "trace_steps":    trace,
+        }
 
     # Fast-path: saudação pura sem histórico → vai direto pra saudacao
     has_history = bool(messages)
@@ -189,22 +236,24 @@ async def orchestrator(state: AgentState, llm_factory) -> AgentState:
                 for b in (content or [])
             )
         parsed = _extract_json(content)
-        skill      = parsed.get("skill", _FALLBACK_SKILL)
+        skill      = parsed.get("skill", fallback_skill)
         confidence = float(parsed.get("confidence", 0.5))
         intent     = parsed.get("intent", current_message[:100])
 
-        # Garante que a skill está disponível
-        if skill not in available_skills:
+        # Guardrails é sempre permitido (safety net), mesmo se não estiver
+        # explicitamente em available_skills do tenant.
+        if skill not in available_skills and skill != "guardrails":
             log.warning(
                 "orchestrator.skill_unavailable",
                 skill=skill,
                 available=available_skills,
+                fallback=fallback_skill,
             )
-            skill = _FALLBACK_SKILL
+            skill = fallback_skill
 
     except Exception as exc:
         log.error("orchestrator.failed", exc=str(exc))
-        skill, confidence, intent = _FALLBACK_SKILL, 0.0, current_message[:100]
+        skill, confidence, intent = fallback_skill, 0.0, current_message[:100]
 
     log.info(
         "orchestrator.routed",

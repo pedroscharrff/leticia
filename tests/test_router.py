@@ -48,6 +48,20 @@ class TestRouteToSkill:
         state = _state(selected_skill="unknown_skill", available_skills=["farmaceutico"])
         assert route_to_skill(state) == "farmaceutico"
 
+    def test_single_agent_only_vendedor_falls_back_to_vendedor(self):
+        # Tenant só tem "vendedor" ativo — fallback NÃO pode ser "farmaceutico"
+        # porque esse node não existe no grafo.
+        state = _state(selected_skill="farmaceutico", available_skills=["vendedor"])
+        assert route_to_skill(state) == "vendedor"
+
+    def test_single_agent_only_saudacao_unknown_skill_routes_to_saudacao(self):
+        state = _state(selected_skill="principio_ativo", available_skills=["saudacao"])
+        assert route_to_skill(state) == "saudacao"
+
+    def test_empty_available_uses_hard_fallback(self):
+        state = _state(selected_skill="unknown", available_skills=[])
+        assert route_to_skill(state) == "farmaceutico"
+
 
 # ── analyst_router ────────────────────────────────────────────────────────────
 

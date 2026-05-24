@@ -179,6 +179,13 @@ def build_graph_for_tenant(cfg: TenantConfig, redis: Any = None):
 
     active_skill_nodes = {s: all_skill_nodes[s] for s in active_skills}
 
+    # Skill de fallback dinâmico — usado pelos roteadores quando o destino
+    # configurado não existe no grafo deste tenant (ex.: tenant tem só
+    # "vendedor" ativo, mas o roteador antigo apontava p/ "farmaceutico").
+    # Preferimos "farmaceutico" quando disponível (agente coringa); senão
+    # caímos para o primeiro skill ativo configurado pelo tenant.
+    fallback_skill = "farmaceutico" if "farmaceutico" in active_skills else active_skills[0]
+
     # ── Grafo ─────────────────────────────────────────────────────────────────
     graph = StateGraph(AgentState)
 
@@ -215,7 +222,7 @@ def build_graph_for_tenant(cfg: TenantConfig, redis: Any = None):
     analyst_routing = {
         "approved": "save_context",
         "escalate": "save_context",   # salva e o callback entrega com escalate=True
-        "retry":    "farmaceutico",   # fallback para retry no skill principal
+        "retry":    fallback_skill,   # fallback para retry — usa um skill que EXISTE neste grafo
         **retry_map,                  # retry vai para o skill que gerou a resposta
     }
     graph.add_conditional_edges("analyst", analyst_router, analyst_routing)
