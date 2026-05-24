@@ -94,12 +94,27 @@ export async function listTenantUsers(tenantId: string): Promise<TenantUser[]> {
 
 // ── Channels ──────────────────────────────────────────────────────────────────
 
+/**
+ * Bloco de configuração de transferência ao atendente humano (balcão).
+ * Igual ao usado em integrações webhook (broker), agora também por canal nativo.
+ */
+export interface HandoffConfig {
+  enabled?: boolean;
+  provider?: "clickmassa";        // único provider hoje
+  base_url?: string;
+  token?: string;
+  queue_id?: number | string;
+  transfer_message?: string;
+  trigger_keywords?: string[];
+}
+
 export interface Channel {
   id: string;
   channel_type: string;
   display_name: string | null;
   active: boolean;
   config_json: Record<string, unknown>;
+  handoff_config: HandoffConfig;
   webhook_url: string;
 }
 
@@ -112,16 +127,28 @@ export async function createChannel(data: {
   display_name?: string;
   credentials: Record<string, string>;
   config_json?: Record<string, unknown>;
+  handoff_config?: HandoffConfig;
 }): Promise<Channel> {
   return (await api.post<Channel>("/portal/channels", data)).data;
 }
 
-export async function updateChannel(id: string, data: Partial<Channel> & { credentials?: Record<string, string> }): Promise<Channel> {
+export async function updateChannel(
+  id: string,
+  data: Partial<Channel> & { credentials?: Record<string, string> },
+): Promise<Channel> {
   return (await api.patch<Channel>(`/portal/channels/${id}`, data)).data;
 }
 
 export async function deleteChannel(id: string): Promise<void> {
   await api.delete(`/portal/channels/${id}`);
+}
+
+/** Testa a config de handoff persistida no canal disparando um envio real. */
+export async function testChannelHandoff(
+  channelId: string,
+  payload: { phone: string; message?: string },
+): Promise<{ ok: boolean; status_code: number | null; error: string | null }> {
+  return (await api.post(`/portal/channels/${channelId}/handoff/test`, payload)).data as any;
 }
 
 // ── Inventory / Products ──────────────────────────────────────────────────────
@@ -173,6 +200,63 @@ export async function importProductsCsv(file: File, mapping?: Record<string, str
 
 export async function triggerSync(connectorType: string): Promise<{ status: string; records_in: number; records_upd: number; errors: string[] }> {
   return (await api.post(`/portal/inventory/connectors/${connectorType}/sync`)).data;
+}
+
+export async function importProductsXlsx(
+  file: File,
+  opts?: { mapping?: Record<string, string>; templateId?: string },
+): Promise<{ records_in: number; records_upd: number; errors: string[] }> {
+  const fd = new FormData();
+  fd.append("file", file);
+  const params = new URLSearchParams();
+  if (opts?.mapping) params.set("mapping", JSON.stringify(opts.mapping));
+  if (opts?.templateId) params.set("template_id", opts.templateId);
+  const qs = params.toString() ? `?${params.toString()}` : "";
+  return (await api.post(`/portal/inventory/products/import-xlsx${qs}`, fd, {
+    headers: { "Content-Type": "multipart/form-data" },
+  })).data;
+}
+
+export interface ImportPreview {
+  headers: string[];
+  rows: Record<string, unknown>[];
+  suggested_mapping: Record<string, string>;
+  total_rows: number;
+  templates: { id: string; label: string; description: string }[];
+}
+
+export async function previewImport(file: File): Promise<ImportPreview> {
+  const fd = new FormData();
+  fd.append("file", file);
+  return (await api.post(`/portal/inventory/products/preview`, fd, {
+    headers: { "Content-Type": "multipart/form-data" },
+  })).data;
+}
+
+export interface PdvTemplate {
+  id: string;
+  label: string;
+  description: string;
+  field_mapping: Record<string, string>;
+}
+
+export async function listPdvTemplates(): Promise<PdvTemplate[]> {
+  return (await api.get(`/portal/inventory/templates`)).data;
+}
+
+export async function configureGoogleSheets(body: {
+  sheet_url: string;
+  gid?: string;
+  field_mapping?: Record<string, string>;
+  template_id?: string | null;
+  deactivate_missing?: boolean;
+  sync_now?: boolean;
+}): Promise<{ status: string; records_in: number; records_upd: number; errors: string[]; records_deactivated?: number }> {
+  const { sync_now = true, ...payload } = body;
+  return (await api.post(
+    `/portal/inventory/connectors/google-sheets?sync_now=${sync_now}`,
+    payload,
+  )).data;
 }
 
 // ── Customers ─────────────────────────────────────────────────────────────────
@@ -459,6 +543,7 @@ export async function adminUpdateSalesConfig(
 // ── Orders ────────────────────────────────────────────────────────────────────
 
 export type OrderStatus =
+  | "aguardando_balcao"
   | "pending" | "confirmed" | "processing" | "shipped" | "delivered" | "cancelled";
 
 export interface OrderListItem {

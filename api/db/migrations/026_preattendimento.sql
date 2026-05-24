@@ -34,6 +34,7 @@ INSERT INTO public.capability_catalog (
     'Consulta de Estoque no Chat',
     'vendas',
     'Quando ativo, o agente consulta estoque e preços em tempo real. Desativado, coleta pedidos livremente e passa para o atendente finalizar no balcão.',
+
     $LONGDESC$## Como funciona
 
 ### Com consulta de estoque (padrão)
@@ -67,6 +68,7 @@ atendente finaliza com calma.
   no canal correspondente (base_url, token e queue_id).
 - Sem essa configuração o pedido ainda é salvo, mas a transferência
   automática não ocorre.$LONGDESC$,
+
     'Atende farmácias sem integração de estoque',
     'basic',
     '{}',

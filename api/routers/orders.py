@@ -26,8 +26,12 @@ router = APIRouter(prefix="/portal/orders", tags=["portal-orders"])
 TenantUser = Annotated[TenantUserContext, Depends(require_tenant_user)]
 
 
-VALID_STATUSES = ["pending", "confirmed", "processing", "shipped", "delivered", "cancelled"]
-OPEN_STATUSES = ["pending", "confirmed", "processing", "shipped"]
+VALID_STATUSES = [
+    "aguardando_balcao",  # pré-atendimento: coletado pelo bot, pendente de finalização humana
+    "pending", "confirmed", "processing", "shipped", "delivered", "cancelled",
+]
+# aguardando_balcao é tratado como "em aberto" para métricas de open_count
+OPEN_STATUSES  = ["aguardando_balcao", "pending", "confirmed", "processing", "shipped"]
 CLOSED_STATUSES = ["delivered", "cancelled"]
 
 

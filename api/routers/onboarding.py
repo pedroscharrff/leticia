@@ -90,6 +90,18 @@ async def signup(body: SignupRequest) -> SignupResponse:
             await conn.execute(
                 "SELECT public.add_sales_attempts_to_cart($1)", schema_name
             )
+            # Garante colunas de memória de cliente (migration 023)
+            await conn.execute(
+                "SELECT public.create_tenant_schema_memory_ext($1)", schema_name
+            )
+            # Garante product_relations (migration 024)
+            await conn.execute(
+                "SELECT public.create_tenant_schema_relations_ext($1)", schema_name
+            )
+            # Garante colunas de recuperação no cart (migration 025)
+            await conn.execute(
+                "SELECT public.create_tenant_schema_recovery_ext($1)", schema_name
+            )
             # Seed default sales_config para o novo tenant
             await conn.execute(
                 """

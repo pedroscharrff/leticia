@@ -14,7 +14,7 @@ import { PortalLogin }      from "./pages/PortalLogin";
 import { PortalDashboard }  from "./pages/PortalDashboard";
 import { PortalSkills }     from "./pages/PortalSkills";
 import { PortalLogs }       from "./pages/PortalLogs";
-import { PortalIntegracao } from "./pages/PortalIntegracao";
+// PortalIntegracao foi descontinuada — seu conteúdo virou bloco em PortalCanais
 import { PortalBilling }    from "./pages/PortalBilling";
 import { PortalEstoque }    from "./pages/PortalEstoque";
 import { PortalClientes }   from "./pages/PortalClientes";
@@ -27,6 +27,10 @@ import { PortalPedidos }   from "./pages/PortalPedidos";
 import { PortalMensagensPedido } from "./pages/PortalMensagensPedido";
 import { PortalBroker }         from "./pages/PortalBroker";
 import { PortalClienteDetalhe } from "./pages/PortalClienteDetalhe";
+import { PortalRecursos }       from "./pages/PortalRecursos";
+import { PortalEntregas }       from "./pages/PortalEntregas";
+import { PortalPagamentos }     from "./pages/PortalPagamentos";
+import { PortalRecuperacao }    from "./pages/PortalRecuperacao";
 import { AdminPersona }    from "./pages/AdminPersona";
 import { Signup }           from "./pages/Signup";
 
@@ -67,7 +71,8 @@ export function App() {
       <Route path="/portal/clientes"   element={<TenantRoute><PortalClientes /></TenantRoute>} />
       <Route path="/portal/clientes/:id" element={<TenantRoute><PortalClienteDetalhe /></TenantRoute>} />
       <Route path="/portal/logs"       element={<TenantRoute><PortalLogs /></TenantRoute>} />
-      <Route path="/portal/integracao" element={<TenantRoute><PortalIntegracao /></TenantRoute>} />
+      {/* Página antiga "Integração & API" virou bloco interno em /portal/canais */}
+      <Route path="/portal/integracao" element={<Navigate to="/portal/canais" replace />} />
       <Route path="/portal/billing"    element={<TenantRoute><PortalBilling /></TenantRoute>} />
       <Route path="/portal/traces"     element={<TenantRoute><PortalTraces /></TenantRoute>} />
       <Route path="/portal/ia-config"  element={<TenantRoute><PortalLLMConfig /></TenantRoute>} />
@@ -76,6 +81,10 @@ export function App() {
       <Route path="/portal/pedidos"    element={<TenantRoute><PortalPedidos /></TenantRoute>} />
       <Route path="/portal/pedidos/mensagens" element={<TenantRoute><PortalMensagensPedido /></TenantRoute>} />
       <Route path="/portal/broker"     element={<TenantRoute><PortalBroker /></TenantRoute>} />
+      <Route path="/portal/recursos"   element={<TenantRoute><PortalRecursos /></TenantRoute>} />
+      <Route path="/portal/entregas"     element={<TenantRoute><PortalEntregas /></TenantRoute>} />
+      <Route path="/portal/pagamentos"   element={<TenantRoute><PortalPagamentos /></TenantRoute>} />
+      <Route path="/portal/recuperacao"  element={<TenantRoute><PortalRecuperacao /></TenantRoute>} />
 
       {/* ── Admin: persona/prompts of any tenant ─────────────────────── */}
       <Route path="/tenants/:id/persona" element={<AdminRoute><AdminPersona /></AdminRoute>} />
