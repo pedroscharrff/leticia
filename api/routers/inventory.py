@@ -14,7 +14,11 @@ from pydantic import BaseModel
 from db.postgres import get_db_conn, tenant_conn
 from security import require_tenant_user, TenantUserContext
 from services.audit import log_event
-from services.inventory import RestApiConnector, SqlConnector, CsvConnector, CONNECTOR_REGISTRY
+from services.inventory import (
+    RestApiConnector, SqlConnector, CsvConnector, XlsxConnector,
+    GoogleSheetsConnector, CONNECTOR_REGISTRY,
+    preview_tabular, PDV_TEMPLATES, get_template,
+)
 from services import secrets as sec_svc
 
 log = structlog.get_logger()
@@ -80,6 +84,23 @@ class SyncResult(BaseModel):
     records_in: int
     records_upd: int
     errors: list[str]
+    records_deactivated: int = 0
+
+
+class PreviewResult(BaseModel):
+    headers: list[str]
+    rows: list[dict]
+    suggested_mapping: dict[str, str]
+    total_rows: int
+    templates: list[dict] = []
+
+
+class GoogleSheetsConfig(BaseModel):
+    sheet_url: str
+    gid: str = "0"
+    field_mapping: dict[str, str] = {}
+    template_id: str | None = None
+    deactivate_missing: bool = False
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -213,6 +234,117 @@ async def import_csv(
     result = await CsvConnector().import_csv(user.tenant_id, schema, content, mapping_dict)
     await log_event("inventory.csv_import", user.email, tenant_id=user.tenant_id,
                     meta={"records_in": result["records_in"], "records_upd": result["records_upd"]})
+    return SyncResult(status="ok" if not result["errors"] else "partial", **result)
+
+
+# ── Excel (.xlsx) import ──────────────────────────────────────────────────────
+
+@router.post("/products/import-xlsx", response_model=SyncResult)
+async def import_xlsx(
+    user: TenantUser,
+    file: UploadFile = File(...),
+    mapping: str = Query("{}", description="JSON field mapping"),
+    template_id: str | None = Query(None, description="Usa o mapping de um template do PDV"),
+) -> SyncResult:
+    user.assert_role("operator")
+    schema = await _get_schema(user.tenant_id)
+    content = await file.read()
+
+    if template_id:
+        tpl = get_template(template_id)
+        if not tpl:
+            raise HTTPException(status_code=400, detail=f"Template '{template_id}' não encontrado")
+        mapping_dict = tpl["field_mapping"]
+    else:
+        try:
+            mapping_dict = json.loads(mapping)
+        except json.JSONDecodeError:
+            raise HTTPException(status_code=400, detail="mapping inválido (JSON)")
+
+    try:
+        result = await XlsxConnector().import_xlsx(user.tenant_id, schema, content, mapping_dict)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+    await log_event("inventory.xlsx_import", user.email, tenant_id=user.tenant_id,
+                    meta={"records_in": result["records_in"], "records_upd": result["records_upd"]})
+    return SyncResult(status="ok" if not result["errors"] else "partial", **result)
+
+
+# ── Preview before import (CSV ou XLSX) ───────────────────────────────────────
+
+@router.post("/products/preview", response_model=PreviewResult)
+async def preview_import(
+    user: TenantUser,
+    file: UploadFile = File(...),
+) -> PreviewResult:
+    """Lê o arquivo enviado e devolve cabeçalhos, amostra das primeiras linhas e
+    mapping sugerido — para o dono confirmar antes de importar de fato."""
+    user.assert_role("operator")
+    content = await file.read()
+    try:
+        result = preview_tabular(content, file.filename or "", sample_rows=5)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Não consegui ler o arquivo: {exc}")
+    return PreviewResult(**result, templates=[
+        {"id": t["id"], "label": t["label"], "description": t["description"]}
+        for t in PDV_TEMPLATES
+    ])
+
+
+# ── PDV templates ─────────────────────────────────────────────────────────────
+
+@router.get("/templates")
+async def list_templates(user: TenantUser) -> list[dict]:
+    """Templates de mapeamento prontos para PDVs brasileiros comuns."""
+    return PDV_TEMPLATES
+
+
+# ── Google Sheets — atalho de configuração + sync ────────────────────────────
+
+@router.post("/connectors/google-sheets", response_model=SyncResult)
+async def configure_google_sheets(
+    body: GoogleSheetsConfig,
+    user: TenantUser,
+    sync_now: bool = Query(True, description="Roda uma sincronização imediatamente após salvar"),
+) -> SyncResult:
+    """Atalho: salva a config do Google Sheets e (opcional) sincroniza na hora.
+    Como a planilha é pública (link aberto), não há credenciais a guardar."""
+    user.assert_role("manager")
+    schema = await _get_schema(user.tenant_id)
+
+    field_mapping = body.field_mapping
+    if body.template_id and not field_mapping:
+        tpl = get_template(body.template_id)
+        if not tpl:
+            raise HTTPException(status_code=400, detail=f"Template '{body.template_id}' não encontrado")
+        field_mapping = tpl["field_mapping"]
+
+    config = {
+        "sheet_url": body.sheet_url,
+        "gid": body.gid,
+        "field_mapping": field_mapping,
+        "deactivate_missing": body.deactivate_missing,
+        "credentials_key": "",
+    }
+
+    # Persiste config em tenant_secrets (mesmo padrão de create_connector)
+    enc = __import__("services.secrets", fromlist=["encrypt"]).encrypt(json.dumps(config))
+    async with get_db_conn() as conn:
+        await conn.execute(
+            """
+            INSERT INTO public.tenant_secrets (tenant_id, key, value_enc)
+            VALUES ($1, $2, $3)
+            ON CONFLICT (tenant_id, key) DO UPDATE SET value_enc = EXCLUDED.value_enc, updated_at = NOW()
+            """,
+            user.tenant_id, "connector_config_google_sheets", enc,
+        )
+    await log_event("connector.created", user.email, tenant_id=user.tenant_id, target="google_sheets")
+
+    if not sync_now:
+        return SyncResult(status="ok", records_in=0, records_upd=0, errors=[])
+
+    result = await GoogleSheetsConnector().sync(user.tenant_id, schema, config)
     return SyncResult(**result)
 
 
