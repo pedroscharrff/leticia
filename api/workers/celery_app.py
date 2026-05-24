@@ -38,7 +38,43 @@ celery_app.conf.update(
     worker_concurrency=settings.celery_workers_concurrency,
     task_acks_late=True,
     worker_prefetch_multiplier=1,
+    # Beat schedule — jobs proativos (capability-gated por dentro)
+    beat_schedule={
+        "recover_abandoned_carts": {
+            "task":     "jobs.recover_abandoned_carts",
+            "schedule": 60 * 60,           # 1 hora
+        },
+        "nudge_continuous_refill": {
+            # 24h: roda 1x por dia. O job interno respeita time_of_day da
+            # config (futuro) — por ora, executa sempre quando o beat acorda.
+            "task":     "jobs.nudge_continuous_refill",
+            "schedule": 60 * 60 * 24,
+        },
+    },
 )
+
+
+# ── Beat tasks (capability-gated dentro dos jobs) ───────────────────────────
+
+@celery_app.task(name="jobs.recover_abandoned_carts", bind=True, max_retries=0)
+def recover_abandoned_carts_task(self) -> dict:
+    """Task agendada — chama o job sync que lê a flag por tenant."""
+    from workers.jobs.abandoned_cart import recover_abandoned_carts_sync
+    try:
+        return recover_abandoned_carts_sync()
+    except Exception as exc:  # noqa: BLE001
+        log.warning("celery.recover_failed", exc=str(exc))
+        return {"error": str(exc)}
+
+
+@celery_app.task(name="jobs.nudge_continuous_refill", bind=True, max_retries=0)
+def nudge_continuous_refill_task(self) -> dict:
+    from workers.jobs.refill_nudge import nudge_continuous_refill_sync
+    try:
+        return nudge_continuous_refill_sync()
+    except Exception as exc:  # noqa: BLE001
+        log.warning("celery.refill_failed", exc=str(exc))
+        return {"error": str(exc)}
 
 # ── Prometheus metrics ────────────────────────────────────────────────────────
 

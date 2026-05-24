@@ -64,6 +64,31 @@ class CustomerUpdate(BaseModel):
     state: str | None = None
 
 
+# ── Memória de cliente (capability attendance.customer_memory) ───────────────
+
+class ContinuousMed(BaseModel):
+    name: str
+    frequency_days: int
+    last_refill_at: str | None = None
+    last_nudge_at: str | None = None
+
+
+class CustomerMemoryOut(BaseModel):
+    allergies:        list[str] = []
+    continuous_meds:  list[ContinuousMed] = []
+    preferences:      dict = {}
+    segment:          str = "esporadico"
+    ltv:              float = 0.0
+    last_purchase_at: datetime | None = None
+
+
+class CustomerMemoryUpdate(BaseModel):
+    allergies:       list[str] | None = None
+    continuous_meds: list[ContinuousMed] | None = None
+    preferences:     dict | None = None
+    segment:         str | None = None
+
+
 class OrderItem(BaseModel):
     produto_id: str | None = None
     sku: str | None = None
@@ -387,3 +412,110 @@ async def customer_summary(customer_id: str, user: TenantUser) -> dict:
         ],
         "conversation_messages_total": int(conv_count or 0),
     }
+
+
+# ── Memória do cliente: GET / PUT ────────────────────────────────────────────
+
+def _normalize_jsonb(value, default):
+    """JSONB pode chegar como str (asyncpg sem codec) ou dict/list."""
+    import json as _json
+    if value is None:
+        return default
+    if isinstance(value, (dict, list)):
+        return value
+    if isinstance(value, str):
+        try:
+            return _json.loads(value)
+        except _json.JSONDecodeError:
+            return default
+    return default
+
+
+@router.get("/{customer_id}/memory", response_model=CustomerMemoryOut)
+async def get_customer_memory(
+    customer_id: str,
+    user: TenantUser,
+) -> CustomerMemoryOut:
+    """Retorna a memória de longo prazo do cliente."""
+    schema = await _get_schema(user.tenant_id)
+    async with tenant_conn(schema) as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT allergies, continuous_meds, preferences, segment,
+                   ltv, last_purchase_at
+              FROM customers WHERE id = $1
+            """,
+            customer_id,
+        )
+    if not row:
+        raise HTTPException(status_code=404, detail="Cliente não encontrado")
+    return CustomerMemoryOut(
+        allergies=list(row["allergies"] or []),
+        continuous_meds=[
+            ContinuousMed(**m) if isinstance(m, dict) else ContinuousMed(name=str(m), frequency_days=30)
+            for m in _normalize_jsonb(row["continuous_meds"], [])
+        ],
+        preferences=_normalize_jsonb(row["preferences"], {}) or {},
+        segment=row["segment"] or "esporadico",
+        ltv=float(row["ltv"] or 0),
+        last_purchase_at=row["last_purchase_at"],
+    )
+
+
+@router.put("/{customer_id}/memory", response_model=CustomerMemoryOut)
+async def update_customer_memory(
+    customer_id: str,
+    payload: CustomerMemoryUpdate,
+    user: TenantUser,
+) -> CustomerMemoryOut:
+    """Atualiza alergias, contínuos, preferências e segmento.
+
+    Requer papel `manager`+ (edição de dados sensíveis do cliente).
+    """
+    user.assert_role("manager")
+    schema = await _get_schema(user.tenant_id)
+
+    import json as _json
+    updates: list[str] = []
+    params: list = []
+    i = 1
+
+    if payload.allergies is not None:
+        updates.append(f"allergies = ${i}")
+        params.append([a.strip().lower() for a in payload.allergies if a.strip()])
+        i += 1
+    if payload.continuous_meds is not None:
+        updates.append(f"continuous_meds = ${i}::jsonb")
+        params.append(_json.dumps([m.model_dump() for m in payload.continuous_meds]))
+        i += 1
+    if payload.preferences is not None:
+        updates.append(f"preferences = ${i}::jsonb")
+        params.append(_json.dumps(payload.preferences))
+        i += 1
+    if payload.segment is not None:
+        updates.append(f"segment = ${i}")
+        params.append(payload.segment)
+        i += 1
+
+    if not updates:
+        raise HTTPException(status_code=422, detail="Nada para atualizar.")
+
+    updates.append("updated_at = NOW()")
+    params.append(customer_id)
+    sql = f"UPDATE customers SET {', '.join(updates)} WHERE id = ${i} RETURNING id"
+
+    async with tenant_conn(schema) as conn:
+        ok = await conn.fetchval(sql, *params)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Cliente não encontrado")
+
+    await log_event(
+        action="customer.memory_updated",
+        actor_id=user.email,
+        actor_type="user",
+        tenant_id=user.tenant_id,
+        target=customer_id,
+        meta={k: v for k, v in payload.model_dump().items() if v is not None},
+    )
+    return await get_customer_memory(customer_id, user)
+
