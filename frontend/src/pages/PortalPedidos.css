@@ -135,19 +135,24 @@
   font-size: 0.78rem;
   font-weight: 500;
 }
-.pedidos-status--pending    { background: #fef3c7; color: #92400e; }
-.pedidos-status--confirmed  { background: #dbeafe; color: #1e40af; }
-.pedidos-status--processing { background: #ede9fe; color: #5b21b6; }
-.pedidos-status--shipped    { background: #cffafe; color: #155e75; }
-.pedidos-status--delivered  { background: #dcfce7; color: #166534; }
-.pedidos-status--cancelled  { background: #fee2e2; color: #991b1b; }
+/* aguardando_balcao — laranja âmbar distinto (pré-atendimento) */
+.pedidos-status--aguardando_balcao { background: #ffedd5; color: #9a3412; font-weight: 600; }
+.pedidos-status--pending           { background: #fef3c7; color: #92400e; }
+.pedidos-status--confirmed         { background: #dbeafe; color: #1e40af; }
+.pedidos-status--processing        { background: #ede9fe; color: #5b21b6; }
+.pedidos-status--shipped           { background: #cffafe; color: #155e75; }
+.pedidos-status--delivered         { background: #dcfce7; color: #166534; }
+.pedidos-status--cancelled         { background: #fee2e2; color: #991b1b; }
 
-.pedidos-status-chip--pending    { border-color: #fde68a; }
-.pedidos-status-chip--confirmed  { border-color: #bfdbfe; }
-.pedidos-status-chip--processing { border-color: #ddd6fe; }
-.pedidos-status-chip--shipped    { border-color: #a5f3fc; }
-.pedidos-status-chip--delivered  { border-color: #bbf7d0; }
-.pedidos-status-chip--cancelled  { border-color: #fecaca; }
+.pedidos-status-chip--aguardando_balcao { border-color: #fed7aa; }
+.pedidos-status-chip--pending           { border-color: #fde68a; }
+.pedidos-status-chip--confirmed         { border-color: #bfdbfe; }
+.pedidos-status-chip--processing        { border-color: #ddd6fe; }
+.pedidos-status-chip--shipped           { border-color: #a5f3fc; }
+.pedidos-status-chip--delivered         { border-color: #bbf7d0; }
+.pedidos-status-chip--cancelled         { border-color: #fecaca; }
+
+.pedidos-status-btn--aguardando_balcao { border-color: #fed7aa; color: #9a3412; }
 
 /* ── Drawer ──────────────────────────────────────────────────────────── */
 .pedidos-drawer__backdrop {
@@ -280,3 +285,20 @@
   padding: 10px 12px;
   font-size: 0.88rem;
 }
+
+/* Banner informativo no drawer para pedidos de pré-atendimento */
+.pedidos-balcao-banner {
+  background: #fff7ed;
+  border: 1px solid #fed7aa;
+  border-left: 4px solid #f97316;
+  border-radius: 8px;
+  padding: 10px 14px;
+  font-size: 0.88rem;
+  color: #7c2d12;
+  margin-bottom: 12px;
+  line-height: 1.5;
+}
+
+/* Metric card accent para aguardando_balcao */
+.pedidos-metric--balcao { border-color: #f97316; }
+.pedidos-metric--balcao .pedidos-metric__value { color: #9a3412; }
