@@ -145,3 +145,15 @@
   margin-bottom: 4px;
 }
 .cliente-msg p { margin: 0; white-space: pre-wrap; font-size: 0.9rem; }
+
+/* Help text na aba memória */
+.cliente-help {
+  background: #eff6ff;
+  border: 1px solid #bfdbfe;
+  border-radius: 8px;
+  padding: 12px 14px;
+  font-size: 0.85rem;
+  color: #1e3a8a;
+  margin: 0 0 16px 0;
+  line-height: 1.5;
+}

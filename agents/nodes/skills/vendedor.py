@@ -118,12 +118,114 @@ async def vendedor_node(state: AgentState, llm_factory) -> AgentState:
     prev_response      = state.get("final_response", "") if prev_skill and prev_skill != "vendedor" else ""
     received_handoff   = bool(prev_response)
 
+    # Capabilities ativas para este tenant (gating de tools + prompt blocks).
+    # Falha "fechada": qualquer erro no service deixa todas as flags em False.
+    tenant_id = state.get("tenant_id")
+    caps: dict[str, bool] = {
+        "customer_memory": False,
+        "cross_sell":      False,
+        "shipping":        False,
+        "interactive":     False,
+        "pix":             False,
+    }
+    cap_config: dict[str, dict] = {}
+    try:
+        from services import capabilities as cap_svc
+        keys = {
+            "customer_memory": "attendance.customer_memory",
+            "cross_sell":      "sales.cross_sell",
+            "shipping":        "delivery.shipping_by_cep",
+            "interactive":     "attendance.interactive_buttons",
+            "pix":             "payments.pix_asaas",
+        }
+        for slug, key in keys.items():
+            caps[slug] = await cap_svc.is_enabled(tenant_id, key)
+            if caps[slug]:
+                cap_config[slug] = await cap_svc.get_config(tenant_id, key)
+    except Exception as _exc:  # noqa: BLE001
+        log.warning("vendedor.capabilities_check_failed", exc=str(_exc))
+
     # Monta system prompt
     parts = []
     persona_txt = _persona_prefix(persona)
     if persona_txt:
         parts.append(persona_txt)
+
+    # Bloco "O que sabemos do cliente" (gated)
+    if caps["customer_memory"]:
+        try:
+            from services.persona import build_customer_memory_block
+            mem_block = build_customer_memory_block(customer)
+            if mem_block:
+                parts.append(mem_block)
+        except Exception as _exc:  # noqa: BLE001
+            log.warning("vendedor.memory_block_failed", exc=str(_exc))
+
     parts.append(skill_prompts.get("vendedor", _SYSTEM))
+
+    # Bloco condicional de cross-sell — instrui o LLM a usar a tool no momento certo.
+    if caps["cross_sell"]:
+        max_sug = int(cap_config.get("cross_sell", {}).get("max_suggestions_per_turn", 1))
+        parts.append(
+            "═══════════════════════════════════════════════════════════════\n"
+            "CROSS-SELL ATIVO (ofereça complementos)\n"
+            "═══════════════════════════════════════════════════════════════\n"
+            f"Você TEM a tool `recomendar_complementos(produto)`. Sempre que o cliente\n"
+            f"adicionar um item ao carrinho com `adicionar_ao_carrinho`, CHAME\n"
+            f"`recomendar_complementos` com o mesmo produto e ofereça NO MÁXIMO\n"
+            f"{max_sug} sugestão por turno com framing de valor (ex.: 'quem leva X\n"
+            f"costuma levar Y para potencializar'). Nunca empurre — pergunte e siga\n"
+            f"o ritmo do cliente."
+        )
+
+    # Bloco condicional de frete
+    if caps["shipping"]:
+        parts.append(
+            "═══════════════════════════════════════════════════════════════\n"
+            "FRETE POR CEP ATIVO\n"
+            "═══════════════════════════════════════════════════════════════\n"
+            "Você TEM a tool `calcular_frete(cep, subtotal)`. Sempre que o cliente\n"
+            "fornecer o CEP de entrega, ANTES de fechar o pedido, CHAME essa tool\n"
+            "passando o CEP e o subtotal atual do carrinho. Comunique valor + prazo\n"
+            "+ total final em UMA frase. Se o tool retornar 'frete grátis', destaque\n"
+            "isso para o cliente."
+        )
+
+    # Bloco condicional de PIX (Asaas)
+    if caps["pix"]:
+        pix_cfg = cap_config.get("pix", {})
+        auto_send = pix_cfg.get("auto_send_after_confirm", True)
+        parts.append(
+            "═══════════════════════════════════════════════════════════════\n"
+            "PIX NO CHAT ATIVO (Asaas)\n"
+            "═══════════════════════════════════════════════════════════════\n"
+            "Você TEM a tool `gerar_link_pix(numero_pedido, valor_total)`.\n"
+            + ("Sempre que `finalizar_pedido` retornar um número de pedido com\n"
+               "sucesso E o cliente tiver escolhido pagamento PIX, CHAME essa tool\n"
+               "imediatamente passando o número do pedido e o valor total\n"
+               "(incluindo frete se aplicável). Repasse ao cliente o copia-cola\n"
+               "PIX retornado.\n"
+               if auto_send else
+               "Quando o cliente PEDIR explicitamente o PIX (ex.: \"manda o PIX\"),\n"
+               "CHAME essa tool com o número do pedido e o valor total.\n")
+            + "Se a tool retornar uma mensagem pedindo CPF, peça o CPF ao cliente,\n"
+              "salve com `salvar_dados_cliente` e tente novamente.\n"
+              "Após o cliente pagar, o sistema avisará automaticamente — você não\n"
+              "precisa ficar perguntando se pagou."
+        )
+
+    # Bloco condicional de memória — instrui o LLM a registrar
+    if caps["customer_memory"]:
+        parts.append(
+            "═══════════════════════════════════════════════════════════════\n"
+            "MEMÓRIA DE CLIENTES ATIVA\n"
+            "═══════════════════════════════════════════════════════════════\n"
+            "Você TEM as tools `registrar_alergia(...)`, `registrar_medicamento_continuo(...)`\n"
+            "e `registrar_preferencia(...)`. Use SEMPRE que o cliente declarar\n"
+            "uma alergia, mencionar medicamento de uso contínuo, ou expressar\n"
+            "uma preferência. NÃO confirme com mensagens longas — só registre e\n"
+            "siga o atendimento naturalmente."
+        )
 
     # Configuração de Vendas — campos obrigatórios + política de tentativas
     try:
@@ -199,6 +301,49 @@ async def vendedor_node(state: AgentState, llm_factory) -> AgentState:
             make_cancel_order_tool(schema_name, phone_num),
             make_edit_order_tool(schema_name, phone_num),
         ]
+
+        # Capability-gated tools — só vinculadas se a flag estiver ON.
+        try:
+            from agents.tools.sales_extras import (
+                make_cross_sell_tool,
+                make_shipping_tool,
+                make_customer_memory_tools,
+            )
+
+            if caps["cross_sell"]:
+                xs_cfg = cap_config.get("cross_sell", {})
+                tools.append(make_cross_sell_tool(
+                    schema_name,
+                    min_weight=float(xs_cfg.get("min_relation_weight", 0.5)),
+                    max_suggestions=int(xs_cfg.get("max_suggestions_per_turn", 1)),
+                    customer_allergies=customer.get("allergies") or [],
+                ))
+
+            if caps["shipping"]:
+                sh_cfg = cap_config.get("shipping", {})
+                tools.append(make_shipping_tool(
+                    tenant_id or "",
+                    default_eta_days=int(sh_cfg.get("default_eta_days", 3)),
+                    free_above=float(sh_cfg.get("free_above", 0)),
+                ))
+
+            if caps["customer_memory"]:
+                tools.extend(make_customer_memory_tools(
+                    schema_name, phone_num, customer,
+                ))
+
+            if caps["pix"]:
+                from agents.tools.sales_extras import make_pix_tool
+                pix_cfg = cap_config.get("pix", {})
+                tools.append(make_pix_tool(
+                    tenant_id or "",
+                    schema_name,
+                    phone_num,
+                    customer,
+                    expires_minutes=int(pix_cfg.get("expires_minutes", 60)),
+                ))
+        except Exception as _exc:  # noqa: BLE001
+            log.warning("vendedor.extra_tools_failed", exc=str(_exc))
 
         llm = llm_factory("skill")
         llm_with_tools = llm.bind_tools(tools)

@@ -175,6 +175,63 @@ export async function triggerSync(connectorType: string): Promise<{ status: stri
   return (await api.post(`/portal/inventory/connectors/${connectorType}/sync`)).data;
 }
 
+export async function importProductsXlsx(
+  file: File,
+  opts?: { mapping?: Record<string, string>; templateId?: string },
+): Promise<{ records_in: number; records_upd: number; errors: string[] }> {
+  const fd = new FormData();
+  fd.append("file", file);
+  const params = new URLSearchParams();
+  if (opts?.mapping) params.set("mapping", JSON.stringify(opts.mapping));
+  if (opts?.templateId) params.set("template_id", opts.templateId);
+  const qs = params.toString() ? `?${params.toString()}` : "";
+  return (await api.post(`/portal/inventory/products/import-xlsx${qs}`, fd, {
+    headers: { "Content-Type": "multipart/form-data" },
+  })).data;
+}
+
+export interface ImportPreview {
+  headers: string[];
+  rows: Record<string, unknown>[];
+  suggested_mapping: Record<string, string>;
+  total_rows: number;
+  templates: { id: string; label: string; description: string }[];
+}
+
+export async function previewImport(file: File): Promise<ImportPreview> {
+  const fd = new FormData();
+  fd.append("file", file);
+  return (await api.post(`/portal/inventory/products/preview`, fd, {
+    headers: { "Content-Type": "multipart/form-data" },
+  })).data;
+}
+
+export interface PdvTemplate {
+  id: string;
+  label: string;
+  description: string;
+  field_mapping: Record<string, string>;
+}
+
+export async function listPdvTemplates(): Promise<PdvTemplate[]> {
+  return (await api.get(`/portal/inventory/templates`)).data;
+}
+
+export async function configureGoogleSheets(body: {
+  sheet_url: string;
+  gid?: string;
+  field_mapping?: Record<string, string>;
+  template_id?: string | null;
+  deactivate_missing?: boolean;
+  sync_now?: boolean;
+}): Promise<{ status: string; records_in: number; records_upd: number; errors: string[]; records_deactivated?: number }> {
+  const { sync_now = true, ...payload } = body;
+  return (await api.post(
+    `/portal/inventory/connectors/google-sheets?sync_now=${sync_now}`,
+    payload,
+  )).data;
+}
+
 // ── Customers ─────────────────────────────────────────────────────────────────
 
 export interface Customer {
