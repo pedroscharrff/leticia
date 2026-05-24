@@ -180,3 +180,98 @@ def build_persona_block(persona: dict) -> str:
     )
 
     return "\n\n".join(parts)
+
+
+# ── Customer memory block ────────────────────────────────────────────────────
+
+def build_customer_memory_block(customer: dict | None) -> str:
+    """Bloco "O QUE VOCÊ SABE SOBRE ESTE CLIENTE" — só injetado se houver dados
+    relevantes. O caller decide se chama esta função (deve checar a capability
+    `attendance.customer_memory` antes).
+
+    Lê: name, allergies (TEXT[]), continuous_meds (JSONB list), preferences
+    (JSONB dict), tags (TEXT[]), segment, total_orders, ltv.
+    """
+    if not customer:
+        return ""
+
+    allergies = customer.get("allergies") or []
+    cont_meds = customer.get("continuous_meds") or []
+    prefs     = customer.get("preferences") or {}
+    tags      = customer.get("tags") or []
+    name      = customer.get("name")
+    segment   = customer.get("segment")
+    total_ord = customer.get("total_orders") or 0
+    ltv       = customer.get("ltv") or 0
+
+    # Sem nada relevante → não injeta nada (evita poluir prompt à toa)
+    has_any = bool(allergies or cont_meds or prefs or tags
+                   or (segment and segment != "esporadico") or total_ord)
+    if not has_any:
+        return ""
+
+    lines: list[str] = ["## O que você sabe sobre este cliente"]
+
+    if name:
+        if total_ord:
+            lines.append(f"- **Nome:** {name} (já comprou {int(total_ord)}× — LTV R$ {float(ltv):.2f})")
+        else:
+            lines.append(f"- **Nome:** {name}")
+
+    if segment and segment != "esporadico":
+        seg_label = {
+            "vip":         "VIP — trate com prioridade e atenção extra.",
+            "recorrente":  "Cliente recorrente — já confia na farmácia.",
+            "em_risco":    "Cliente sumido há mais de 60 dias — abra com leveza.",
+        }.get(segment, segment)
+        lines.append(f"- **Segmento:** {seg_label}")
+
+    if allergies:
+        lines.append(
+            "- **⚠️ Alergias declaradas:** " + ", ".join(allergies)
+            + " — NUNCA recomende ou venda medicamentos com esses princípios "
+              "ativos. Se o cliente pedir, alerte e ofereça alternativa segura."
+        )
+
+    if cont_meds:
+        cont_lines = []
+        for m in cont_meds:
+            if not isinstance(m, dict):
+                continue
+            name_m = m.get("name") or m.get("principio_ativo") or "?"
+            freq   = m.get("frequency_days")
+            last   = m.get("last_refill_at")
+            line = f"  • {name_m}"
+            if freq:
+                line += f" (uso contínuo a cada {freq} dias)"
+            if last:
+                line += f" — última retirada: {last}"
+            cont_lines.append(line)
+        if cont_lines:
+            lines.append("- **Medicamentos contínuos:**\n" + "\n".join(cont_lines))
+
+    if prefs:
+        pref_lines = []
+        if prefs.get("prefere_generico") is True:
+            pref_lines.append("Prefere genéricos quando disponíveis.")
+        if prefs.get("prefere_marca") is True:
+            pref_lines.append("Prefere medicamentos de marca.")
+        if prefs.get("canal_pref"):
+            pref_lines.append(f"Canal preferido: {prefs['canal_pref']}.")
+        for k, v in prefs.items():
+            if k in {"prefere_generico", "prefere_marca", "canal_pref"}:
+                continue
+            pref_lines.append(f"{k}: {v}")
+        if pref_lines:
+            lines.append("- **Preferências:** " + " ".join(pref_lines))
+
+    if tags:
+        lines.append("- **Tags:** " + ", ".join(tags))
+
+    lines.append(
+        "Use essas informações para personalizar a resposta — sem repetir tudo "
+        "para o cliente. Mencione só quando for relevante para a venda ou "
+        "segurança farmacêutica."
+    )
+
+    return "\n".join(lines)
