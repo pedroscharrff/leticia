@@ -23,7 +23,14 @@ api.interceptors.response.use(
   (err: AxiosError) => {
     if (err.response?.status === 401) {
       localStorage.removeItem("access_token");
-      window.location.href = "/login";
+      const path = window.location.pathname;
+      const isAdminArea =
+        path.startsWith("/login") ||
+        path.startsWith("/dashboard") ||
+        path.startsWith("/tenants") ||
+        path.startsWith("/settings") ||
+        path.startsWith("/chat-test");
+      window.location.href = isAdminArea ? "/login" : "/portal/login";
     }
     return Promise.reject(err);
   }

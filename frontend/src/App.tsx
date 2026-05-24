@@ -81,7 +81,7 @@ export function App() {
       <Route path="/tenants/:id/persona" element={<AdminRoute><AdminPersona /></AdminRoute>} />
 
       {/* ── Fallback ──────────────────────────────────────────────────── */}
-      <Route path="*" element={<Navigate to="/login" replace />} />
+      <Route path="*" element={<Navigate to="/portal/login" replace />} />
     </Routes>
   );
 }
