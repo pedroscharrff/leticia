@@ -630,8 +630,12 @@ async def vendedor_node(state: AgentState, llm_factory) -> AgentState:
                     "vendedor.preattendimento.closing_without_tool",
                     final_response_preview=final_response[:200],
                 )
-                from langchain_core.messages import SystemMessage
-                lc_messages.append(SystemMessage(content=(
+                # IMPORTANTE: usa HumanMessage, não SystemMessage. Anthropic
+                # rejeita system messages não-consecutivas (depois de Human/AI)
+                # com ValueError "Received multiple non-consecutive system
+                # messages" — quebrava 3+ turnos/dia em prod.
+                lc_messages.append(HumanMessage(content=(
+                    "[INSTRUÇÃO INTERNA DO SISTEMA — não é o cliente falando]\n"
                     "⚠️ VOCÊ ESQUECEU DE CHAMAR A TOOL `anotar_pedido_balcao`.\n"
                     "Sua resposta dá a entender que o pedido foi anotado, mas "
                     "a tool NÃO FOI CHAMADA — o pedido NÃO existe no sistema.\n\n"
