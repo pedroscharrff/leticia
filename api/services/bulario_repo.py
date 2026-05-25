@@ -236,7 +236,12 @@ async def upsert_detail(num_processo: str, detail: dict) -> None:
 async def _fetch_top_details(
     cli: AnvisaClient, num_processos: list[str], n: int = TOP_N_DETAIL
 ) -> None:
-    """Busca em paralelo os top-N detalhes e grava no DB. Tolerante a falhas."""
+    """
+    Busca em paralelo os top-N detalhes e grava no DB. Aproveita o JWT
+    fresco (~5min de validade) pra também baixar e extrair o texto da
+    bula. Tolerante a falhas — extração de bula pode falhar sem quebrar
+    o resto do fluxo.
+    """
     targets = num_processos[:n]
     if not targets:
         return
@@ -251,6 +256,30 @@ async def _fetch_top_details(
             await upsert_detail(np, det)
         except Exception as exc:  # noqa: BLE001
             log.warning("bulario.detail.upsert_failed", num_processo=np, exc=str(exc))
+            return
+
+        # Bula em PDF — usa o JWT que acabamos de receber (vence em ~5min).
+        # Falha aqui não impede o resto do fluxo.
+        codigo_bula = det.get("codigoBulaPaciente") or det.get("codigoBulaProfissional")
+        if not codigo_bula:
+            return
+        try:
+            from services.bula_repo import upsert_secoes, has_bula
+            if await has_bula(np):
+                return
+            from services.bula_extractor import pdf_to_text, split_secoes
+            pdf_bytes = await cli.download_bula_pdf(codigo_bula)
+            text = pdf_to_text(pdf_bytes)
+            secoes = split_secoes(text)
+            n_secoes = await upsert_secoes(np, secoes)
+            log.info(
+                "bulario.bula_extracted",
+                num_processo=np, secoes=n_secoes, chars=len(text),
+            )
+        except AnvisaError as exc:
+            log.warning("bulario.bula_download.failed", num_processo=np, exc=str(exc))
+        except Exception as exc:  # noqa: BLE001
+            log.warning("bulario.bula_extract.failed", num_processo=np, exc=str(exc))
 
     await asyncio.gather(*[_one(np) for np in targets])
 

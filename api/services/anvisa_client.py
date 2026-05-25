@@ -149,6 +149,42 @@ class AnvisaClient:
         """Lista de categorias regulatórias."""
         return await self._get("/tipoCategoriaRegulatoria")
 
+    async def download_bula_pdf(self, codigo_bula: str) -> bytes:
+        """
+        Baixa o PDF da bula (paciente ou profissional).
+
+        `codigo_bula` é o JWT retornado em `detail.codigoBulaPaciente` ou
+        `detail.codigoBulaProfissional`. JWT é de curta duração (~5 min),
+        então o caller deve buscar detail fresco antes de chamar este método.
+        Retorna os bytes do PDF.
+        """
+        await self._warmup()
+        url = f"{BASE_URL}/consulta/medicamentos/arquivo/bula/parecer/{codigo_bula}/"
+        async with self._sem:
+            try:
+                resp = await self._session.get(url)
+            except RequestsError as exc:
+                log.warning("anvisa.bula_pdf.network_error", exc=str(exc))
+                raise AnvisaError(f"ANVISA PDF network error: {exc}") from exc
+
+            if resp.status_code >= 400:
+                log.warning(
+                    "anvisa.bula_pdf.http_error",
+                    status=resp.status_code,
+                    body=resp.text[:200],
+                )
+                raise AnvisaError(f"ANVISA PDF HTTP {resp.status_code}")
+
+            content = resp.content
+            if not content or not content[:4] == b"%PDF":
+                log.warning(
+                    "anvisa.bula_pdf.not_pdf",
+                    head=content[:50] if content else b"",
+                    size=len(content),
+                )
+                raise AnvisaError("ANVISA PDF: response is not a PDF")
+            return content
+
     async def by_category(self, categoria_id: str, *, page: int = 1, count: int = 10) -> dict:
         """Produtos filtrados por categoria regulatória."""
         return await self._get(

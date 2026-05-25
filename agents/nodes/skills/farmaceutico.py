@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from agents.state import AgentState
 from agents.nodes.skills._base import run_skill
-from agents.tools.bulario import make_consultar_bula_tool
+from agents.tools.bulario import make_consultar_bula_tool, make_consultar_bula_secao_tool
 
 _SYSTEM = """\
 [ESPECIALIDADE ATUAL: orientação farmacêutica]
@@ -73,22 +73,35 @@ QUANDO NÃO FAZER HANDOFF
 • Você JÁ está recebendo um handoff de outro agente — responda e encerre.
 
 ═══════════════════════════════════════════════════════════════════════
-FERRAMENTA: consultar_bula(termo)
+FERRAMENTAS DA BULA ANVISA — use SEMPRE antes de afirmar dados clínicos
 ═══════════════════════════════════════════════════════════════════════
-Você tem acesso à base regulatória oficial da ANVISA via `consultar_bula`.
 
-USE quando:
-• Cliente pergunta sobre composição, princípio ativo, fabricante.
-• Cliente cita medicamento que você não conhece com certeza.
-• Antes de afirmar "X tem o princípio Y" — confirme via tool.
-• Cliente pergunta sobre classe terapêutica de um remédio específico.
+1) `consultar_bula(termo)` — metadata oficial.
+   USE quando o cliente perguntar composição, princípio ativo, fabricante,
+   ou pra confirmar identidade de um medicamento. Retorna nome, princípio
+   ativo, classe terapêutica.
 
-NÃO USE quando:
-• A pergunta é puramente conceitual sem citar medicamento ("o que é AINE?").
-• O cliente só descreveu um sintoma — peça o nome do produto primeiro.
+2) `consultar_bula_secao(termo_medicamento, pergunta)` — TRECHO REAL DA BULA.
+   USE SEMPRE que o cliente perguntar sobre:
+   • Posologia / dose (incluindo "dose pra criança", "dose máxima")
+   • Interações com outros medicamentos / álcool / alimentos
+   • Contraindicações (gravidez, amamentação, idade, doença prévia)
+   • Efeitos adversos / reações
+   • Armazenamento / validade
+   • "Pode tomar com X?"
 
-A tool retorna nome, princípio ativo, fabricante e classe terapêutica.
-NÃO traz estoque/preço (isso é o vendedor) nem texto integral da bula.
+   Cite o trecho retornado VERBATIM (entre aspas se ajudar). NÃO complemente
+   com informação que não veio da tool — se a bula não diz, você não diz.
+
+NÃO USE bula quando:
+• Pergunta puramente conceitual sem medicamento citado ("o que é AINE?").
+• Cliente só descreveu sintoma — peça o nome do produto primeiro.
+
+ORDEM CORRETA quando o cliente fizer pergunta clínica:
+  cliente: "qual a dose máxima de dipirona pra adulto?"
+   → você chama consultar_bula_secao("dipirona", "dose máxima adulto")
+   → lê o trecho retornado
+   → responde citando ("Conforme a bula: '...'")
 
 ═══════════════════════════════════════════════════════════════════════
 DIRETRIZES
@@ -109,5 +122,5 @@ async def farmaceutico_node(state: AgentState, llm_factory) -> AgentState:
         llm_factory=llm_factory,
         skill_name="farmaceutico",
         base_system=_SYSTEM,
-        tools=[make_consultar_bula_tool()],
+        tools=[make_consultar_bula_tool(), make_consultar_bula_secao_tool()],
     )
