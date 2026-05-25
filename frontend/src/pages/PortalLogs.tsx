@@ -68,6 +68,13 @@ export function PortalLogs() {
   const [actionBusy, setActionBusy] = useState(false);
   const chatBottomRef = useRef<HTMLDivElement | null>(null);
 
+  // Marker class no body para o CSS sobrescrever o padding/overflow do .portal-main
+  // só nesta página. Limpa ao desmontar para não vazar para outras telas.
+  useEffect(() => {
+    document.body.classList.add("has-inbox");
+    return () => { document.body.classList.remove("has-inbox"); };
+  }, []);
+
   // ── Loads ───────────────────────────────────────────────────────────────
   async function loadInbox() {
     setLoadingInbox(true);

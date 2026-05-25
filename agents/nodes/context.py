@@ -272,18 +272,20 @@ async def save_context(state: AgentState) -> AgentState:
                 int(cart.get("sales_attempts", 0) or 0),
             )
 
-            # Log de conversa
+            # Log de conversa — guarda phone separado para agrupar a inbox por contato.
+            phone_clean = state.get("phone") or ""
             await conn.execute(
                 """
                 INSERT INTO conversation_logs
-                    (session_key, role, content, skill_used, created_at)
-                VALUES ($1, 'user',      $2, $4, NOW()),
-                       ($1, 'assistant', $3, $4, NOW())
+                    (session_key, phone, role, content, skill_used, created_at)
+                VALUES ($1, $5, 'user',      $2, $4, NOW()),
+                       ($1, $5, 'assistant', $3, $4, NOW())
                 """,
                 session_id,
                 current_msg,
                 final_response,
                 skill_used,
+                phone_clean,
             )
 
     except Exception as exc:

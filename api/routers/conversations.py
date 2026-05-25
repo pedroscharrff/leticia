@@ -164,29 +164,34 @@ async def inbox(
     """
     schema = await _schema_for(user.tenant_id)
 
-    # Filtros opcionais
+    # Filtros opcionais — busca em phone OU nome do cliente.
+    # Usamos a coluna `phone` diretamente (migration 029); cai pra session_key
+    # como fallback para registros antigos sem backfill.
+    params: list = [limit]
     search_clause = ""
     if search:
-        search_clause = "AND (cl.session_key ILIKE $3 OR c.name ILIKE $3 OR c.phone ILIKE $3)"
+        params.append(f"%{search}%")
+        search_clause = "AND (COALESCE(cl.phone, cl.session_key) ILIKE $2 OR c.name ILIKE $2)"
 
     async with tenant_conn(schema) as conn:
-        # Agrupa logs por phone — extrai phone do session_key (formato "tid:phone")
-        # Usa a última coluna após ':'  para o phone.
         rows = await conn.fetch(
             f"""
             WITH ranked AS (
-                SELECT cl.session_key,
-                       split_part(cl.session_key, ':', array_length(string_to_array(cl.session_key, ':'), 1)) AS phone,
+                SELECT COALESCE(NULLIF(cl.phone, ''), cl.session_key) AS phone_key,
                        cl.role,
                        cl.content,
                        cl.skill_used,
                        cl.created_at,
-                       ROW_NUMBER() OVER (PARTITION BY cl.session_key ORDER BY cl.created_at DESC) AS rn,
-                       COUNT(*) OVER (PARTITION BY cl.session_key) AS msg_count
+                       ROW_NUMBER() OVER (
+                           PARTITION BY COALESCE(NULLIF(cl.phone, ''), cl.session_key)
+                           ORDER BY cl.created_at DESC
+                       ) AS rn,
+                       COUNT(*) OVER (
+                           PARTITION BY COALESCE(NULLIF(cl.phone, ''), cl.session_key)
+                       ) AS msg_count
                   FROM conversation_logs cl
             )
-            SELECT r.phone,
-                   r.session_key,
+            SELECT r.phone_key AS phone,
                    r.role        AS last_role,
                    r.content     AS last_content,
                    r.skill_used  AS last_skill,
@@ -194,13 +199,13 @@ async def inbox(
                    r.msg_count,
                    c.name        AS customer_name
               FROM ranked r
-              LEFT JOIN customers c ON c.phone = r.phone
+              LEFT JOIN customers c ON c.phone = r.phone_key
              WHERE r.rn = 1
                {search_clause}
              ORDER BY r.created_at DESC
              LIMIT $1
-            """ + (" OFFSET $2" if False else ""),
-            *([limit, 0, f"%{search}%"] if search else [limit]),
+            """,
+            *params,
         )
 
     # Junta com conversation_state (uma query só)
@@ -262,9 +267,13 @@ async def inbox(
 async def conversation_messages(
     phone: str,
     user: TenantUser,
-    limit: int = 200,
+    limit: int = 500,
 ) -> list[MessageItem]:
-    """Retorna o histórico completo de mensagens de um telefone (ordem crono)."""
+    """Retorna o histórico completo de mensagens de um telefone (ordem crono).
+
+    Agrupa TODAS as mensagens do mesmo número, independente de quantos
+    session_id diferentes existiram (estilo WhatsApp — um thread por contato).
+    """
     schema = await _schema_for(user.tenant_id)
     async with tenant_conn(schema) as conn:
         rows = await conn.fetch(
@@ -272,11 +281,16 @@ async def conversation_messages(
             SELECT id::text, role, content, skill_used,
                    tokens_in, tokens_out, latency_ms, created_at
               FROM conversation_logs
-             WHERE session_key LIKE $1
+             WHERE phone = $1
+                -- fallback para registros antigos sem phone backfill
+                OR (phone IS NULL AND (
+                    session_key = $1
+                    OR session_key LIKE '%:' || $1
+                ))
              ORDER BY created_at ASC
              LIMIT $2
             """,
-            f"%:{phone}",
+            phone,
             limit,
         )
     return [
