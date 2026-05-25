@@ -59,3 +59,6 @@ python-multipart>=0.0.18
 
 # ─── Excel (.xlsx) inventory import ──────────────────────────────────────────
 openpyxl>=3.1.0
+
+# ─── ANVISA bulário (precisa fingerprint TLS de Chrome p/ passar do Cloudflare) ─
+curl_cffi>=0.7.0
