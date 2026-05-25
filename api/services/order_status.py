@@ -138,7 +138,8 @@ async def _eligible_channels(tenant_id: str) -> list[dict]:
     async with get_db_conn() as conn:
         rows = await conn.fetch(
             """
-            SELECT id, channel_type, credentials_ref, webhook_secret, config_json
+            SELECT id, channel_type, credentials_ref, webhook_secret,
+                   config_json, handoff_config
               FROM public.tenant_channels
              WHERE tenant_id = $1
                AND active = TRUE
@@ -151,15 +152,42 @@ async def _eligible_channels(tenant_id: str) -> list[dict]:
         cfg = _coerce_jsonb(r["config_json"])
         if not bool(cfg.get("notify_order_status")):
             continue
-        if r["channel_type"] not in CHANNEL_REGISTRY:
-            continue  # adapter not implemented (instagram / web_widget)
         out.append({
             "id": str(r["id"]),
             "channel_type": r["channel_type"],
             "credentials_ref": r["credentials_ref"],
             "webhook_secret": r["webhook_secret"] or "",
+            "handoff_config": _coerce_jsonb(r["handoff_config"]),
         })
     return out
+
+
+def _clickmassa_ready(handoff_cfg: dict) -> bool:
+    """Considera a integração ClickMassa pronta para enviar mensagens simples."""
+    if not handoff_cfg or not handoff_cfg.get("enabled"):
+        return False
+    provider = (handoff_cfg.get("provider") or "clickmassa").lower()
+    if provider != "clickmassa":
+        return False
+    return bool(handoff_cfg.get("base_url")) and bool(handoff_cfg.get("token"))
+
+
+async def _send_via_clickmassa(
+    *, tenant_id: str, channel: dict, phone: str, text: str,
+) -> bool:
+    from services.handoff import send_clickmassa_message
+    phone_clean = "".join(c for c in (phone or "") if c.isdigit())
+    res = await send_clickmassa_message(
+        channel["handoff_config"], phone=phone_clean, body=text,
+    )
+    if res.get("ok"):
+        log.info("order_status.sent_via_clickmassa",
+                 tenant=tenant_id, channel_id=channel["id"])
+        return True
+    log.warning("order_status.clickmassa_send_failed",
+                tenant=tenant_id, channel_id=channel["id"],
+                error=res.get("error"), status=res.get("status_code"))
+    return False
 
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=8), reraise=True)
@@ -235,10 +263,26 @@ async def send_status_notification(
     delivered = False
 
     for ch in channels:
-        ok = await _send_via_adapter(
-            tenant_id=tenant_id, channel=ch, phone=phone, text=text,
-        )
-        delivered = delivered or ok
+        # 1ª preferência: integração ClickMassa (TalkFarma) configurada no canal.
+        #    Usa o mesmo padrão do handoff: POST {base_url}/?token={token}
+        #    com body {number, externalKey, body}.
+        if _clickmassa_ready(ch["handoff_config"]):
+            ok = await _send_via_clickmassa(
+                tenant_id=tenant_id, channel=ch, phone=phone, text=text,
+            )
+            delivered = delivered or ok
+            continue
+
+        # 2ª preferência: adapter nativo do canal (whatsapp_cloud / zapi / telegram)
+        if ch["channel_type"] in CHANNEL_REGISTRY:
+            ok = await _send_via_adapter(
+                tenant_id=tenant_id, channel=ch, phone=phone, text=text,
+            )
+            delivered = delivered or ok
+        else:
+            log.warning("order_status.no_send_path",
+                        tenant=tenant_id, channel_id=ch["id"],
+                        channel_type=ch["channel_type"])
 
     if delivered:
         return True

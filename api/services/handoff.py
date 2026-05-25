@@ -77,6 +77,67 @@ def should_handoff(
     return False, ""
 
 
+async def send_clickmassa_message(
+    handoff_cfg: dict[str, Any],
+    *,
+    phone: str,
+    body: str,
+    external_key: str = "123456",
+) -> dict[str, Any]:
+    """
+    Envia uma mensagem simples pelo endpoint externo da ClickMassa/TalkFarma.
+
+    Diferente de `transfer_to_human`, NÃO cria ticket nem força departamento —
+    apenas dispara uma mensagem de saída. Usado por notificações automáticas
+    (ex.: troca de status de pedido) quando o canal tem ClickMassa ativa.
+
+    URL: {base_url}/?token={token}
+    Body: {"number": phone, "externalKey": external_key, "body": body}
+    """
+    base_url = (handoff_cfg.get("base_url") or "").strip().rstrip("/")
+    token    = (handoff_cfg.get("token") or "").strip()
+
+    missing = []
+    if not base_url: missing.append("base_url")
+    if not token:    missing.append("token")
+    if not phone:    missing.append("phone")
+    if not body:     missing.append("body")
+    if missing:
+        return {
+            "ok": False, "status_code": None, "response": None,
+            "error": f"Config ClickMassa incompleta. Faltando: {', '.join(missing)}",
+        }
+
+    url = f"{base_url}/?token={token}"
+    payload = {"number": phone, "externalKey": external_key, "body": body}
+
+    log.info("clickmassa.send.dispatching",
+             url_prefix=base_url, phone_prefix=phone[:4])
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.post(url, json=payload)
+        try:
+            data = resp.json()
+        except Exception:
+            data = {"_text": resp.text[:2000]}
+        ok = 200 <= resp.status_code < 300
+        if ok:
+            log.info("clickmassa.send.success", status=resp.status_code)
+        else:
+            log.warning("clickmassa.send.bad_status",
+                        status=resp.status_code, preview=str(data)[:300])
+        return {
+            "ok": ok, "status_code": resp.status_code, "response": data,
+            "error": None if ok else f"API ClickMassa retornou {resp.status_code}",
+        }
+    except Exception as exc:  # noqa: BLE001
+        log.error("clickmassa.send.failed", error=str(exc))
+        return {
+            "ok": False, "status_code": None, "response": None,
+            "error": f"Falha ao conectar ClickMassa: {exc}",
+        }
+
+
 async def transfer_to_human(
     handoff_cfg: dict[str, Any],
     *,
