@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { PortalLayout } from "../components/PortalLayout";
 import { Spinner } from "../components/Spinner";
 import {
@@ -8,6 +9,11 @@ import {
   type OrderStatus,
   type OrderStatusMessage,
 } from "../api/portal";
+import {
+  listIntegrations,
+  updateIntegration,
+  type Integration,
+} from "../api/broker";
 import "./PortalMensagensPedido.css";
 
 const STATUS_LABELS: Record<OrderStatus, string> = {
@@ -37,18 +43,54 @@ const PLACEHOLDERS = [
 ];
 
 export function PortalMensagensPedido() {
+  const navigate = useNavigate();
   const [messages, setMessages] = useState<OrderStatusMessage[]>([]);
+  const [integrations, setIntegrations] = useState<Integration[]>([]);
   const [loading, setLoading] = useState(true);
   const [savingStatus, setSavingStatus] = useState<OrderStatus | null>(null);
+  const [togglingId, setTogglingId] = useState<string | null>(null);
   const [previewByStatus, setPreviewByStatus] = useState<Partial<Record<OrderStatus, string>>>({});
   const [error, setError] = useState("");
 
   useEffect(() => {
-    listOrderStatusMessages()
-      .then(setMessages)
+    Promise.all([
+      listOrderStatusMessages(),
+      listIntegrations().catch(() => [] as Integration[]),
+    ])
+      .then(([msgs, ints]) => {
+        setMessages(msgs);
+        setIntegrations(ints);
+      })
       .catch(() => setError("Erro ao carregar mensagens."))
       .finally(() => setLoading(false));
   }, []);
+
+  async function toggleNotify(integ: Integration) {
+    setTogglingId(integ.id);
+    try {
+      const nextFlag = !integ.config_json?.notify_order_status;
+      const updated = await updateIntegration(integ.id, {
+        config_json: {
+          ...(integ.config_json || {}),
+          provider: integ.config_json?.provider || "clickmassa",
+          notify_order_status: nextFlag,
+        },
+      });
+      setIntegrations((prev) => prev.map((i) => (i.id === updated.id ? updated : i)));
+    } catch (e: any) {
+      setError(e?.response?.data?.detail || "Erro ao atualizar integração.");
+    } finally {
+      setTogglingId(null);
+    }
+  }
+
+  function isReady(integ: Integration): boolean {
+    const cfg = integ.config_json || {};
+    const handoff = integ.handoff_config || {};
+    const baseUrl = (cfg.base_url as string) || handoff.base_url || "";
+    const token   = (cfg.token as string)   || handoff.token   || "";
+    return Boolean(baseUrl) && Boolean(token);
+  }
 
   function setField(status: OrderStatus, patch: Partial<OrderStatusMessage>) {
     setMessages((prev) =>
@@ -96,6 +138,73 @@ export function PortalMensagensPedido() {
           mensagem no WhatsApp com o texto que você definir aqui.
         </p>
       </div>
+
+      {/* Canais que vão enviar a notificação */}
+      <section className="msg-channels">
+        <header className="msg-channels__head">
+          <div>
+            <h2 className="msg-channels__title">Por onde enviar</h2>
+            <p className="msg-channels__hint">
+              A mensagem só é enviada pelas integrações marcadas abaixo. As credenciais
+              (URL e token) são reaproveitadas da configuração de transferência ao balcão.
+            </p>
+          </div>
+        </header>
+
+        {integrations.length === 0 ? (
+          <div className="msg-channels__empty">
+            Nenhuma integração configurada ainda.{" "}
+            <a onClick={() => navigate("/portal/canais")} className="msg-channels__link">
+              Configurar agora →
+            </a>
+          </div>
+        ) : (
+          <ul className="msg-channels__list">
+            {integrations.map((it) => {
+              const enabled = Boolean(it.config_json?.notify_order_status);
+              const ready = isReady(it);
+              return (
+                <li key={it.id} className="msg-channels__item">
+                  <label className="msg-channels__toggle">
+                    <input
+                      type="checkbox"
+                      checked={enabled}
+                      disabled={togglingId === it.id || (!ready && !enabled)}
+                      onChange={() => toggleNotify(it)}
+                    />
+                    <div className="msg-channels__info">
+                      <div className="msg-channels__name">
+                        {it.name}
+                        <small className="msg-channels__slug">/{it.slug}</small>
+                      </div>
+                      <div className="msg-channels__status">
+                        {!ready ? (
+                          <span style={{ color: "#b45309" }}>
+                            ⚠ Faltam URL/token —{" "}
+                            <a
+                              onClick={(e) => {
+                                e.preventDefault();
+                                navigate(`/portal/broker?selected=${it.id}`);
+                              }}
+                              className="msg-channels__link"
+                            >
+                              configurar
+                            </a>
+                          </span>
+                        ) : enabled ? (
+                          <span style={{ color: "#16a34a" }}>● Notificações ativas</span>
+                        ) : (
+                          <span style={{ color: "#6b7280" }}>○ Desativado</span>
+                        )}
+                      </div>
+                    </div>
+                  </label>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </section>
 
       <div className="msg-placeholders">
         <strong>Variáveis disponíveis:</strong>
