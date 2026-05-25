@@ -171,6 +171,11 @@ export function PortalCanais() {
                             🏪 Balcão
                           </span>
                         )}
+                        {Boolean((ch.config_json as Record<string, unknown>)?.notify_order_status) && (
+                          <span className="canais-badge canais-badge--handoff" title="Notificação de status de pedido ativada">
+                            🔔 Status
+                          </span>
+                        )}
                       </div>
                     </div>
                   </button>
@@ -451,6 +456,23 @@ function TabConexao({
   const [info, setInfo] = useState("");
   const fields = CHANNEL_CREDENTIAL_FIELDS[channel.channel_type] || [];
 
+  const notifyOrderStatus = Boolean(
+    (channel.config_json as Record<string, unknown>)?.notify_order_status,
+  );
+
+  async function toggleNotifyOrderStatus() {
+    const next = {
+      ...(channel.config_json || {}),
+      notify_order_status: !notifyOrderStatus,
+    };
+    const updated = await updateChannel(channel.id, { config_json: next });
+    onChanged(updated);
+    setInfo(next.notify_order_status
+      ? "Notificação de status ativada neste canal."
+      : "Notificação de status desativada.");
+    setTimeout(() => setInfo(""), 2200);
+  }
+
   async function saveName() {
     setBusy(true);
     try {
@@ -490,6 +512,23 @@ function TabConexao({
         <button className={`btn ${channel.active ? "btn-secondary" : "btn-primary"}`} onClick={toggle}>
           {channel.active ? "Desativar canal" : "Ativar canal"}
         </button>
+      </div>
+
+      <div className="drawer-row">
+        <label className="form-label" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <input
+            type="checkbox"
+            checked={notifyOrderStatus}
+            disabled={!channel.active}
+            onChange={toggleNotifyOrderStatus}
+          />
+          Notificação de Status de Pedido
+        </label>
+        <small style={{ color: "#6b7280" }}>
+          Quando o status de um pedido for alterado no painel, envia automaticamente
+          a mensagem definida em <em>Mensagens automáticas de pedido</em> para o
+          cliente por este canal. {!channel.active && "(Ative o canal primeiro)"}
+        </small>
       </div>
 
       <div className="drawer-row">

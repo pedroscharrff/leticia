@@ -74,6 +74,7 @@ const NAV_SECTIONS: NavSection[] = [
     icon: "⚙️",
     items: [
       { path: "/portal/canais",    label: "Canais & Integrações", icon: "📡", key: "canais"    },
+      { path: "/portal/configuracoes/notificacoes", label: "Notificações de Status", icon: "🔔", key: "notificacoes" },
       { path: "/portal/ia-config", label: "Modelos de IA",         icon: "🤖", key: "ia-config" },
       { path: "/portal/billing",   label: "Plano & Cobrança",      icon: "💳", key: "billing"   },
     ],

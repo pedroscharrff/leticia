@@ -80,6 +80,7 @@ export function App() {
       <Route path="/portal/vendas"     element={<TenantRoute><PortalVendas /></TenantRoute>} />
       <Route path="/portal/pedidos"    element={<TenantRoute><PortalPedidos /></TenantRoute>} />
       <Route path="/portal/pedidos/mensagens" element={<TenantRoute><PortalMensagensPedido /></TenantRoute>} />
+      <Route path="/portal/configuracoes/notificacoes" element={<TenantRoute><PortalMensagensPedido /></TenantRoute>} />
       <Route path="/portal/broker"     element={<TenantRoute><PortalBroker /></TenantRoute>} />
       <Route path="/portal/recursos"   element={<TenantRoute><PortalRecursos /></TenantRoute>} />
       <Route path="/portal/entregas"     element={<TenantRoute><PortalEntregas /></TenantRoute>} />

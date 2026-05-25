@@ -81,14 +81,14 @@ export function PortalMensagensPedido() {
 
   if (loading) {
     return (
-      <PortalLayout active="mensagens-pedido">
+      <PortalLayout active="notificacoes">
         <div className="portal-loading"><Spinner size={32} /></div>
       </PortalLayout>
     );
   }
 
   return (
-    <PortalLayout active="mensagens-pedido">
+    <PortalLayout active="notificacoes">
       <div className="portal-page-header">
         <h1 className="portal-page-title">Mensagens automáticas de pedido</h1>
         <p className="portal-page-subtitle">
