@@ -82,6 +82,7 @@ body.has-inbox .portal-main {
   min-height: 0;                /* << CRÍTICO para o overflow funcionar */
   overflow-y: auto;
   overflow-x: hidden;
+  overscroll-behavior: contain;
 }
 .inbox-loading { display: flex; justify-content: center; padding: 32px; }
 .inbox-empty-list {
@@ -203,6 +204,7 @@ body.has-inbox .portal-main {
   flex: 1 1 auto;
   min-height: 0;                /* << CRÍTICO */
   overflow-y: auto;
+  overscroll-behavior: contain; /* não propaga scroll para ancestrais */
   padding: 20px;
   display: flex;
   flex-direction: column;
@@ -256,6 +258,7 @@ body.has-inbox .portal-main {
   flex-direction: column;
   min-height: 0;
   overflow-y: auto;             /* a coluna toda faz scroll se necessário */
+  overscroll-behavior: contain;
 }
 .inbox-actions__section {
   padding: 16px 18px;

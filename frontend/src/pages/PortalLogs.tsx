@@ -6,7 +6,7 @@
  *   • Centro:   histórico de mensagens da conversa selecionada
  *   • Direita:  painel de ações (pausar / retomar / encerrar / info do cliente)
  */
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useLayoutEffect, useState, useRef } from "react";
 import { PortalLayout } from "../components/PortalLayout";
 import { Spinner } from "../components/Spinner";
 import {
@@ -66,11 +66,12 @@ export function PortalLogs() {
   const [messages, setMessages] = useState<MessageItem[]>([]);
   const [loadingMessages, setLoadingMessages] = useState(false);
   const [actionBusy, setActionBusy] = useState(false);
-  const chatBottomRef = useRef<HTMLDivElement | null>(null);
+  const chatBodyRef = useRef<HTMLDivElement | null>(null);
 
-  // Marker class no body para o CSS sobrescrever o padding/overflow do .portal-main
-  // só nesta página. Limpa ao desmontar para não vazar para outras telas.
-  useEffect(() => {
+  // useLayoutEffect roda ANTES do paint, então a classe `has-inbox` já está
+  // no body quando o CSS é aplicado pela primeira vez — evita o "flash" de
+  // layout quebrado durante o primeiro render.
+  useLayoutEffect(() => {
     document.body.classList.add("has-inbox");
     return () => { document.body.classList.remove("has-inbox"); };
   }, []);
@@ -118,9 +119,16 @@ export function PortalLogs() {
     else setMessages([]);
   }, [selectedPhone]);
 
-  // Auto-scroll para o fim ao carregar novas mensagens
+  // Auto-scroll para o fim ao carregar novas mensagens.
+  // Usa scrollTop direto no elemento — evita que scrollIntoView role um
+  // scroll-container ancestor (e quebre o layout da página inteira).
   useEffect(() => {
-    chatBottomRef.current?.scrollIntoView({ behavior: "smooth" });
+    const el = chatBodyRef.current;
+    if (!el) return;
+    // Pequeno timeout para o DOM atualizar antes de calcular scrollHeight
+    requestAnimationFrame(() => {
+      el.scrollTop = el.scrollHeight;
+    });
   }, [messages.length, selectedPhone]);
 
   // ── Ações ───────────────────────────────────────────────────────────────
@@ -272,7 +280,7 @@ export function PortalLogs() {
                 )}
               </header>
 
-              <div className="inbox-chat__body">
+              <div className="inbox-chat__body" ref={chatBodyRef}>
                 {loadingMessages ? (
                   <div className="inbox-loading"><Spinner size={28} /></div>
                 ) : messages.length === 0 ? (
@@ -295,7 +303,6 @@ export function PortalLogs() {
                     </div>
                   ))
                 )}
-                <div ref={chatBottomRef} />
               </div>
             </>
           )}
