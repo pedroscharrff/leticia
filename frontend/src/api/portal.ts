@@ -738,6 +738,55 @@ export async function closeConversation(
   )).data;
 }
 
+// ── Inbox-style conversation list ──────────────────────────────────────────
+
+export interface InboxItem {
+  phone: string;
+  last_message: string | null;
+  last_role: string | null;
+  last_skill: string | null;
+  last_at: string | null;
+  message_count: number;
+  ai_paused: boolean;
+  paused_until: string | null;
+  paused_reason: string | null;
+  closed_at: string | null;
+  customer_name: string | null;
+}
+
+export interface MessageItem {
+  id: string;
+  role: string;
+  content: string;
+  skill_used: string | null;
+  tokens_in: number | null;
+  tokens_out: number | null;
+  latency_ms: number | null;
+  created_at: string;
+}
+
+export async function listInbox(opts?: {
+  search?: string;
+  filter_state?: "all" | "paused" | "active" | "closed";
+  limit?: number;
+}): Promise<InboxItem[]> {
+  const params = new URLSearchParams();
+  if (opts?.search) params.set("search", opts.search);
+  if (opts?.filter_state) params.set("filter_state", opts.filter_state);
+  if (opts?.limit) params.set("limit", String(opts.limit));
+  const qs = params.toString();
+  return (await api.get<InboxItem[]>(`/portal/conversations/inbox/list${qs ? "?" + qs : ""}`)).data;
+}
+
+export async function getConversationMessages(
+  phone: string,
+  limit: number = 200,
+): Promise<MessageItem[]> {
+  return (await api.get<MessageItem[]>(
+    `/portal/conversations/${encodeURIComponent(phone)}/messages?limit=${limit}`
+  )).data;
+}
+
 export interface CustomerAddress {
   cep: string | null;
   street: string | null;

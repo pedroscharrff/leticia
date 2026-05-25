@@ -1,317 +1,386 @@
-import { useEffect, useState } from "react";
+/**
+ * PortalLogs — Inbox de conversas estilo WhatsApp.
+ *
+ * Layout 3 colunas:
+ *   • Esquerda: lista de conversas (filtro por estado + busca)
+ *   • Centro:   histórico de mensagens da conversa selecionada
+ *   • Direita:  painel de ações (pausar / retomar / encerrar / info do cliente)
+ */
+import { useEffect, useState, useRef } from "react";
 import { PortalLayout } from "../components/PortalLayout";
 import { Spinner } from "../components/Spinner";
 import {
-  getLogs,
-  listConversationStates,
+  listInbox,
+  getConversationMessages,
   pauseConversation,
   resumeConversation,
   closeConversation,
-  type ConversationLog,
-  type ConversationState,
+  type InboxItem,
+  type MessageItem,
 } from "../api/portal";
 import "./PortalLogs.css";
 
-function roleBadge(role: string) {
-  if (role === "user") return <span className="role-badge role-badge--user">Cliente</span>;
-  if (role === "assistant") return <span className="role-badge role-badge--bot">Agente</span>;
-  return <span className="role-badge">{role}</span>;
-}
+type FilterState = "all" | "active" | "paused" | "closed";
 
-/**
- * Extrai o telefone do session_key (formato: "tenant_id:phone").
- * Se o formato não corresponder, devolve o session_key inteiro como fallback.
- */
-function extractPhone(sessionKey: string): string {
-  const parts = sessionKey.split(":");
-  return parts.length >= 2 ? parts[parts.length - 1] : sessionKey;
+const FILTER_LABELS: Record<FilterState, string> = {
+  all:    "Todas",
+  active: "🟢 Ativas",
+  paused: "⏸ Pausadas",
+  closed: "🔒 Encerradas",
+};
+
+function formatTime(iso: string | null): string {
+  if (!iso) return "";
+  const dt = new Date(iso);
+  const now = new Date();
+  const sameDay = dt.toDateString() === now.toDateString();
+  if (sameDay) {
+    return dt.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
+  }
+  const diffDays = Math.floor((now.getTime() - dt.getTime()) / 86400000);
+  if (diffDays < 7) {
+    return dt.toLocaleDateString("pt-BR", { weekday: "short" });
+  }
+  return dt.toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" });
 }
 
 function formatUntil(iso: string | null): string {
   if (!iso) return "indefinido";
   const dt = new Date(iso);
-  const now = new Date();
-  const diffMs = dt.getTime() - now.getTime();
+  const diffMs = dt.getTime() - Date.now();
   if (diffMs <= 0) return "expirado";
   const mins = Math.round(diffMs / 60000);
-  if (mins < 60) return `${mins} min`;
+  if (mins < 60) return `${mins}min`;
   const h = Math.floor(mins / 60);
   const m = mins % 60;
   return m > 0 ? `${h}h ${m}min` : `${h}h`;
 }
 
 export function PortalLogs() {
-  const [logs, setLogs] = useState<ConversationLog[]>([]);
-  const [states, setStates] = useState<ConversationState[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [offset, setOffset] = useState(0);
-  const [hasMore, setHasMore] = useState(true);
-  const [actionBusy, setActionBusy] = useState<string | null>(null);
-  const PAGE = 50;
+  const [items, setItems] = useState<InboxItem[]>([]);
+  const [filter, setFilter] = useState<FilterState>("all");
+  const [search, setSearch] = useState("");
+  const [loadingInbox, setLoadingInbox] = useState(true);
 
-  async function loadLogs(newOffset: number, append = false) {
-    setLoading(true);
+  const [selectedPhone, setSelectedPhone] = useState<string | null>(null);
+  const [messages, setMessages] = useState<MessageItem[]>([]);
+  const [loadingMessages, setLoadingMessages] = useState(false);
+  const [actionBusy, setActionBusy] = useState(false);
+  const chatBottomRef = useRef<HTMLDivElement | null>(null);
+
+  // ── Loads ───────────────────────────────────────────────────────────────
+  async function loadInbox() {
+    setLoadingInbox(true);
     try {
-      const data = await getLogs(PAGE, newOffset);
-      setLogs((prev) => (append ? [...prev, ...data] : data));
-      setHasMore(data.length === PAGE);
+      const data = await listInbox({
+        search: search.trim() || undefined,
+        filter_state: filter,
+        limit: 200,
+      });
+      setItems(data);
+      // Auto-seleciona a primeira se nada estiver selecionado
+      if (!selectedPhone && data.length > 0) {
+        setSelectedPhone(data[0].phone);
+      }
     } finally {
-      setLoading(false);
+      setLoadingInbox(false);
     }
   }
 
-  async function loadStates() {
+  async function loadMessages(phone: string) {
+    setLoadingMessages(true);
     try {
-      const data = await listConversationStates({ limit: 30 });
-      setStates(data);
-    } catch {
-      setStates([]);
+      const data = await getConversationMessages(phone);
+      setMessages(data);
+    } finally {
+      setLoadingMessages(false);
     }
   }
+
+  useEffect(() => { void loadInbox(); }, [filter]);
+
+  // Debounce search
+  useEffect(() => {
+    const t = setTimeout(() => { void loadInbox(); }, 300);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line
+  }, [search]);
 
   useEffect(() => {
-    void loadLogs(0);
-    void loadStates();
-  }, []);
+    if (selectedPhone) void loadMessages(selectedPhone);
+    else setMessages([]);
+  }, [selectedPhone]);
 
-  function loadMore() {
-    const newOffset = offset + PAGE;
-    setOffset(newOffset);
-    void loadLogs(newOffset, true);
-  }
+  // Auto-scroll para o fim ao carregar novas mensagens
+  useEffect(() => {
+    chatBottomRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages.length, selectedPhone]);
 
-  // ── Ações por telefone ──────────────────────────────────────────────────
-  function findState(phone: string): ConversationState | undefined {
-    return states.find((s) => s.phone === phone);
-  }
+  // ── Ações ───────────────────────────────────────────────────────────────
+  const selectedItem = items.find((i) => i.phone === selectedPhone);
 
-  async function doPause(phone: string, minutes: number | null) {
-    setActionBusy(phone);
+  async function doPause(minutes: number | null) {
+    if (!selectedPhone) return;
+    setActionBusy(true);
     try {
-      await pauseConversation(phone, {
+      await pauseConversation(selectedPhone, {
         until_minutes: minutes ?? undefined,
         reason: minutes ? `pausado_${minutes}min` : "pausado_manual",
       });
-      await loadStates();
+      await loadInbox();
     } finally {
-      setActionBusy(null);
+      setActionBusy(false);
     }
   }
 
-  async function doResume(phone: string) {
-    setActionBusy(phone);
+  async function doResume() {
+    if (!selectedPhone) return;
+    setActionBusy(true);
     try {
-      await resumeConversation(phone);
-      await loadStates();
+      await resumeConversation(selectedPhone);
+      await loadInbox();
     } finally {
-      setActionBusy(null);
+      setActionBusy(false);
     }
   }
 
-  async function doClose(phone: string) {
-    if (!confirm(`Encerrar atendimento de ${phone}? A IA não vai mais responder.`)) return;
-    setActionBusy(phone);
+  async function doClose() {
+    if (!selectedPhone) return;
+    if (!confirm(`Encerrar atendimento de ${selectedPhone}? A IA não vai mais responder.`)) return;
+    setActionBusy(true);
     try {
-      await closeConversation(phone, { keep_history: true });
-      await loadStates();
+      await closeConversation(selectedPhone, { keep_history: true });
+      await loadInbox();
     } finally {
-      setActionBusy(null);
+      setActionBusy(false);
     }
   }
-
-  const pausedStates = states.filter((s) => s.ai_paused);
 
   return (
     <PortalLayout active="logs">
-      <div className="portal-page-header">
-        <h1 className="portal-page-title">Conversas</h1>
-        <p className="portal-page-subtitle">
-          Pause a IA, encerre atendimentos ou veja o histórico de cada interação.
-        </p>
-      </div>
-
-      {/* ── Bloco: Conversas com estado especial (IA pausada ou encerrada) ── */}
-      {pausedStates.length > 0 && (
-        <section className="conv-state-block">
-          <h2>⏸ IA pausada ou encerrada ({pausedStates.length})</h2>
-          <p className="conv-state-block__hint">
-            Estes clientes têm um atendente humano em ação ou foram explicitamente
-            pausados. A IA não responde até retomar.
-          </p>
-          <div className="conv-state-grid">
-            {pausedStates.map((s) => (
-              <div key={s.phone} className="conv-state-card">
-                <div className="conv-state-card__phone">{s.phone}</div>
-                <div className="conv-state-card__meta">
-                  {s.closed_at ? (
-                    <span className="conv-state-card__badge conv-state-card__badge--closed">
-                      🔒 Encerrado
-                    </span>
-                  ) : (
-                    <span className="conv-state-card__badge conv-state-card__badge--paused">
-                      ⏸ Pausado · volta em {formatUntil(s.paused_until)}
-                    </span>
-                  )}
-                  <small>{s.paused_reason || "—"}</small>
-                  {s.paused_by && <small>por {s.paused_by}</small>}
-                </div>
-                <div className="conv-state-card__actions">
-                  <button
-                    className="btn btn-sm btn-primary"
-                    disabled={actionBusy === s.phone}
-                    onClick={() => doResume(s.phone)}
-                  >
-                    ▶ Retomar IA
-                  </button>
-                  {!s.closed_at && (
-                    <button
-                      className="btn btn-sm btn-secondary"
-                      disabled={actionBusy === s.phone}
-                      onClick={() => doClose(s.phone)}
-                    >
-                      🔒 Encerrar
-                    </button>
-                  )}
-                </div>
-              </div>
-            ))}
+      <div className="inbox-page">
+        {/* ── Coluna 1: lista de conversas ───────────────────────────── */}
+        <aside className="inbox-list">
+          <div className="inbox-list__head">
+            <h2>Conversas</h2>
+            <input
+              className="inbox-search"
+              type="search"
+              placeholder="🔍 Buscar telefone ou nome..."
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+            />
+            <div className="inbox-filters">
+              {(["all", "active", "paused", "closed"] as FilterState[]).map((f) => (
+                <button
+                  key={f}
+                  className={`inbox-filter ${filter === f ? "is-active" : ""}`}
+                  onClick={() => setFilter(f)}
+                >
+                  {FILTER_LABELS[f]}
+                </button>
+              ))}
+            </div>
           </div>
-        </section>
-      )}
 
-      {/* ── Tabela de logs ──────────────────────────────────────────────── */}
-      {loading && logs.length === 0 ? (
-        <div className="portal-loading">
-          <Spinner size={32} />
-        </div>
-      ) : logs.length === 0 ? (
-        <div className="portal-empty">
-          <p>Nenhuma conversa registrada ainda.</p>
-          <p className="portal-empty__hint">
-            As conversas aparecerão aqui assim que clientes interagirem com seu atendente.
-          </p>
-        </div>
-      ) : (
-        <>
-          <div className="portal-logs-table-wrap">
-            <table className="portal-logs-table">
-              <thead>
-                <tr>
-                  <th>Data/Hora</th>
-                  <th>Telefone</th>
-                  <th>Tipo</th>
-                  <th>Agente</th>
-                  <th>Mensagem</th>
-                  <th>Tokens</th>
-                  <th>Latência</th>
-                  <th>Ações</th>
-                </tr>
-              </thead>
-              <tbody>
-                {logs.map((log) => {
-                  const phone = extractPhone(log.session_key);
-                  const st = findState(phone);
-                  const isPaused = st?.ai_paused ?? false;
-                  return (
-                    <tr key={log.id} className={isPaused ? "is-paused" : ""}>
-                      <td className="logs-cell--date">
-                        {new Date(log.created_at).toLocaleString("pt-BR", {
+          <div className="inbox-list__body">
+            {loadingInbox && items.length === 0 ? (
+              <div className="inbox-loading"><Spinner size={24} /></div>
+            ) : items.length === 0 ? (
+              <div className="inbox-empty-list">
+                Nenhuma conversa para o filtro selecionado.
+              </div>
+            ) : (
+              items.map((item) => {
+                const isSelected = item.phone === selectedPhone;
+                const isPaused = item.ai_paused;
+                const isClosed = !!item.closed_at;
+                return (
+                  <button
+                    key={item.phone}
+                    className={`inbox-item ${isSelected ? "is-selected" : ""} ${isPaused ? "is-paused" : ""}`}
+                    onClick={() => setSelectedPhone(item.phone)}
+                  >
+                    <div className="inbox-item__head">
+                      <span className="inbox-item__name">
+                        {item.customer_name || item.phone}
+                      </span>
+                      <span className="inbox-item__time">{formatTime(item.last_at)}</span>
+                    </div>
+                    <div className="inbox-item__sub">
+                      {item.customer_name && (
+                        <span className="inbox-item__phone">{item.phone}</span>
+                      )}
+                    </div>
+                    <div className="inbox-item__preview">
+                      {item.last_role === "assistant" && <span style={{ color: "#6b7280" }}>🤖 </span>}
+                      {item.last_message || "—"}
+                    </div>
+                    <div className="inbox-item__badges">
+                      {isClosed && <span className="inbox-badge inbox-badge--closed">🔒 Encerrado</span>}
+                      {isPaused && !isClosed && (
+                        <span className="inbox-badge inbox-badge--paused">
+                          ⏸ Pausado · {formatUntil(item.paused_until)}
+                        </span>
+                      )}
+                      {!isPaused && !isClosed && (
+                        <span className="inbox-badge inbox-badge--active">🤖 IA ativa</span>
+                      )}
+                      <span className="inbox-badge inbox-badge--count">{item.message_count} msg</span>
+                    </div>
+                  </button>
+                );
+              })
+            )}
+          </div>
+        </aside>
+
+        {/* ── Coluna 2: histórico de mensagens ───────────────────────── */}
+        <section className="inbox-chat">
+          {!selectedPhone ? (
+            <div className="inbox-empty">
+              <div style={{ fontSize: 48, marginBottom: 12 }}>💬</div>
+              <p>Selecione uma conversa à esquerda para ver o histórico.</p>
+            </div>
+          ) : (
+            <>
+              <header className="inbox-chat__head">
+                <div>
+                  <div className="inbox-chat__title">
+                    {selectedItem?.customer_name || selectedPhone}
+                  </div>
+                  <div className="inbox-chat__sub">
+                    {selectedItem?.customer_name && <>{selectedPhone} · </>}
+                    {messages.length} mensagens
+                  </div>
+                </div>
+                {selectedItem?.closed_at ? (
+                  <span className="inbox-badge inbox-badge--closed">🔒 Encerrado</span>
+                ) : selectedItem?.ai_paused ? (
+                  <span className="inbox-badge inbox-badge--paused">
+                    ⏸ IA pausada · volta em {formatUntil(selectedItem.paused_until)}
+                  </span>
+                ) : (
+                  <span className="inbox-badge inbox-badge--active">🤖 IA respondendo</span>
+                )}
+              </header>
+
+              <div className="inbox-chat__body">
+                {loadingMessages ? (
+                  <div className="inbox-loading"><Spinner size={28} /></div>
+                ) : messages.length === 0 ? (
+                  <div className="inbox-empty">Nenhuma mensagem nesta conversa.</div>
+                ) : (
+                  messages.map((m) => (
+                    <div
+                      key={m.id}
+                      className={`bubble bubble--${m.role === "assistant" ? "bot" : "user"}`}
+                    >
+                      <div className="bubble__content">{m.content}</div>
+                      <div className="bubble__meta">
+                        {m.skill_used && <span>{m.skill_used} · </span>}
+                        {new Date(m.created_at).toLocaleString("pt-BR", {
                           day: "2-digit", month: "2-digit",
                           hour: "2-digit", minute: "2-digit",
                         })}
-                      </td>
-                      <td className="logs-cell--phone" title={log.session_key}>
-                        {phone}
-                        {isPaused && (
-                          <span className="logs-pause-dot" title="IA pausada">⏸</span>
-                        )}
-                      </td>
-                      <td>{roleBadge(log.role)}</td>
-                      <td className="logs-cell--skill">{log.skill_used ?? "—"}</td>
-                      <td className="logs-cell--content" title={log.content}>
-                        {log.content.length > 80 ? log.content.slice(0, 80) + "…" : log.content}
-                      </td>
-                      <td className="logs-cell--num">
-                        {log.tokens_in != null
-                          ? `${log.tokens_in}↑ ${log.tokens_out ?? 0}↓`
-                          : "—"}
-                      </td>
-                      <td className="logs-cell--num">
-                        {log.latency_ms != null ? `${log.latency_ms}ms` : "—"}
-                      </td>
-                      <td className="logs-cell--actions">
-                        {isPaused ? (
-                          <button
-                            className="btn-link"
-                            disabled={actionBusy === phone}
-                            onClick={() => doResume(phone)}
-                          >
-                            ▶ Retomar
-                          </button>
-                        ) : (
-                          <PauseMenu
-                            phone={phone}
-                            busy={actionBusy === phone}
-                            onPause={(min) => doPause(phone, min)}
-                            onClose={() => doClose(phone)}
-                          />
-                        )}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-
-          {hasMore && (
-            <div className="portal-load-more">
-              <button className="btn-secondary" onClick={loadMore} disabled={loading}>
-                {loading ? <Spinner size={16} /> : "Carregar mais"}
-              </button>
-            </div>
+                        {m.latency_ms && <span> · {m.latency_ms}ms</span>}
+                      </div>
+                    </div>
+                  ))
+                )}
+                <div ref={chatBottomRef} />
+              </div>
+            </>
           )}
-        </>
-      )}
+        </section>
+
+        {/* ── Coluna 3: painel de ações ──────────────────────────────── */}
+        <aside className="inbox-actions">
+          {!selectedItem ? (
+            <div className="inbox-empty" style={{ padding: 24, color: "#9ca3af" }}>
+              Selecione uma conversa para ver as ações.
+            </div>
+          ) : (
+            <>
+              <div className="inbox-actions__section">
+                <h3>Cliente</h3>
+                <dl className="inbox-dl">
+                  <dt>Telefone</dt>
+                  <dd>{selectedItem.phone}</dd>
+                  {selectedItem.customer_name && (
+                    <>
+                      <dt>Nome</dt>
+                      <dd>{selectedItem.customer_name}</dd>
+                    </>
+                  )}
+                  <dt>Mensagens</dt>
+                  <dd>{selectedItem.message_count}</dd>
+                  <dt>Última</dt>
+                  <dd>{formatTime(selectedItem.last_at)}</dd>
+                </dl>
+              </div>
+
+              <div className="inbox-actions__section">
+                <h3>Estado da IA</h3>
+                {selectedItem.closed_at ? (
+                  <div className="inbox-state-box inbox-state-box--closed">
+                    <strong>🔒 Atendimento encerrado</strong>
+                    <small>A IA não responde. Encerrado em {new Date(selectedItem.closed_at).toLocaleString("pt-BR")}</small>
+                  </div>
+                ) : selectedItem.ai_paused ? (
+                  <div className="inbox-state-box inbox-state-box--paused">
+                    <strong>⏸ IA pausada</strong>
+                    <small>
+                      {selectedItem.paused_until
+                        ? `Volta em ${formatUntil(selectedItem.paused_until)}`
+                        : "Pausa indefinida"}
+                    </small>
+                    {selectedItem.paused_reason && (
+                      <small>Motivo: {selectedItem.paused_reason}</small>
+                    )}
+                  </div>
+                ) : (
+                  <div className="inbox-state-box inbox-state-box--active">
+                    <strong>🤖 IA ativa</strong>
+                    <small>Respondendo automaticamente.</small>
+                  </div>
+                )}
+              </div>
+
+              <div className="inbox-actions__section">
+                <h3>Ações</h3>
+                {selectedItem.ai_paused || selectedItem.closed_at ? (
+                  <button
+                    className="btn btn-primary"
+                    disabled={actionBusy}
+                    onClick={doResume}
+                    style={{ width: "100%" }}
+                  >
+                    ▶ Retomar IA
+                  </button>
+                ) : (
+                  <>
+                    <div className="inbox-pause-grid">
+                      <button className="btn btn-secondary" disabled={actionBusy} onClick={() => doPause(60)}>⏸ 1h</button>
+                      <button className="btn btn-secondary" disabled={actionBusy} onClick={() => doPause(240)}>⏸ 4h</button>
+                      <button className="btn btn-secondary" disabled={actionBusy} onClick={() => doPause(1440)}>⏸ 24h</button>
+                      <button className="btn btn-secondary" disabled={actionBusy} onClick={() => doPause(null)}>⏸ Indefinido</button>
+                    </div>
+                    <button
+                      className="btn btn-danger"
+                      disabled={actionBusy}
+                      onClick={doClose}
+                      style={{ width: "100%", marginTop: 8 }}
+                    >
+                      🔒 Encerrar atendimento
+                    </button>
+                  </>
+                )}
+              </div>
+            </>
+          )}
+        </aside>
+      </div>
     </PortalLayout>
-  );
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// PauseMenu — micro-dropdown para escolher duração da pausa
-// ─────────────────────────────────────────────────────────────────────────────
-
-function PauseMenu({
-  phone, busy, onPause, onClose,
-}: {
-  phone: string;
-  busy: boolean;
-  onPause: (minutes: number | null) => void;
-  onClose: () => void;
-}) {
-  const [open, setOpen] = useState(false);
-  return (
-    <div className="logs-actions-menu">
-      <button
-        className="btn-link"
-        disabled={busy}
-        onClick={() => setOpen((v) => !v)}
-        title={`Ações para ${phone}`}
-      >
-        ⏸ Pausar IA ▾
-      </button>
-      {open && (
-        <div className="logs-actions-dropdown" onMouseLeave={() => setOpen(false)}>
-          <button onClick={() => { onPause(60); setOpen(false); }}>1 hora</button>
-          <button onClick={() => { onPause(240); setOpen(false); }}>4 horas</button>
-          <button onClick={() => { onPause(1440); setOpen(false); }}>24 horas</button>
-          <button onClick={() => { onPause(null); setOpen(false); }}>Indefinido</button>
-          <div className="logs-actions-divider"></div>
-          <button className="danger" onClick={() => { onClose(); setOpen(false); }}>
-            🔒 Encerrar atendimento
-          </button>
-        </div>
-      )}
-    </div>
   );
 }
