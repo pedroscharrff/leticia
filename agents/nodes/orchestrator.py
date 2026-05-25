@@ -66,9 +66,20 @@ Se nenhuma skill disponível atender, use "farmaceutico" como fallback.\
 _HARD_FALLBACK_SKILL = "farmaceutico"
 
 
-def _resolve_fallback_skill(available: list[str]) -> str:
+def _resolve_fallback_skill(
+    available: list[str],
+    skill_history: list[str] | None = None,
+) -> str:
     """
     Escolhe o skill de fallback respeitando o que o tenant tem ATIVO.
+
+    Prioridade:
+      1. Último skill usado nesta conversa (continuidade) — evita o caso
+         clássico: cliente confirma pedido com "pode finalizar", o LLM do
+         orchestrator dá timeout, fallback hardcoded vai pra farmaceutico,
+         farmaceutico não tem tool de pedido, LLM alucina sucesso.
+      2. Hard fallback `farmaceutico` se ele estiver disponível.
+      3. Primeiro skill disponível (caso tenant só tenha vendedor, p.ex.).
 
     Importante: se o tenant tem só um agente (ex.: só `vendedor` no plano
     básico, ou só `saudacao`), o fallback PRECISA ser esse agente — caso
@@ -76,8 +87,15 @@ def _resolve_fallback_skill(available: list[str]) -> str:
     """
     if not available:
         return _HARD_FALLBACK_SKILL
+    # 1) Continuidade da conversa: último skill ainda disponível
+    if skill_history:
+        for prev in reversed(skill_history):
+            if prev in available:
+                return prev
+    # 2) Hard fallback padrão
     if _HARD_FALLBACK_SKILL in available:
         return _HARD_FALLBACK_SKILL
+    # 3) Primeiro disponível
     return available[0]
 
 # Saudações puras — se a mensagem for SÓ um cumprimento e não houver histórico,
@@ -147,7 +165,10 @@ async def orchestrator(state: AgentState, llm_factory) -> AgentState:
     if not available_skills:
         available_skills = [_HARD_FALLBACK_SKILL]
 
-    fallback_skill = _resolve_fallback_skill(available_skills)
+    fallback_skill = _resolve_fallback_skill(
+        available_skills,
+        skill_history=state.get("skill_history") or [],
+    )
 
     # Fast-path: tenant rodando com UM ÚNICO agente (atendimento simples).
     # Pular o LLM de classificação economiza ~300-800ms e o custo do call;
@@ -252,7 +273,17 @@ async def orchestrator(state: AgentState, llm_factory) -> AgentState:
             skill = fallback_skill
 
     except Exception as exc:
-        log.error("orchestrator.failed", exc=str(exc))
+        # Captura o erro real pro trace step (linha ~280). Sem isso o turno
+        # fica indistinguível de routing legítimo e ninguém descobre por que
+        # o orchestrator caiu em fallback.
+        import traceback as _tb
+        _node_error = {
+            "type":  type(exc).__name__,
+            "msg":   str(exc),
+            "stack": _tb.format_exc()[-1500:],
+        }
+        log.error("orchestrator.failed",
+                  exc=str(exc), error_type=type(exc).__name__)
         skill, confidence, intent = fallback_skill, 0.0, current_message[:100]
 
     log.info(
@@ -264,14 +295,21 @@ async def orchestrator(state: AgentState, llm_factory) -> AgentState:
 
     import time as _time
     trace = list(state.get("trace_steps", []))
+    _trace_data: dict = {
+        "skill": skill,
+        "confidence": round(confidence, 2),
+        "intent": intent[:120],
+    }
+    # Sinaliza explicitamente que esse routing veio do fallback de exceção,
+    # não de uma classificação real do LLM.
+    _node_error_val = locals().get("_node_error")
+    if _node_error_val:
+        _trace_data["error"]    = _node_error_val
+        _trace_data["fallback"] = "exception"
     trace.append({
         "node": "orchestrator",
         "ts_ms": int(_time.time() * 1000),
-        "data": {
-            "skill": skill,
-            "confidence": round(confidence, 2),
-            "intent": intent[:120],
-        },
+        "data": _trace_data,
     })
 
     return {
