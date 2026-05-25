@@ -687,6 +687,57 @@ export async function listCustomerOrders(
   return (await api.get<CustomerOrderRow[]>(`/portal/customers/${customerId}/orders?limit=${limit}`)).data;
 }
 
+// ── Conversation State (pause / resume / close AI per phone) ───────────────────
+
+export interface ConversationState {
+  phone: string;
+  ai_paused: boolean;
+  paused_until: string | null;
+  paused_by: string | null;
+  paused_reason: string | null;
+  closed_at: string | null;
+  updated_at: string | null;
+}
+
+export async function listConversationStates(opts?: {
+  only_paused?: boolean;
+  limit?: number;
+}): Promise<ConversationState[]> {
+  const params = new URLSearchParams();
+  if (opts?.only_paused) params.set("only_paused", "true");
+  if (opts?.limit) params.set("limit", String(opts.limit));
+  const qs = params.toString();
+  return (await api.get<ConversationState[]>(`/portal/conversations${qs ? "?" + qs : ""}`)).data;
+}
+
+export async function getConversationState(phone: string): Promise<ConversationState> {
+  return (await api.get<ConversationState>(`/portal/conversations/${encodeURIComponent(phone)}`)).data;
+}
+
+export async function pauseConversation(
+  phone: string,
+  data: { until_minutes?: number | null; reason?: string },
+): Promise<ConversationState> {
+  return (await api.post<ConversationState>(
+    `/portal/conversations/${encodeURIComponent(phone)}/pause`, data,
+  )).data;
+}
+
+export async function resumeConversation(phone: string): Promise<ConversationState> {
+  return (await api.post<ConversationState>(
+    `/portal/conversations/${encodeURIComponent(phone)}/resume`, {},
+  )).data;
+}
+
+export async function closeConversation(
+  phone: string,
+  data: { keep_history?: boolean } = { keep_history: true },
+): Promise<ConversationState> {
+  return (await api.post<ConversationState>(
+    `/portal/conversations/${encodeURIComponent(phone)}/close`, data,
+  )).data;
+}
+
 export interface CustomerAddress {
   cep: string | null;
   street: string | null;

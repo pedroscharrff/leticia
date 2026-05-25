@@ -20,7 +20,44 @@ from agents.state import AgentState
 
 log = structlog.get_logger()
 
-_TTL = 1800  # segundos (30 min) — mesmo que SESSION_TTL_SECONDS
+_TTL_DEFAULT = 1800  # segundos (30 min) — fallback se DB/cache falhar
+
+
+async def _resolve_session_ttl(tenant_id: str | None) -> int:
+    """Lê session_ttl_minutes do tenant (default 30) e retorna em segundos.
+
+    Cacheado em Redis por 5 min — alteração no portal demora no máximo 5min
+    para entrar em vigor para sessões já abertas. Falha-aberta para o default.
+    """
+    if not tenant_id:
+        return _TTL_DEFAULT
+    cache_key = f"ttl:tenant:{tenant_id}"
+    try:
+        from db.redis_client import get_redis
+        redis = get_redis()
+        cached = await redis.get(cache_key)
+        if cached:
+            return int(cached)
+    except Exception:
+        pass
+    try:
+        from db.postgres import get_db_conn
+        async with get_db_conn() as conn:
+            row = await conn.fetchrow(
+                "SELECT session_ttl_minutes FROM public.tenants WHERE id = $1",
+                tenant_id,
+            )
+        minutes = int((row and row["session_ttl_minutes"]) or 30)
+        ttl_s = max(60, minutes * 60)  # mínimo 1 minuto
+        try:
+            from db.redis_client import get_redis
+            redis = get_redis()
+            await redis.setex(cache_key, 300, str(ttl_s))
+        except Exception:
+            pass
+        return ttl_s
+    except Exception:
+        return _TTL_DEFAULT
 
 
 # ── load_context ──────────────────────────────────────────────────────────────
@@ -190,7 +227,8 @@ async def save_context(state: AgentState) -> AgentState:
     try:
         from db.redis_client import get_redis
         redis = get_redis()
-        await redis.setex(f"hist:{session_id}", _TTL, json.dumps(messages))
+        ttl_s = await _resolve_session_ttl(state.get("tenant_id"))
+        await redis.setex(f"hist:{session_id}", ttl_s, json.dumps(messages))
     except Exception as exc:
         log.warning("context.redis.save_failed", session=session_id, exc=str(exc))
 

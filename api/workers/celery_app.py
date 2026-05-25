@@ -229,11 +229,12 @@ async def _run_graph(
         # (Tenants com 1 canal — a maioria — sempre cai no canal certo.)
         agent_escalate = bool(final_state.get("escalate", False))
         handoff_cfg: dict = {}
+        channel_pause_minutes: int = 240  # default 4h
         try:
             async with get_db_conn() as conn:
                 ch_row = await conn.fetchrow(
                     """
-                    SELECT handoff_config
+                    SELECT handoff_config, handoff_pause_minutes
                       FROM public.tenant_channels
                      WHERE tenant_id = $1
                        AND active = TRUE
@@ -250,6 +251,7 @@ async def _run_graph(
                     handoff_cfg = json.loads(cfg_raw) or {}
                 else:
                     handoff_cfg = dict(cfg_raw)
+                channel_pause_minutes = int(ch_row["handoff_pause_minutes"] or 240)
         except Exception as exc:  # noqa: BLE001
             log.warning("webhook.handoff.lookup_failed", tenant=tenant_id, exc=str(exc))
 
@@ -285,6 +287,18 @@ async def _run_graph(
                 skill_used = "handoff"
                 log.info("webhook.handoff.result", ok=hresult.get("ok"),
                          status_code=hresult.get("status_code"))
+                # Pausa a IA automaticamente para o atendente humano poder
+                # responder sem competir com o bot (default 4h).
+                if hresult.get("ok"):
+                    try:
+                        from services.conversation_state import auto_pause_after_handoff
+                        await auto_pause_after_handoff(
+                            tenant_id, phone,
+                            pause_minutes=channel_pause_minutes,
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        log.warning("webhook.handoff.autopause_failed",
+                                    tenant=tenant_id, exc=str(exc))
         except Exception as exc:  # noqa: BLE001
             log.error("webhook.handoff.dispatch_failed", tenant=tenant_id, exc=str(exc))
 
@@ -628,6 +642,17 @@ async def _run_broker_flow(
                 reply_text = (handoff_cfg.get("transfer_message")
                               or "Estou te transferindo para um atendente agora. Um momento, por favor.")
             skill_used = "handoff"
+            # Pausa a IA pra esse cliente — atendente humano vai assumir
+            if handoff_result and handoff_result.get("ok"):
+                try:
+                    from services.conversation_state import auto_pause_after_handoff
+                    pause_min = int(integration.get("handoff_pause_minutes") or 240)
+                    await auto_pause_after_handoff(
+                        tenant_id, phone_clean,
+                        pause_minutes=pause_min,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("broker.handoff.autopause_failed", exc=str(exc))
     except Exception as exc:
         log.error("broker.flow.handoff_dispatch_failed", error=str(exc))
         handoff_result = {"ok": False, "error": f"Erro no dispatcher de handoff: {exc}",

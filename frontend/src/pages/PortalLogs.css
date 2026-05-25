@@ -95,3 +95,122 @@
   justify-content: center;
   padding: 24px;
 }
+
+/* ── Conversation state block ───────────────────────────────────────────── */
+.conv-state-block {
+  background: #fff7ed;
+  border: 1px solid #fed7aa;
+  border-left: 4px solid #f97316;
+  border-radius: 10px;
+  padding: 16px 18px;
+  margin-bottom: 24px;
+}
+.conv-state-block h2 {
+  margin: 0 0 4px 0;
+  font-size: 1rem;
+  color: #7c2d12;
+}
+.conv-state-block__hint {
+  margin: 0 0 12px 0;
+  font-size: 0.85rem;
+  color: #9a3412;
+}
+.conv-state-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 10px;
+}
+.conv-state-card {
+  background: #fff;
+  border: 1px solid #fed7aa;
+  border-radius: 8px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.conv-state-card__phone {
+  font-weight: 600;
+  font-size: 0.92rem;
+  color: #111827;
+}
+.conv-state-card__meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 0.78rem;
+  color: #6b7280;
+}
+.conv-state-card__badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 0.74rem;
+  width: fit-content;
+}
+.conv-state-card__badge--paused { background: #fef3c7; color: #92400e; }
+.conv-state-card__badge--closed { background: #e5e7eb; color: #374151; }
+.conv-state-card__actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+/* ── Per-row actions on logs table ──────────────────────────────────────── */
+.portal-logs-table tr.is-paused {
+  background: #fffbeb;
+}
+.logs-cell--phone {
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 0.82rem;
+}
+.logs-pause-dot {
+  margin-left: 6px;
+  color: #d97706;
+}
+.logs-cell--actions {
+  position: relative;
+  white-space: nowrap;
+}
+.btn-link {
+  background: none;
+  border: none;
+  color: var(--color-primary, #2563eb);
+  cursor: pointer;
+  font-size: 0.82rem;
+  padding: 4px 6px;
+}
+.btn-link:hover { text-decoration: underline; }
+.btn-link:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.logs-actions-menu { position: relative; }
+.logs-actions-dropdown {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+  min-width: 180px;
+  padding: 4px 0;
+  z-index: 10;
+}
+.logs-actions-dropdown button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  padding: 8px 14px;
+  font-size: 0.85rem;
+  cursor: pointer;
+  color: #374151;
+}
+.logs-actions-dropdown button:hover { background: #f3f4f6; }
+.logs-actions-dropdown button.danger { color: #b91c1c; }
+.logs-actions-divider {
+  height: 1px;
+  background: #e5e7eb;
+  margin: 4px 0;
+}

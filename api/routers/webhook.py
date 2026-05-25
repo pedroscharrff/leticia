@@ -52,6 +52,22 @@ async def receive_message(
 
     session_id = body.session_id or f"{tenant.id}:{body.phone}"
 
+    # Bypass total se a IA estiver pausada ou o atendimento encerrado.
+    # O atendente humano assumiu — não competimos com ele.
+    try:
+        from services.conversation_state import is_ai_paused
+        paused, reason = await is_ai_paused(str(tenant.id), body.phone)
+        if paused:
+            log.info(
+                "webhook.skipped.ai_paused",
+                tenant=str(tenant.id),
+                phone=body.phone[:4],
+                reason=reason,
+            )
+            return {"accepted": False, "reason": f"ai_paused:{reason}"}
+    except Exception as exc:  # noqa: BLE001
+        log.warning("webhook.paused_check_failed", exc=str(exc))
+
     task = process_message.delay(
         tenant_id=str(tenant.id),
         schema_name=tenant.schema_name,

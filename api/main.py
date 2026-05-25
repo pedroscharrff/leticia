@@ -52,6 +52,7 @@ from routers.capabilities import portal_router as capabilities_portal_router, ad
 from routers.shipping_rules import router as shipping_rules_router
 from routers.payments_webhook import router as payments_webhook_router
 from routers.payments import payments_router, recovery_router
+from routers.conversations import router as conversations_router
 from middleware.usage import UsageEnforcementMiddleware
 
 # ── Structured logging ────────────────────────────────────────────────────────
@@ -162,6 +163,7 @@ app.include_router(shipping_rules_router)
 app.include_router(payments_webhook_router)
 app.include_router(payments_router)
 app.include_router(recovery_router)
+app.include_router(conversations_router)
 
 
 @app.get("/health", tags=["infra"])
