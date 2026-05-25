@@ -284,6 +284,91 @@ async def _fetch_top_details(
     await asyncio.gather(*[_one(np) for np in targets])
 
 
+async def ensure_bulas_for_termo(
+    termo: str,
+    *,
+    top_n: int = 3,
+    client: AnvisaClient | None = None,
+) -> int:
+    """
+    Garante que os top-N medicamentos do `termo` tenham bula extraída.
+
+    Caso de uso clássico: a query do termo foi cacheada antes da feature de
+    PDF existir (ou o cold path falhou no download anterior). O catálogo
+    tem o medicamento, mas `bula_secoes` está vazia — então o agente
+    chama `consultar_bula_secao` e recebe nada.
+
+    Estratégia: identifica os top-N sem bula, refaz `detail` (JWT fresco),
+    baixa PDF, extrai seções e grava. Retorna quantas bulas foram extraídas.
+    """
+    norm = _normalize(termo)
+    if not norm:
+        return 0
+
+    # Pega candidatos: prefere busca local; se vazia, força get_or_fetch
+    # (que pode ele mesmo extrair bulas no cold path).
+    rows = await search_local(norm, limit=max(top_n, 5))
+    if not rows:
+        rows = await get_or_fetch(termo, limit=top_n, client=client)
+
+    from services.bula_repo import has_bula, upsert_secoes
+    from services.bula_extractor import pdf_to_text, split_secoes
+
+    targets: list[str] = []
+    for r in rows[:top_n]:
+        np = r.get("num_processo")
+        if np and not await has_bula(np):
+            targets.append(np)
+
+    if not targets:
+        return 0
+
+    own_client = client is None
+    cli = client or AnvisaClient()
+    extracted = 0
+
+    async def _one(np: str) -> None:
+        nonlocal extracted
+        try:
+            det = await cli.detail(np)
+        except AnvisaError as exc:
+            log.warning("bulario.ensure_bula.detail_failed", num_processo=np, exc=str(exc))
+            return
+        try:
+            await upsert_detail(np, det)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("bulario.ensure_bula.upsert_detail_failed", num_processo=np, exc=str(exc))
+            return
+
+        codigo = det.get("codigoBulaPaciente") or det.get("codigoBulaProfissional")
+        if not codigo:
+            log.info("bulario.ensure_bula.no_jwt", num_processo=np)
+            return
+        try:
+            pdf_bytes = await cli.download_bula_pdf(codigo)
+            text = pdf_to_text(pdf_bytes)
+            secoes = split_secoes(text)
+            n_secoes = await upsert_secoes(np, secoes)
+            if n_secoes:
+                extracted += 1
+                log.info(
+                    "bulario.ensure_bula.extracted",
+                    num_processo=np, secoes=n_secoes, chars=len(text),
+                )
+        except AnvisaError as exc:
+            log.warning("bulario.ensure_bula.pdf_failed", num_processo=np, exc=str(exc))
+        except Exception as exc:  # noqa: BLE001
+            log.warning("bulario.ensure_bula.extract_failed", num_processo=np, exc=str(exc))
+
+    try:
+        await asyncio.gather(*[_one(np) for np in targets])
+    finally:
+        if own_client:
+            await cli.close()
+
+    return extracted
+
+
 async def get_or_fetch(
     termo: str,
     *,

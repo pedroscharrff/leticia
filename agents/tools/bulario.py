@@ -126,14 +126,20 @@ def make_consultar_bula_secao_tool():
             )
 
         if not rows:
-            # Pode ser que o medicamento ainda não tenha sido indexado. Garante
-            # que ele entre na base na próxima oportunidade — força fetch.
+            # Bula ainda não extraída pra esse medicamento. Força a
+            # extração agora (detail fresco + download PDF + parse + upsert)
+            # e tenta a busca de novo.
             try:
-                from services.bulario_repo import get_or_fetch
-                await get_or_fetch(termo_medicamento, limit=3)
-                rows = await search_bula(termo_medicamento, pergunta, limit=3)
+                from services.bulario_repo import ensure_bulas_for_termo
+                n = await ensure_bulas_for_termo(termo_medicamento, top_n=3)
+                if n > 0:
+                    log.info(
+                        "tool.consultar_bula_secao.bulas_extracted_on_demand",
+                        termo=termo_medicamento, n=n,
+                    )
+                    rows = await search_bula(termo_medicamento, pergunta, limit=3)
             except Exception as exc:  # noqa: BLE001
-                log.warning("tool.consultar_bula_secao.fetch_failed", exc=str(exc))
+                log.warning("tool.consultar_bula_secao.ensure_failed", exc=str(exc))
 
         if not rows:
             return (
