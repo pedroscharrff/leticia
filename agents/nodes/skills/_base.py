@@ -284,12 +284,17 @@ async def run_skill(
             "Pode repetir sua pergunta? Estou aqui para ajudar."
         )
 
-    # Parseia marcador de handoff (se houver) — apenas se este skill ainda não recebeu handoff
+    # Parseia marcador de handoff. SEMPRE rodamos o parse pra LIMPAR o
+    # marcador do texto antes de enviar ao cliente — mesmo quando este skill
+    # já é o receiver de um handoff (caso em que não roteamos pra outro skill
+    # de novo, pra evitar loop, mas ainda assim queremos texto limpo).
     handoff_target: str | None = None
     handoff_ctx_new = ""
     is_receiving_handoff = bool(prev_response)
+    final_response, parsed_target, parsed_ctx = _parse_handoff(final_response)
     if not is_receiving_handoff:
-        final_response, handoff_target, handoff_ctx_new = _parse_handoff(final_response)
+        handoff_target  = parsed_target
+        handoff_ctx_new = parsed_ctx
 
     # Se está recebendo handoff, concatena: resposta anterior + nova resposta
     if is_receiving_handoff and final_response and final_response.strip():

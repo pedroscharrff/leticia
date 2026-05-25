@@ -731,13 +731,23 @@ async def vendedor_node(state: AgentState, llm_factory) -> AgentState:
                  mode="pre_atendimento" if use_preattendimento else "normal",
                  schema=schema_name)
 
-    # ── Parseia handoff (se permitido — não aplicável no modo pré-atendimento) ─
+    # ── Parseia handoff ──────────────────────────────────────────────────────
+    # Mesmo em pré-atendimento (onde não roteamos pra outro skill), PRECISAMOS
+    # rodar o parse pra LIMPAR o marcador [[HANDOFF:...]] do texto antes de
+    # enviar ao cliente. O LLM ocasionalmente gera o marcador apesar do prompt
+    # — se não removermos, o cliente vê lixo tipo "[[HANDOFF:farmaceutico:...]]"
+    # no WhatsApp e o analyst reprova legitimamente.
     handoff_target: str | None = None
     handoff_ctx_new = ""
-    # No modo pré-atendimento não há handoffs internos para outros skills —
-    # a transferência ocorre via escalate, não via [[HANDOFF:...]].
-    if not received_handoff and not use_preattendimento:
-        final_response, handoff_target, handoff_ctx_new = _parse_handoff(final_response)
+    if not received_handoff:
+        final_response, parsed_target, parsed_ctx = _parse_handoff(final_response)
+        # Em modo NORMAL: respeita o roteamento.
+        # Em pré-atendimento: só limpa o texto, descarta o target (sem roteamento
+        # entre skills — a transferência ocorre via escalate quando o balcão
+        # finaliza).
+        if not use_preattendimento:
+            handoff_target  = parsed_target
+            handoff_ctx_new = parsed_ctx
 
     # Se está recebendo handoff no modo normal, concatena resposta anterior + nova
     if not use_preattendimento and received_handoff and final_response and final_response.strip():
