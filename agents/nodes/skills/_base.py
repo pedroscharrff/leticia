@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import re
 import structlog
-from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
+from langchain_core.messages import SystemMessage, HumanMessage, AIMessage, ToolMessage
 
 from agents.state import AgentState
 
@@ -183,11 +183,77 @@ def _build_messages(state: AgentState, system_prompt: str) -> list:
     return lc_messages
 
 
+async def _invoke_with_tools(
+    llm,
+    lc_messages: list,
+    tools: list,
+    max_iters: int,
+) -> tuple[str, list[dict], int]:
+    """
+    Loop de tool-calling. Retorna (texto_final, trace_de_tool_calls, iters_usadas).
+
+    Cada iteração:
+      • Invoca LLM com tools bindadas.
+      • Sem tool_calls → break com o texto.
+      • Com tool_calls → executa cada uma, anexa ToolMessage, próxima iteração.
+
+    Se exceder max_iters, faz uma última chamada SEM tools pra forçar texto.
+    Se ainda assim vier vazio (LLM só fez tool call no último turno), faz uma
+    chamada extra com instrução explícita pra responder em texto.
+    """
+    llm_with_tools = llm.bind_tools(tools)
+    tool_map = {t.name: t for t in tools}
+    tool_calls_trace: list[dict] = []
+    final_text = ""
+    iters_used = 0
+
+    for i in range(max_iters):
+        iters_used = i + 1
+        response = await llm_with_tools.ainvoke(lc_messages)
+
+        if not response.tool_calls:
+            final_text = _extract_text(response.content)
+            break
+
+        lc_messages.append(response)
+        for tc in response.tool_calls:
+            rec: dict = {"iter": iters_used, "name": tc.get("name"), "args": tc.get("args")}
+            tool = tool_map.get(tc["name"])
+            if not tool:
+                rec["error"] = "tool_not_found"
+                tool_calls_trace.append(rec)
+                continue
+            try:
+                result = await tool.ainvoke(tc["args"])
+                rec["result_preview"] = str(result)[:300]
+                lc_messages.append(ToolMessage(content=str(result), tool_call_id=tc["id"]))
+            except Exception as exc:  # noqa: BLE001
+                rec["error"] = str(exc)
+                log.warning("skill.tool_failed", name=tc.get("name"), exc=str(exc))
+            tool_calls_trace.append(rec)
+    else:
+        # Excedeu o limite — força resposta sem tools
+        response = await llm.ainvoke(lc_messages)
+        final_text = _extract_text(response.content)
+
+    # Se o último turno só teve tool_calls sem texto, força resposta em texto
+    if not final_text or not final_text.strip():
+        lc_messages.append(HumanMessage(content=(
+            "Responda agora em texto curto (1-3 frases) ao cliente, usando as "
+            "informações que você acabou de consultar. Termine com UMA pergunta."
+        )))
+        response = await llm.ainvoke(lc_messages)
+        final_text = _extract_text(response.content)
+
+    return final_text, tool_calls_trace, iters_used
+
+
 async def run_skill(
     state: AgentState,
     llm_factory,
     skill_name: str,
     base_system: str,
+    tools: list | None = None,
 ) -> AgentState:
     """
     Executa um skill genérico.
@@ -258,14 +324,27 @@ async def run_skill(
     messages = _build_messages(state, system_prompt)
 
     _node_error: dict | None = None
+    tool_calls_trace: list[dict] = []
+    iters_used = 0
     try:
         # Passa o nome do skill para permitir overrides por skill (SkillOverride)
         llm = llm_factory(skill_name)
-        from llm.retry import llm_retry
-        async for attempt in llm_retry():
-            with attempt:
-                response = await llm.ainvoke(messages)
-        final_response = _extract_text(response.content)
+
+        if tools:
+            # Skill com tool-calling — sem retry decorator (cada iter já é uma
+            # nova chamada com contexto incrementado).
+            from config import settings
+            max_iters = settings.skill_max_tool_iterations
+            final_response, tool_calls_trace, iters_used = await _invoke_with_tools(
+                llm, list(messages), tools, max_iters,
+            )
+        else:
+            # Skill puro (sem tools) — fluxo histórico com retry.
+            from llm.retry import llm_retry
+            async for attempt in llm_retry():
+                with attempt:
+                    response = await llm.ainvoke(messages)
+            final_response = _extract_text(response.content)
 
     except Exception as exc:
         # Captura o erro real para o trace step abaixo. Sem isso o turno fica
@@ -311,6 +390,9 @@ async def run_skill(
         "chars": len(final_response or ""),
         "handoff_to": handoff_target,
     }
+    if tools:
+        _trace_data["iters"] = iters_used
+        _trace_data["tool_calls"] = tool_calls_trace
     if _node_error:
         _trace_data["error"] = _node_error
     trace.append({

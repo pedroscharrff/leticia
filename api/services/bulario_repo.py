@@ -161,24 +161,36 @@ async def upsert_search_results(items: list[dict]) -> list[str]:
 def _principio_ativo_text(detail: dict) -> str | None:
     """
     Extrai princípio ativo do detail. A ANVISA às vezes retorna string,
-    às vezes lista de dicts com `nomePrincipio` / `concentracao`. Normaliza
-    para uma string legível para o agente.
+    às vezes lista (string ou dicts com `nomePrincipio` / `concentracao`).
+    Normaliza para uma string legível, sem duplicatas (a ANVISA chega a
+    retornar `["DIPIRONA", "dipirona monoidratada"]` — colapsamos).
     """
     pa = detail.get("principioAtivo")
     if not pa:
         return None
     if isinstance(pa, str):
-        return pa.strip() or None
+        return pa.strip().title() or None
     if isinstance(pa, list):
         parts: list[str] = []
         for entry in pa:
             if isinstance(entry, str):
-                parts.append(entry)
+                parts.append(entry.strip())
             elif isinstance(entry, dict):
-                nome = entry.get("nomePrincipio") or entry.get("nome") or ""
-                conc = entry.get("concentracao") or ""
+                nome = (entry.get("nomePrincipio") or entry.get("nome") or "").strip()
+                conc = (entry.get("concentracao") or "").strip()
                 parts.append(f"{nome} {conc}".strip())
-        joined = " + ".join(p for p in parts if p)
+        # Dedup case-insensitive preservando ordem; descarta substring de outro.
+        seen: list[str] = []
+        for p in parts:
+            if not p:
+                continue
+            low = p.lower()
+            if any(low in s.lower() or s.lower() in low for s in seen):
+                # Mantém a versão mais longa
+                seen = [p if low in s.lower() else s for s in seen]
+                continue
+            seen.append(p)
+        joined = " + ".join(s.title() for s in seen)
         return joined or None
     return None
 

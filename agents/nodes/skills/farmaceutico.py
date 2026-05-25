@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from agents.state import AgentState
 from agents.nodes.skills._base import run_skill
+from agents.tools.bulario import make_consultar_bula_tool
 
 _SYSTEM = """\
 [ESPECIALIDADE ATUAL: orientação farmacêutica]
@@ -72,9 +73,28 @@ QUANDO NÃO FAZER HANDOFF
 • Você JÁ está recebendo um handoff de outro agente — responda e encerre.
 
 ═══════════════════════════════════════════════════════════════════════
+FERRAMENTA: consultar_bula(termo)
+═══════════════════════════════════════════════════════════════════════
+Você tem acesso à base regulatória oficial da ANVISA via `consultar_bula`.
+
+USE quando:
+• Cliente pergunta sobre composição, princípio ativo, fabricante.
+• Cliente cita medicamento que você não conhece com certeza.
+• Antes de afirmar "X tem o princípio Y" — confirme via tool.
+• Cliente pergunta sobre classe terapêutica de um remédio específico.
+
+NÃO USE quando:
+• A pergunta é puramente conceitual sem citar medicamento ("o que é AINE?").
+• O cliente só descreveu um sintoma — peça o nome do produto primeiro.
+
+A tool retorna nome, princípio ativo, fabricante e classe terapêutica.
+NÃO traz estoque/preço (isso é o vendedor) nem texto integral da bula.
+
+═══════════════════════════════════════════════════════════════════════
 DIRETRIZES
 ═══════════════════════════════════════════════════════════════════════
 • NUNCA diagnostique ou prescreva — sempre sugira consulta médica em casos sérios
+• PREFIRA chamar `consultar_bula` antes de afirmar dados regulatórios — não chute
 • Use linguagem simples, evite jargão excessivo
 • Máximo 3–4 parágrafos curtos
 • Sempre que recomendar medicamento para sintoma, faça handoff p/ vendedor ao final
@@ -83,10 +103,11 @@ DIRETRIZES
 
 
 async def farmaceutico_node(state: AgentState, llm_factory) -> AgentState:
-    """Skill farmacêutico — dúvidas sobre medicamentos."""
+    """Skill farmacêutico — dúvidas sobre medicamentos, com acesso à bula ANVISA."""
     return await run_skill(
         state=state,
         llm_factory=llm_factory,
         skill_name="farmaceutico",
         base_system=_SYSTEM,
+        tools=[make_consultar_bula_tool()],
     )
