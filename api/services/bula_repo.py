@@ -98,7 +98,10 @@ async def search_bula(
          LIMIT 5
     ),
     q AS (
-        SELECT websearch_to_tsquery('portuguese', $2) AS tsq
+        -- f_unaccent é o wrapper IMMUTABLE criado em 034_bula_unaccent.sql;
+        -- precisa bater com o que está no GENERATED da coluna conteudo_tsv,
+        -- senão queries com/sem acento perdem matches.
+        SELECT websearch_to_tsquery('portuguese', public.f_unaccent($2)) AS tsq
     )
     SELECT bs.num_processo,
            m.nome_produto,
