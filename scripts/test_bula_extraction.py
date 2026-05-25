@@ -49,7 +49,7 @@ async def main() -> int:
                 print("    (nenhum trecho retornado)")
                 continue
             for r in results:
-                trecho = r["trecho"].replace("\n", " ")[:300]
+                trecho = r["trecho"].replace("\n", " ")[:500]
                 print(f"    secao={r['secao']:18} rank={r['rank']:.3f}  {r['nome_produto']}")
                 print(f"      {trecho}")
 
