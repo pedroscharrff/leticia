@@ -248,8 +248,9 @@ BEGIN
             discount     NUMERIC(10,2) DEFAULT 0,
             total        NUMERIC(10,2) DEFAULT 0,
             status       VARCHAR(20) DEFAULT 'pending'
-                CHECK (status IN ('pending','confirmed','processing','shipped','delivered','cancelled')),
+                CHECK (status IN ('pending','confirmed','processing','shipped','delivered','cancelled','aguardando_balcao')),
             notes        TEXT,
+            requires_prescription BOOLEAN NOT NULL DEFAULT FALSE,
             created_at   TIMESTAMPTZ DEFAULT NOW(),
             updated_at   TIMESTAMPTZ DEFAULT NOW()
         )
