@@ -695,7 +695,15 @@ async def vendedor_node(state: AgentState, llm_factory) -> AgentState:
             )
 
     except Exception as exc:
-        log.error("vendedor.failed", exc=str(exc))
+        # Captura o erro real para o trace step (linha 744 abaixo) — sem isso o
+        # turno fica indistinguível de um turno bem-sucedido nos agent_traces.
+        import traceback as _tb
+        _node_error = {
+            "type":  type(exc).__name__,
+            "msg":   str(exc),
+            "stack": _tb.format_exc()[-1500:],  # corta pra caber em jsonb sem inflar
+        }
+        log.error("vendedor.failed", exc=str(exc), error_type=type(exc).__name__)
         final_response = (
             "Desculpe, tive uma dificuldade para consultar o catálogo agora. "
             "Pode me dizer o nome do produto que está procurando?"
@@ -741,18 +749,25 @@ async def vendedor_node(state: AgentState, llm_factory) -> AgentState:
     handoff_count = state.get("handoff_count", 0)
 
     import time as _time
+    _trace_data: dict = {
+        "mode":        "pre_atendimento" if use_preattendimento else "normal",
+        "cart_items":  len(cart.get("items", [])),
+        "handoff_to":  handoff_target,
+        "balcao":      balcao_called,
+        "iters":       locals().get("iters_used", 0),
+        "tool_calls":  _trace_calls,
+        "chars":       len(final_response or ""),
+    }
+    # Se o except global disparou, propaga o erro pro trace step para que
+    # falhas do vendedor_node sejam visíveis em agent_traces.steps depois
+    # do restart do worker (cf. tool-errors-invisible).
+    _node_error_val = locals().get("_node_error")
+    if _node_error_val:
+        _trace_data["error"] = _node_error_val
     trace.append({
         "node": "skill:vendedor",
         "ts_ms": int(_time.time() * 1000),
-        "data": {
-            "mode":        "pre_atendimento" if use_preattendimento else "normal",
-            "cart_items":  len(cart.get("items", [])),
-            "handoff_to":  handoff_target,
-            "balcao":      balcao_called,
-            "iters":       locals().get("iters_used", 0),
-            "tool_calls":  _trace_calls,
-            "chars":       len(final_response or ""),
-        },
+        "data": _trace_data,
     })
 
     return {

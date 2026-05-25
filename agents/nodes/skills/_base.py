@@ -257,6 +257,7 @@ async def run_skill(
     system_prompt = "\n\n".join(parts)
     messages = _build_messages(state, system_prompt)
 
+    _node_error: dict | None = None
     try:
         # Passa o nome do skill para permitir overrides por skill (SkillOverride)
         llm = llm_factory(skill_name)
@@ -267,7 +268,17 @@ async def run_skill(
         final_response = _extract_text(response.content)
 
     except Exception as exc:
-        log.error("skill.failed", skill=skill_name, exc=str(exc))
+        # Captura o erro real para o trace step abaixo. Sem isso o turno fica
+        # indistinguível de turno bem-sucedido nos agent_traces e a única
+        # trilha do que quebrou era o log do worker (que some no restart).
+        import traceback as _tb
+        _node_error = {
+            "type":  type(exc).__name__,
+            "msg":   str(exc),
+            "stack": _tb.format_exc()[-1500:],
+        }
+        log.error("skill.failed", skill=skill_name,
+                  exc=str(exc), error_type=type(exc).__name__)
         final_response = (
             "Desculpe, tive uma dificuldade técnica agora. "
             "Pode repetir sua pergunta? Estou aqui para ajudar."
@@ -291,13 +302,16 @@ async def run_skill(
     handoff_count = state.get("handoff_count", 0)
 
     import time as _time
+    _trace_data: dict = {
+        "chars": len(final_response or ""),
+        "handoff_to": handoff_target,
+    }
+    if _node_error:
+        _trace_data["error"] = _node_error
     trace.append({
         "node": f"skill:{skill_name}",
         "ts_ms": int(_time.time() * 1000),
-        "data": {
-            "chars": len(final_response or ""),
-            "handoff_to": handoff_target,
-        },
+        "data": _trace_data,
     })
 
     return {
