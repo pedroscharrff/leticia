@@ -134,12 +134,11 @@ def _coerce_jsonb(raw) -> dict:
 
 
 async def _eligible_channels(tenant_id: str) -> list[dict]:
-    """Returns active channels with `config_json.notify_order_status = true`."""
+    """Native channels (whatsapp_cloud / zapi / telegram) com notify_order_status ligado."""
     async with get_db_conn() as conn:
         rows = await conn.fetch(
             """
-            SELECT id, channel_type, credentials_ref, webhook_secret,
-                   config_json, handoff_config
+            SELECT id, channel_type, credentials_ref, webhook_secret, config_json
               FROM public.tenant_channels
              WHERE tenant_id = $1
                AND active = TRUE
@@ -157,35 +156,81 @@ async def _eligible_channels(tenant_id: str) -> list[dict]:
             "channel_type": r["channel_type"],
             "credentials_ref": r["credentials_ref"],
             "webhook_secret": r["webhook_secret"] or "",
-            "handoff_config": _coerce_jsonb(r["handoff_config"]),
         })
     return out
 
 
-def _clickmassa_ready(handoff_cfg: dict) -> bool:
-    """Considera a integração ClickMassa pronta para enviar mensagens simples."""
-    if not handoff_cfg or not handoff_cfg.get("enabled"):
-        return False
-    provider = (handoff_cfg.get("provider") or "clickmassa").lower()
-    if provider != "clickmassa":
-        return False
-    return bool(handoff_cfg.get("base_url")) and bool(handoff_cfg.get("token"))
+async def _eligible_integrations(tenant_id: str) -> list[dict]:
+    """
+    Integrações broker prontas para enviar notificação de status.
+
+    Critérios:
+      - enabled = TRUE
+      - config_json.notify_order_status = TRUE
+      - provider = 'clickmassa' (do config_json ou do handoff_config)
+      - base_url + token preenchidos (em config_json OU em handoff_config —
+        a aba 'Transferir p/ atendente' já guarda esses campos, então
+        reutilizamos quando o usuário não duplica)
+    """
+    async with get_db_conn() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT id, slug, name, direction, config_json, handoff_config
+              FROM public.tenant_integrations
+             WHERE tenant_id = $1
+               AND enabled = TRUE
+            """,
+            tenant_id,
+        )
+    out: list[dict] = []
+    for r in rows:
+        cfg = _coerce_jsonb(r["config_json"])
+        if not bool(cfg.get("notify_order_status")):
+            continue
+
+        handoff = _coerce_jsonb(r["handoff_config"])
+        provider = (cfg.get("provider") or handoff.get("provider") or "clickmassa").lower()
+        if provider != "clickmassa":
+            continue
+
+        base_url = cfg.get("base_url") or handoff.get("base_url")
+        token    = cfg.get("token")    or handoff.get("token")
+        if not base_url or not token:
+            log.warning("order_status.integration_missing_creds",
+                        tenant=tenant_id, integration_id=str(r["id"]))
+            continue
+
+        out.append({
+            "id": str(r["id"]),
+            "slug": r["slug"],
+            "provider": provider,
+            "config": {
+                "base_url": base_url,
+                "token": token,
+                "external_key": cfg.get("external_key") or "123456",
+            },
+        })
+    return out
 
 
-async def _send_via_clickmassa(
-    *, tenant_id: str, channel: dict, phone: str, text: str,
+async def _send_via_clickmassa_integration(
+    *, tenant_id: str, integration: dict, phone: str, text: str,
 ) -> bool:
     from services.handoff import send_clickmassa_message
     phone_clean = "".join(c for c in (phone or "") if c.isdigit())
+    cfg = integration["config"]
     res = await send_clickmassa_message(
-        channel["handoff_config"], phone=phone_clean, body=text,
+        {"base_url": cfg.get("base_url"), "token": cfg.get("token")},
+        phone=phone_clean, body=text,
+        external_key=str(cfg.get("external_key") or "123456"),
     )
     if res.get("ok"):
         log.info("order_status.sent_via_clickmassa",
-                 tenant=tenant_id, channel_id=channel["id"])
+                 tenant=tenant_id, integration_id=integration["id"],
+                 slug=integration["slug"])
         return True
     log.warning("order_status.clickmassa_send_failed",
-                tenant=tenant_id, channel_id=channel["id"],
+                tenant=tenant_id, integration_id=integration["id"],
                 error=res.get("error"), status=res.get("status_code"))
     return False
 
@@ -259,37 +304,32 @@ async def send_status_notification(
         log.warning("order_status.no_phone", tenant=tenant_id)
         return False
 
-    channels = await _eligible_channels(tenant_id)
     delivered = False
 
-    for ch in channels:
-        # 1ª preferência: integração ClickMassa (TalkFarma) configurada no canal.
-        #    Usa o mesmo padrão do handoff: POST {base_url}/?token={token}
-        #    com body {number, externalKey, body}.
-        if _clickmassa_ready(ch["handoff_config"]):
-            ok = await _send_via_clickmassa(
-                tenant_id=tenant_id, channel=ch, phone=phone, text=text,
+    # 1) Integrações do broker (ex.: ClickMassa) com notify_order_status ligado.
+    integrations = await _eligible_integrations(tenant_id)
+    for integ in integrations:
+        if integ["provider"] == "clickmassa":
+            ok = await _send_via_clickmassa_integration(
+                tenant_id=tenant_id, integration=integ, phone=phone, text=text,
             )
             delivered = delivered or ok
-            continue
 
-        # 2ª preferência: adapter nativo do canal (whatsapp_cloud / zapi / telegram)
+    # 2) Canais nativos (whatsapp_cloud / zapi / telegram) com notify ligado.
+    channels = await _eligible_channels(tenant_id)
+    for ch in channels:
         if ch["channel_type"] in CHANNEL_REGISTRY:
             ok = await _send_via_adapter(
                 tenant_id=tenant_id, channel=ch, phone=phone, text=text,
             )
             delivered = delivered or ok
-        else:
-            log.warning("order_status.no_send_path",
-                        tenant=tenant_id, channel_id=ch["id"],
-                        channel_type=ch["channel_type"])
 
     if delivered:
         return True
 
-    # Legacy fallback: tenants without native channels still rely on callback_url.
+    # Legacy fallback: tenants without integrations/channels usam callback_url.
     if not callback_url:
-        if not channels:
+        if not integrations and not channels:
             log.warning("order_status.no_eligible_target",
                         tenant=tenant_id, status=new_status)
         return False

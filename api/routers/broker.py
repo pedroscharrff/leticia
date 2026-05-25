@@ -57,6 +57,7 @@ class IntegrationIn(BaseModel):
     hmac_header: str | None = None
     hmac_algorithm: str | None = "sha256"
     enabled: bool = True
+    config_json: dict[str, Any] = Field(default_factory=dict)
 
 
 class IntegrationPatch(BaseModel):
@@ -66,6 +67,7 @@ class IntegrationPatch(BaseModel):
     hmac_header: str | None = None
     hmac_algorithm: str | None = None
     enabled: bool | None = None
+    config_json: dict[str, Any] | None = None
 
 
 class IntegrationOut(BaseModel):
@@ -78,6 +80,7 @@ class IntegrationOut(BaseModel):
     has_secret: bool
     enabled: bool
     inbound_url: str
+    config_json: dict = Field(default_factory=dict)
     # Simplified flow config
     inbound_field_map: dict = Field(default_factory=dict)
     reply_mode: str = "response"
@@ -264,6 +267,7 @@ def _integration_out(row: dict, ingest_url: str) -> IntegrationOut:
         bundle_window_seconds=row.get("bundle_window_seconds") or 10,
         skip_rules=row.get("skip_rules") or [],
         handoff_config=row.get("handoff_config") or {},
+        config_json=row.get("config_json") or {},
     )
 
 
@@ -785,12 +789,13 @@ async def create_integration(body: IntegrationIn, request: Request, user: Tenant
             row = await conn.fetchrow(
                 """
                 INSERT INTO public.tenant_integrations
-                  (tenant_id, slug, name, direction, hmac_secret, hmac_header, hmac_algorithm, enabled)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                  (tenant_id, slug, name, direction, hmac_secret, hmac_header, hmac_algorithm, enabled, config_json)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb)
                 RETURNING *
                 """,
                 user.tenant_id, body.slug, body.name, body.direction,
                 body.hmac_secret, body.hmac_header, body.hmac_algorithm, body.enabled,
+                json.dumps(body.config_json or {}),
             )
         except Exception as exc:
             if "duplicate" in str(exc).lower() or "unique" in str(exc).lower():

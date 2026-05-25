@@ -16,10 +16,11 @@ import {
   replayEvent,
   saveFlow,
   testHandoff,
+  updateIntegration,
 } from "../api/broker";
 import "./PortalBroker.css";
 
-type Tab = "connect" | "flow" | "handoff" | "events";
+type Tab = "connect" | "flow" | "handoff" | "notify" | "events";
 
 export function PortalBroker() {
   const [params] = useSearchParams();
@@ -114,7 +115,7 @@ export function PortalBroker() {
           {selected && !showNew && (
             <>
               <div className="broker-tabs">
-                {(["connect", "flow", "handoff", "events"] as Tab[]).map((t) => (
+                {(["connect", "flow", "handoff", "notify", "events"] as Tab[]).map((t) => (
                   <button
                     key={t}
                     className={`broker-tab ${tab === t ? "is-active" : ""}`}
@@ -123,6 +124,7 @@ export function PortalBroker() {
                     {t === "connect" && "1. Conectar"}
                     {t === "flow" && "2. Configurar fluxo"}
                     {t === "handoff" && "3. Transferir p/ atendente"}
+                    {t === "notify" && "4. Notificar status de pedido"}
                     {t === "events" && "Eventos recebidos"}
                   </button>
                 ))}
@@ -143,6 +145,7 @@ export function PortalBroker() {
               {tab === "connect" && <ConnectTab integration={selected} />}
               {tab === "flow" && <FlowTab integration={selected} onSaved={refresh} />}
               {tab === "handoff" && <HandoffTab integration={selected} onSaved={refresh} />}
+              {tab === "notify" && <NotifyTab integration={selected} onSaved={refresh} />}
               {tab === "events" && <EventsTab />}
             </>
           )}
@@ -1437,6 +1440,157 @@ function HandoffTab({ integration, onSaved }: { integration: Integration; onSave
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+
+// ── Notify (order-status) ────────────────────────────────────────────────────
+
+function NotifyTab({ integration, onSaved }: { integration: Integration; onSaved: () => void }) {
+  const cfg = integration.config_json || {};
+  const handoff = integration.handoff_config || {};
+
+  const [enabled, setEnabled]   = useState<boolean>(Boolean(cfg.notify_order_status));
+  const [baseUrl, setBaseUrl]   = useState<string>(String(cfg.base_url || ""));
+  const [token, setToken]       = useState<string>(String(cfg.token || ""));
+  const [externalKey, setKey]   = useState<string>(String(cfg.external_key || "123456"));
+  const [saving, setSaving]     = useState(false);
+  const [msg, setMsg]           = useState<string>("");
+
+  useEffect(() => {
+    const c = integration.config_json || {};
+    setEnabled(Boolean(c.notify_order_status));
+    setBaseUrl(String(c.base_url || ""));
+    setToken(String(c.token || ""));
+    setKey(String(c.external_key || "123456"));
+    setMsg("");
+  }, [integration.id]);
+
+  const effectiveBaseUrl = baseUrl.trim() || (handoff.base_url || "");
+  const effectiveToken   = token.trim()   || (handoff.token   || "");
+  const ready = enabled && Boolean(effectiveBaseUrl) && Boolean(effectiveToken);
+
+  async function save() {
+    setSaving(true); setMsg("");
+    try {
+      await updateIntegration(integration.id, {
+        config_json: {
+          ...(integration.config_json || {}),
+          provider: "clickmassa",
+          notify_order_status: enabled,
+          base_url: baseUrl.trim() || undefined,
+          token: token.trim() || undefined,
+          external_key: externalKey.trim() || "123456",
+        },
+      });
+      setMsg("✓ Configuração salva.");
+      onSaved();
+    } catch (e: any) {
+      setMsg("✗ Erro: " + (e?.response?.data?.detail ?? e.message));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="broker-mapper">
+      <div className="broker-card">
+        <h3 className="broker-card-title">Notificação automática de status de pedido</h3>
+        <p className="broker-card-sub">
+          Quando o operador alterar o status de um pedido no painel
+          (<em>confirmado</em>, <em>em preparo</em>, <em>enviado</em>, etc.) nós
+          enviamos a mensagem definida em{" "}
+          <strong>Configuração → Notificações de Status</strong> pelo endpoint
+          desta integração, no mesmo padrão da ClickMassa:
+          <br />
+          <code>POST {`{base_url}/?token={token}`}</code> com body{" "}
+          <code>{`{ number, externalKey, body }`}</code>.
+        </p>
+
+        <label className="agent-field" style={{ cursor: "pointer" }}>
+          <div className="agent-field-icon">🔔</div>
+          <div className="agent-field-info">
+            <div className="agent-field-label">Ativar notificação de status</div>
+            <div className="agent-field-desc">
+              Sem isso, mudanças de status ficam só no painel — o cliente não é
+              avisado por WhatsApp.
+            </div>
+          </div>
+          <div className="agent-field-mapping">
+            <input
+              type="checkbox"
+              checked={enabled}
+              onChange={(e) => setEnabled(e.target.checked)}
+              style={{ width: 22, height: 22, cursor: "pointer" }}
+            />
+          </div>
+        </label>
+      </div>
+
+      <div className="broker-card">
+        <h3 className="broker-card-title">Endpoint ClickMassa</h3>
+        <p className="broker-card-sub">
+          Se você já preencheu a URL e o token na aba <em>Transferir p/ atendente</em>,
+          pode deixar estes campos vazios — vamos reutilizar.{" "}
+          {handoff.base_url ? (
+            <span style={{ color: "#16a34a" }}>
+              Atualmente usando da aba de transferência: <code>{handoff.base_url}</code>
+            </span>
+          ) : (
+            <span style={{ color: "#b45309" }}>
+              ⚠ Nenhum endpoint configurado na aba de transferência. Preencha aqui.
+            </span>
+          )}
+        </p>
+
+        <div className="broker-field">
+          <label className="broker-field-label">Base URL</label>
+          <input
+            className="broker-field-input"
+            placeholder={handoff.base_url || "https://chatapi.talkfarma.pro/v1/api/external/<UUID>"}
+            value={baseUrl}
+            onChange={(e) => setBaseUrl(e.target.value)}
+          />
+        </div>
+
+        <div className="broker-field">
+          <label className="broker-field-label">Token (JWT)</label>
+          <input
+            className="broker-field-input"
+            placeholder={handoff.token ? "•••••• (herdado da aba de transferência)" : "eyJhbGciOi..."}
+            type="password"
+            value={token}
+            onChange={(e) => setToken(e.target.value)}
+          />
+        </div>
+
+        <div className="broker-field">
+          <label className="broker-field-label">externalKey</label>
+          <input
+            className="broker-field-input"
+            value={externalKey}
+            onChange={(e) => setKey(e.target.value)}
+          />
+          <small style={{ color: "#6b7280" }}>
+            Valor fixo enviado no body. Mantenha <code>123456</code> se não tem motivo pra mudar.
+          </small>
+        </div>
+      </div>
+
+      <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
+        <button className="broker-primary" disabled={saving} onClick={save}>
+          {saving ? <Spinner size={14} /> : "Salvar configuração"}
+        </button>
+        {ready ? (
+          <span style={{ color: "#16a34a", fontSize: 13 }}>● Pronto pra enviar</span>
+        ) : (
+          <span style={{ color: "#6b7280", fontSize: 13 }}>
+            {enabled ? "Faltam URL/token (aqui ou na aba de transferência)" : "Desativado"}
+          </span>
+        )}
+        {msg && <span style={{ marginLeft: "auto", fontSize: 13 }}>{msg}</span>}
+      </div>
     </div>
   );
 }

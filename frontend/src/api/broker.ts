@@ -21,6 +21,16 @@ export interface Integration {
   bundle_window_seconds: number;
   skip_rules: { path: string; equals: unknown; comment?: string }[];
   handoff_config: HandoffConfig;
+  config_json: IntegrationConfig;
+}
+
+export interface IntegrationConfig {
+  provider?: "clickmassa";
+  base_url?: string;
+  token?: string;
+  external_key?: string;
+  notify_order_status?: boolean;
+  [key: string]: unknown;
 }
 
 export interface HandoffConfig {
@@ -55,6 +65,7 @@ export interface IntegrationInput {
   hmac_header?: string;
   hmac_algorithm?: string;
   enabled?: boolean;
+  config_json?: IntegrationConfig;
 }
 
 export interface Mapping {
