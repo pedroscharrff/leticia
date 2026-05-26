@@ -25,6 +25,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
+import httpx
 import structlog
 
 log = structlog.get_logger()
@@ -45,30 +46,78 @@ class ProviderMediaSpec:
 
 
 # ── ClickMassa (TalkFarma) ──────────────────────────────────────────────────
-# STUB: endpoints de imagem/áudio ainda não fornecidos pelo usuário.
-# Atualizar quando o usuário enviar a spec; ver
-# memory/reference_channel_media_endpoints.md.
+# Endpoint único para imagem e áudio: POST {base_url}/?token={token}
+# Body: {"number": "...", "body": "<caption>", "externalKey": "IA", "mediaUrl": "..."}
+# Provider infere o tipo (image/audio) pelo Content-Type da mediaUrl.
+
+_CLICKMASSA_EXTERNAL_KEY = "IA"
+
+
+async def _clickmassa_send_media(
+    cfg: dict[str, Any], phone: str, caption: str, media_url: str,
+    *, kind: str,
+) -> dict[str, Any]:
+    base_url = (cfg.get("base_url") or "").strip().rstrip("/")
+    token    = (cfg.get("token") or "").strip()
+
+    missing = []
+    if not base_url:  missing.append("base_url")
+    if not token:     missing.append("token")
+    if not phone:     missing.append("phone")
+    if not media_url: missing.append("media_url")
+    if missing:
+        return {
+            "ok": False, "status_code": None, "response": None,
+            "error": f"Config ClickMassa incompleta. Faltando: {', '.join(missing)}",
+        }
+
+    url = f"{base_url}/?token={token}"
+    payload = {
+        "number":      phone,
+        "body":        (caption or "").strip(),
+        "externalKey": _CLICKMASSA_EXTERNAL_KEY,
+        "mediaUrl":    media_url,
+    }
+
+    log.info("channel_media.clickmassa.dispatching",
+             kind=kind, url_prefix=base_url, phone_prefix=phone[:4])
+    try:
+        async with httpx.AsyncClient(timeout=20) as client:
+            resp = await client.post(url, json=payload)
+        try:
+            data = resp.json()
+        except Exception:
+            data = {"_text": resp.text[:2000]}
+        ok = 200 <= resp.status_code < 300
+        if ok:
+            log.info("channel_media.clickmassa.success",
+                     kind=kind, status=resp.status_code)
+        else:
+            log.warning("channel_media.clickmassa.bad_status",
+                        kind=kind, status=resp.status_code,
+                        preview=str(data)[:300])
+        return {
+            "ok": ok, "status_code": resp.status_code, "response": data,
+            "error": None if ok else f"ClickMassa retornou {resp.status_code}",
+        }
+    except Exception as exc:  # noqa: BLE001
+        log.error("channel_media.clickmassa.failed", kind=kind, error=str(exc))
+        return {
+            "ok": False, "status_code": None, "response": None,
+            "error": f"Falha ao conectar ClickMassa: {exc}",
+        }
+
 
 async def _clickmassa_send_image(
     cfg: dict[str, Any], phone: str, caption: str, media_url: str,
 ) -> dict[str, Any]:
-    log.warning("channel_media.clickmassa.image.not_configured",
-                phone_prefix=phone[:4])
-    return {
-        "ok": False, "status_code": None, "response": None,
-        "error": "ClickMassa: endpoint de envio de imagem ainda não configurado.",
-    }
+    return await _clickmassa_send_media(cfg, phone, caption, media_url, kind="image")
 
 
 async def _clickmassa_send_audio(
     cfg: dict[str, Any], phone: str, caption: str, media_url: str,
 ) -> dict[str, Any]:
-    log.warning("channel_media.clickmassa.audio.not_configured",
-                phone_prefix=phone[:4])
-    return {
-        "ok": False, "status_code": None, "response": None,
-        "error": "ClickMassa: endpoint de envio de áudio ainda não configurado.",
-    }
+    return await _clickmassa_send_media(cfg, phone, caption, media_url, kind="audio")
 
 
 # ── Registro ────────────────────────────────────────────────────────────────
