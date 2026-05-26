@@ -53,6 +53,7 @@ const NAV_SECTIONS: NavSection[] = [
       { path: "/portal/estoque",      label: "Produtos & Estoque",   icon: "📦", key: "estoque"     },
       { path: "/portal/recursos",     label: "Recursos do seu Robô", icon: "🧩", key: "recursos"    },
       { path: "/portal/entregas",     label: "Frete & Entrega",      icon: "🚚", key: "entregas"    },
+      { path: "/portal/ofertas",      label: "Ofertas",              icon: "🏷️", key: "ofertas"     },
       { path: "/portal/pagamentos",   label: "Pagamentos (PIX)",     icon: "📱", key: "pagamentos"  },
       { path: "/portal/recuperacao",  label: "Recuperação Automática",icon: "🔁", key: "recuperacao"},
       { path: "/portal/pedidos",      label: "Pedidos",              icon: "🧾", key: "pedidos"     },

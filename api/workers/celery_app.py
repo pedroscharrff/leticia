@@ -108,6 +108,61 @@ async def _deliver_response(callback_url: str, payload: dict) -> None:
         resp.raise_for_status()
 
 
+# ── Pre-handoff offers ───────────────────────────────────────────────────────
+
+_DEFAULT_OFFERS_HEADER = "Antes de transferir, veja nossas ofertas:"
+
+
+def _format_offers_block(offers: list[dict], header: str) -> str:
+    lines = [header.strip()]
+    for o in offers:
+        title = (o.get("title") or "").strip()
+        desc  = (o.get("description") or "").strip()
+        if not title:
+            continue
+        lines.append(f"• {title}: {desc}" if desc else f"• {title}")
+    return "\n".join(lines)
+
+
+async def _maybe_append_offers(tenant_id: str, base_message: str) -> str:
+    """Anexa ofertas vigentes à mensagem se a capability estiver ON.
+
+    Retorna `base_message` sem alteração quando:
+      - capability `sales.pre_handoff_offers` está OFF;
+      - não há ofertas vigentes;
+      - algo falha (erro logado, handoff segue normalmente).
+
+    Esta função NUNCA deve quebrar o caminho de transferência.
+    """
+    try:
+        from services import capabilities as cap_svc
+        from services import offers as offers_svc
+
+        if not await cap_svc.is_enabled(tenant_id, "sales.pre_handoff_offers"):
+            return base_message
+
+        cfg = await cap_svc.get_config(tenant_id, "sales.pre_handoff_offers") or {}
+        limit  = int(cfg.get("max_offers", 3) or 3)
+        header = cfg.get("header_text") or _DEFAULT_OFFERS_HEADER
+
+        offers = await offers_svc.get_active_offers(tenant_id, limit=limit)
+        if not offers:
+            return base_message
+
+        block = _format_offers_block(offers, header)
+        log.info(
+            "pre_handoff_offers.appended",
+            tenant=tenant_id, count=len(offers),
+        )
+        return f"{base_message}\n\n{block}"
+    except Exception as exc:  # noqa: BLE001
+        log.warning(
+            "pre_handoff_offers.failed",
+            tenant=tenant_id, exc=str(exc),
+        )
+        return base_message
+
+
 # ── Main task ─────────────────────────────────────────────────────────────────
 
 @celery_app.task(name="process_message", bind=True, max_retries=0)
@@ -269,21 +324,39 @@ async def _run_graph(
                     phone_prefix=phone[:4], agent_escalate=agent_escalate,
                 )
                 phone_clean = "".join(c for c in phone if c.isdigit())
+
+                # Mensagem-base que iria ao cliente. Replica o fallback que
+                # transfer_to_human aplica internamente quando custom_message
+                # é None — assim podemos passar a versão com ofertas anexadas
+                # sem alterar a semântica quando a capability está OFF.
+                base_message_for_offers = (
+                    response_text if response_text and agent_escalate else (
+                        handoff_cfg.get("transfer_message")
+                        or "Estou te transferindo para um atendente agora. Um momento, por favor."
+                    )
+                )
+                enhanced_message = await _maybe_append_offers(
+                    tenant_id, base_message_for_offers,
+                )
+                offers_added = enhanced_message != base_message_for_offers
+
                 hresult = await transfer_to_human(
                     handoff_cfg, phone=phone_clean,
                     # Quando o próprio agente já mandou uma resposta de fechamento,
                     # ela é a melhor mensagem de transição. Caso contrário usamos
-                    # a transfer_message configurada.
-                    custom_message=response_text if response_text and agent_escalate else None,
+                    # a transfer_message configurada (replicada em base_message_for_offers).
+                    custom_message=(
+                        enhanced_message if offers_added else
+                        (response_text if response_text and agent_escalate else None)
+                    ),
                 )
                 # Substitui o texto enviado ao cliente só quando NÃO foi o
                 # agente que pediu — quando foi o agente, ele já gerou um
                 # texto de despedida apropriado e queremos mantê-lo.
-                if not agent_escalate:
-                    response_text = (
-                        handoff_cfg.get("transfer_message")
-                        or "Estou te transferindo para um atendente agora. Um momento, por favor."
-                    )
+                if offers_added:
+                    response_text = enhanced_message
+                elif not agent_escalate:
+                    response_text = base_message_for_offers
                 skill_used = "handoff"
                 log.info("webhook.handoff.result", ok=hresult.get("ok"),
                          status_code=hresult.get("status_code"))

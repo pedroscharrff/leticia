@@ -29,6 +29,7 @@ import { PortalBroker }         from "./pages/PortalBroker";
 import { PortalClienteDetalhe } from "./pages/PortalClienteDetalhe";
 import { PortalRecursos }       from "./pages/PortalRecursos";
 import { PortalEntregas }       from "./pages/PortalEntregas";
+import { PortalOfertas }        from "./pages/PortalOfertas";
 import { PortalPagamentos }     from "./pages/PortalPagamentos";
 import { PortalRecuperacao }    from "./pages/PortalRecuperacao";
 import { AdminPersona }    from "./pages/AdminPersona";
@@ -84,6 +85,7 @@ export function App() {
       <Route path="/portal/broker"     element={<TenantRoute><PortalBroker /></TenantRoute>} />
       <Route path="/portal/recursos"   element={<TenantRoute><PortalRecursos /></TenantRoute>} />
       <Route path="/portal/entregas"     element={<TenantRoute><PortalEntregas /></TenantRoute>} />
+      <Route path="/portal/ofertas"      element={<TenantRoute><PortalOfertas /></TenantRoute>} />
       <Route path="/portal/pagamentos"   element={<TenantRoute><PortalPagamentos /></TenantRoute>} />
       <Route path="/portal/recuperacao"  element={<TenantRoute><PortalRecuperacao /></TenantRoute>} />
 
