@@ -244,10 +244,19 @@ async def orchestrator(state: AgentState, llm_factory) -> AgentState:
     try:
         llm = llm_factory("orchestrator")
         from langchain_core.messages import SystemMessage, HumanMessage
-        response = await llm.ainvoke([
-            SystemMessage(content=system_prompt),
-            HumanMessage(content=user_content),
-        ])
+        from llm.retry import llm_retry
+        # Sem este retry, APIConnectionError transient (conexão httpx no pool
+        # do ChatAnthropic cacheado expirou) deixava o orchestrator caindo em
+        # fallback toda chamada — porque o orchestrator é invocado uma vez por
+        # turno (instance fica idle), enquanto skills usam llm_retry e raramente
+        # ficam idle. Sintoma: TODOS os turnos viravam o skill de fallback
+        # (farmaceutico) com confidence=0.
+        async for attempt in llm_retry():
+            with attempt:
+                response = await llm.ainvoke([
+                    SystemMessage(content=system_prompt),
+                    HumanMessage(content=user_content),
+                ])
 
         # Garante string (response.content pode ser lista de blocos)
         content = response.content

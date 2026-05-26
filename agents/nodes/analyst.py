@@ -87,14 +87,20 @@ async def analyst(state: AgentState, llm_factory, max_retries: int = 1) -> Agent
     try:
         llm = llm_factory("analyst")
         from langchain_core.messages import SystemMessage, HumanMessage
-        result = await llm.ainvoke([
-            SystemMessage(content=_SYSTEM),
-            HumanMessage(content=(
-                f"=== HISTÓRICO DA CONVERSA ===\n{history_text}\n\n"
-                f"=== NOVA MENSAGEM DO CLIENTE ===\n{current_msg}\n\n"
-                f"=== RESPOSTA DO ASSISTENTE PARA AVALIAR ===\n{response_text}"
-            )),
-        ])
+        from llm.retry import llm_retry
+        # Mesmo motivo do orchestrator: instância ChatAnthropic é cacheada
+        # (lru_cache em llm/providers.py) e fica idle entre turnos, pool
+        # httpx envelhece, primeira chamada após idle dá APIConnectionError.
+        async for attempt in llm_retry():
+            with attempt:
+                result = await llm.ainvoke([
+                    SystemMessage(content=_SYSTEM),
+                    HumanMessage(content=(
+                        f"=== HISTÓRICO DA CONVERSA ===\n{history_text}\n\n"
+                        f"=== NOVA MENSAGEM DO CLIENTE ===\n{current_msg}\n\n"
+                        f"=== RESPOSTA DO ASSISTENTE PARA AVALIAR ===\n{response_text}"
+                    )),
+                ])
 
         # Garante string (response.content pode ser lista)
         result_text = result.content if isinstance(result.content, str) else \
