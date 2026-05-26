@@ -324,39 +324,25 @@ async def _run_graph(
                     phone_prefix=phone[:4], agent_escalate=agent_escalate,
                 )
                 phone_clean = "".join(c for c in phone if c.isdigit())
-
-                # Mensagem-base que iria ao cliente. Replica o fallback que
-                # transfer_to_human aplica internamente quando custom_message
-                # é None — assim podemos passar a versão com ofertas anexadas
-                # sem alterar a semântica quando a capability está OFF.
-                base_message_for_offers = (
-                    response_text if response_text and agent_escalate else (
-                        handoff_cfg.get("transfer_message")
-                        or "Estou te transferindo para um atendente agora. Um momento, por favor."
-                    )
-                )
-                enhanced_message = await _maybe_append_offers(
-                    tenant_id, base_message_for_offers,
-                )
-                offers_added = enhanced_message != base_message_for_offers
-
                 hresult = await transfer_to_human(
                     handoff_cfg, phone=phone_clean,
                     # Quando o próprio agente já mandou uma resposta de fechamento,
                     # ela é a melhor mensagem de transição. Caso contrário usamos
-                    # a transfer_message configurada (replicada em base_message_for_offers).
-                    custom_message=(
-                        enhanced_message if offers_added else
-                        (response_text if response_text and agent_escalate else None)
-                    ),
+                    # a transfer_message configurada.
+                    custom_message=response_text if response_text and agent_escalate else None,
                 )
                 # Substitui o texto enviado ao cliente só quando NÃO foi o
                 # agente que pediu — quando foi o agente, ele já gerou um
                 # texto de despedida apropriado e queremos mantê-lo.
-                if offers_added:
-                    response_text = enhanced_message
-                elif not agent_escalate:
-                    response_text = base_message_for_offers
+                if not agent_escalate:
+                    response_text = (
+                        handoff_cfg.get("transfer_message")
+                        or "Estou te transferindo para um atendente agora. Um momento, por favor."
+                    )
+                # Pre-handoff offers: anexa ao TEXTO QUE VAI AO CLIENTE pelo
+                # canal (callback_url abaixo). NÃO mexe em transfer_to_human
+                # (que é a camada de ticket/atendente, não a camada cliente).
+                response_text = await _maybe_append_offers(tenant_id, response_text)
                 skill_used = "handoff"
                 log.info("webhook.handoff.result", ok=hresult.get("ok"),
                          status_code=hresult.get("status_code"))
@@ -714,6 +700,10 @@ async def _run_broker_flow(
             if not agent_escalate:
                 reply_text = (handoff_cfg.get("transfer_message")
                               or "Estou te transferindo para um atendente agora. Um momento, por favor.")
+            # Pre-handoff offers: anexa ao reply_text que vai pelo broker
+            # (reply_url abaixo) — esse é o caminho que efetivamente entrega
+            # a mensagem no canal do cliente (WhatsApp/Telegram/etc.).
+            reply_text = await _maybe_append_offers(tenant_id, reply_text)
             skill_used = "handoff"
             # Pausa a IA pra esse cliente — atendente humano vai assumir
             if handoff_result and handoff_result.get("ok"):
