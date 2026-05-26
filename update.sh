@@ -56,6 +56,164 @@ else
     success "Código atualizado"
 fi
 
+# ── 1.5 Provisionamento incremental: MinIO + subdomínio storage ───────────────
+# Idempotente: detecta o que falta e adiciona. Seguro de rodar várias vezes.
+step "1.5/5  Provisionando MinIO + subdomínio storage (idempotente)"
+
+ENV_FILE="${SCRIPT_DIR}/.env"
+[[ -f "$ENV_FILE" ]] || error ".env não encontrado em ${ENV_FILE}"
+
+# Descobre domínio base a partir de VITE_API_URL=https://api.<DOMAIN>
+API_URL=$(grep -E "^VITE_API_URL=" "$ENV_FILE" | head -1 | cut -d= -f2- | tr -d '"' | tr -d "'")
+API_DOMAIN=${API_URL#https://}
+API_DOMAIN=${API_DOMAIN#http://}
+BASE_DOMAIN=${API_DOMAIN#api.}
+ADMIN_DOMAIN="admin.${BASE_DOMAIN}"
+STORAGE_DOMAIN="storage.${BASE_DOMAIN}"
+
+if [[ -z "$BASE_DOMAIN" || "$BASE_DOMAIN" == "$API_DOMAIN" ]]; then
+    error "Não consegui detectar o domínio base a partir do .env (VITE_API_URL=${API_URL}). Abortando para não corromper a config."
+fi
+info "Domínios detectados: api=${API_DOMAIN}  admin=${ADMIN_DOMAIN}  storage=${STORAGE_DOMAIN}"
+
+# ── 1.5.1 Garante vars do MinIO no .env (sem tocar nas existentes) ────────────
+if ! grep -q "^MINIO_SECRET_KEY=" "$ENV_FILE"; then
+    info "Adicionando vars do MinIO ao .env (segredo gerado automaticamente)..."
+    MINIO_SECRET=$(openssl rand -hex 24)
+    {
+        echo ""
+        echo "# ─── MinIO (object storage — adicionado por update.sh) ─────────────────"
+        echo "MINIO_ENDPOINT='minio:9000'"
+        echo "MINIO_ACCESS_KEY='farmacia'"
+        echo "MINIO_SECRET_KEY='${MINIO_SECRET}'"
+        echo "MINIO_BUCKET='offers-media'"
+        echo "MINIO_SECURE='false'"
+        echo "MINIO_PUBLIC_URL='https://${STORAGE_DOMAIN}'"
+    } >> "$ENV_FILE"
+    chmod 600 "$ENV_FILE"
+    success "Vars do MinIO adicionadas ao .env"
+else
+    info ".env já tem MINIO_SECRET_KEY — preservando o segredo existente."
+fi
+
+# ── 1.5.2 Verifica DNS do storage ─────────────────────────────────────────────
+STORAGE_IP=$(getent hosts "${STORAGE_DOMAIN}" | awk '{print $1}' | head -1 || true)
+SERVER_IP=$(curl -s --max-time 5 ifconfig.me || echo "")
+if [[ -z "$STORAGE_IP" ]]; then
+    warn "DNS de ${STORAGE_DOMAIN} ainda não propagado."
+    warn "Configure no registrador:  A  ${STORAGE_DOMAIN}  →  ${SERVER_IP:-IP_DO_SERVIDOR}"
+    read -rp "  Continuar mesmo assim (cert + nginx só funcionarão após DNS)? [s/N]: " cont
+    [[ "${cont,,}" == "s" ]] || error "Configure o DNS e rode update.sh de novo."
+elif [[ -n "$SERVER_IP" && "$STORAGE_IP" != "$SERVER_IP" ]]; then
+    warn "DNS de ${STORAGE_DOMAIN} aponta para ${STORAGE_IP}, mas este servidor é ${SERVER_IP}."
+    warn "Provavelmente é Cloudflare Proxy — se for, OK. Senão, corrija o A record."
+else
+    success "DNS de ${STORAGE_DOMAIN} aponta corretamente."
+fi
+
+# ── 1.5.3 Sobe o MinIO antes de tudo (precisa estar pronto p/ a API usar) ─────
+if ! docker compose ps --format "{{.Name}}\t{{.State}}" 2>/dev/null | grep -q "minio.*running"; then
+    info "Iniciando container do MinIO..."
+    docker compose up -d --no-deps minio
+    # Aguarda ready
+    MINIO_TRIES=0
+    while [[ $MINIO_TRIES -lt 20 ]]; do
+        if docker compose exec -T minio mc ready local &>/dev/null \
+            || docker compose exec -T minio curl -sf http://localhost:9000/minio/health/ready &>/dev/null; then
+            break
+        fi
+        sleep 2
+        ((MINIO_TRIES++))
+    done
+    success "MinIO iniciado"
+else
+    info "MinIO já está rodando — pulando."
+fi
+
+# ── 1.5.4 Expande certificado SSL para cobrir storage.${DOMAIN} ───────────────
+CERT_PATH="/etc/letsencrypt/live/${API_DOMAIN}/fullchain.pem"
+CERT_COVERS_STORAGE=false
+if docker compose run --rm --entrypoint sh certbot -c \
+    "openssl x509 -in ${CERT_PATH} -noout -text 2>/dev/null | grep -q ${STORAGE_DOMAIN}"; then
+    CERT_COVERS_STORAGE=true
+fi
+
+if [[ "$CERT_COVERS_STORAGE" == "true" ]]; then
+    success "Certificado SSL já cobre ${STORAGE_DOMAIN} — sem reemissão."
+else
+    info "Expandindo certificado SSL para incluir ${STORAGE_DOMAIN}..."
+    # Precisa que o nginx HTTP (porta 80) responda ao ACME — config atual já cobre.
+    # Mas o redirect HTTP→HTTPS pode interceptar. Solução: o bloco /.well-known/
+    # já está fora do redirect 301 na config gerada pelo deploy.sh.
+    if ! timeout 180 docker compose run --rm --entrypoint certbot certbot certonly \
+        --webroot --webroot-path=/var/www/certbot \
+        --expand --non-interactive --agree-tos \
+        --cert-name "${API_DOMAIN}" \
+        -d "${API_DOMAIN}" -d "${ADMIN_DOMAIN}" -d "${STORAGE_DOMAIN}"; then
+        error "Falha ao expandir certificado. Verifique DNS + porta 80 aberta."
+    fi
+    success "Certificado expandido"
+fi
+
+# ── 1.5.5 Garante que o nginx config tem o server block do storage ────────────
+NGINX_CONF="${SCRIPT_DIR}/nginx/default.conf"
+if ! grep -q "${STORAGE_DOMAIN}" "$NGINX_CONF" 2>/dev/null; then
+    info "Atualizando nginx/default.conf com o server block do storage..."
+
+    # 1) Adiciona STORAGE_DOMAIN aos server_name das duas linhas que listam api+admin
+    sed -i "s/server_name ${API_DOMAIN} ${ADMIN_DOMAIN};/server_name ${API_DOMAIN} ${ADMIN_DOMAIN} ${STORAGE_DOMAIN};/g" "$NGINX_CONF"
+
+    # 2) Anexa o server block do storage no final
+    cat >> "$NGINX_CONF" << EOF
+
+# ── Storage (MinIO) — https://${STORAGE_DOMAIN} ──────────────────────────────
+# Adicionado por update.sh — serve mídias das ofertas via URL pública.
+server {
+    listen 443 ssl http2;
+    server_name ${STORAGE_DOMAIN};
+
+    ssl_certificate     /etc/letsencrypt/live/${API_DOMAIN}/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/${API_DOMAIN}/privkey.pem;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_ciphers         ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384;
+    ssl_session_cache   shared:SSL:10m;
+    ssl_session_timeout 1d;
+
+    add_header Strict-Transport-Security "max-age=63072000; includeSubDomains; preload" always;
+    add_header X-Content-Type-Options    nosniff                                         always;
+
+    client_max_body_size 20M;
+    resolver 127.0.0.11 valid=10s ipv6=off;
+
+    location / {
+        set \$upstream_minio minio:9000;
+        proxy_pass            http://\$upstream_minio;
+        proxy_http_version    1.1;
+        proxy_set_header      Host              \$host;
+        proxy_set_header      X-Real-IP         \$remote_addr;
+        proxy_set_header      X-Forwarded-For   \$proxy_add_x_forwarded_for;
+        proxy_set_header      X-Forwarded-Proto \$scheme;
+        proxy_connect_timeout 10s;
+        proxy_read_timeout    60s;
+        proxy_buffering       off;
+        proxy_request_buffering off;
+    }
+}
+EOF
+    success "nginx/default.conf atualizado"
+
+    # Valida e recarrega
+    if docker compose exec -T nginx nginx -t &>/dev/null; then
+        docker compose exec -T nginx nginx -s reload
+        success "nginx recarregado com o novo bloco do storage"
+    else
+        warn "nginx -t falhou. Restaurando config anterior NÃO é automático — verifique:"
+        warn "  docker compose exec nginx nginx -t"
+    fi
+else
+    info "nginx config já contém ${STORAGE_DOMAIN} — sem alteração."
+fi
+
 # ── 2. Build apenas das imagens da aplicação ──────────────────────────────────
 step "2/5  Fazendo build das imagens"
 

@@ -93,6 +93,39 @@ def _validate_handoff(cfg: dict | None) -> None:
 
 # ── CRUD ─────────────────────────────────────────────────────────────────────
 
+class ChannelCapabilities(BaseModel):
+    has_active_channel: bool
+    provider:           str | None
+    supports_image:     bool
+    supports_audio:     bool
+
+
+@router.get("/capabilities", response_model=ChannelCapabilities)
+async def get_capabilities(user: TenantUser) -> ChannelCapabilities:
+    """Retorna o que o canal ativo do tenant suporta em saída.
+
+    Hoje deriva do `handoff_config.provider` do PRIMEIRO canal ativo. Usado
+    pela UI de Ofertas para avisar se o canal aceita imagem/áudio antes do
+    upload.
+    """
+    from services.outbound import get_active_channel_config
+    from services import channel_media as cm
+
+    cfg = await get_active_channel_config(user.tenant_id)
+    if not cfg:
+        return ChannelCapabilities(
+            has_active_channel=False, provider=None,
+            supports_image=False, supports_audio=False,
+        )
+    provider = (cfg.get("provider") or "clickmassa").lower()
+    return ChannelCapabilities(
+        has_active_channel=True,
+        provider=provider,
+        supports_image=cm.supports(provider, "image"),
+        supports_audio=cm.supports(provider, "audio"),
+    )
+
+
 @router.get("", response_model=list[ChannelOut])
 async def list_channels(user: TenantUser) -> list[ChannelOut]:
     try:

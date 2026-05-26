@@ -113,7 +113,8 @@ async def _deliver_response(callback_url: str, payload: dict) -> None:
 _DEFAULT_OFFERS_HEADER = "Antes de transferir, veja nossas ofertas:"
 
 
-def _format_offers_block(offers: list[dict], header: str) -> str:
+def _format_offers_text_block(offers: list[dict], header: str) -> str:
+    """Bullet único com ofertas só-texto (mantém formato v1)."""
     lines = [header.strip()]
     for o in offers:
         title = (o.get("title") or "").strip()
@@ -124,22 +125,41 @@ def _format_offers_block(offers: list[dict], header: str) -> str:
     return "\n".join(lines)
 
 
-async def _maybe_append_offers(tenant_id: str, base_message: str) -> str:
-    """Anexa ofertas vigentes à mensagem se a capability estiver ON.
+def _offer_caption(o: dict) -> str:
+    """Caption de uma oferta com mídia: '{title}: {description}' ou só title."""
+    title = (o.get("title") or "").strip()
+    desc  = (o.get("description") or "").strip()
+    if title and desc:
+        return f"{title}: {desc}"
+    return title or desc
 
-    Retorna `base_message` sem alteração quando:
-      - capability `sales.pre_handoff_offers` está OFF;
-      - não há ofertas vigentes;
-      - algo falha (erro logado, handoff segue normalmente).
 
-    Esta função NUNCA deve quebrar o caminho de transferência.
+async def _send_pre_handoff_offers(
+    tenant_id: str,
+    *,
+    phone: str,
+    channel_cfg: dict | None,
+    text_sender,        # callable async (text: str) -> None  — texto para o cliente
+) -> None:
+    """Envia ofertas vigentes como mensagens SEPARADAS (após a mensagem
+    principal de handoff já ter saído).
+
+    Comportamento:
+      - Ofertas só-texto → uma única mensagem com bullets (v1 preservada).
+      - Ofertas com mídia → uma mensagem por oferta via channel_media,
+        usando o provider configurado em `channel_cfg`.
+      - Provider sem suporte a mídia → caption viaja como texto puro
+        (mantém a oferta visível, perde só o anexo).
+
+    NUNCA deve levantar exceção — handoff já saiu, nada deve quebrar aqui.
     """
     try:
         from services import capabilities as cap_svc
         from services import offers as offers_svc
+        from services import channel_media as cm
 
         if not await cap_svc.is_enabled(tenant_id, "sales.pre_handoff_offers"):
-            return base_message
+            return
 
         cfg = await cap_svc.get_config(tenant_id, "sales.pre_handoff_offers") or {}
         limit  = int(cfg.get("max_offers", 3) or 3)
@@ -147,20 +167,60 @@ async def _maybe_append_offers(tenant_id: str, base_message: str) -> str:
 
         offers = await offers_svc.get_active_offers(tenant_id, limit=limit)
         if not offers:
-            return base_message
+            return
 
-        block = _format_offers_block(offers, header)
+        text_only = [o for o in offers if not (o.get("media_url") and o.get("media_type"))]
+        with_media = [o for o in offers if (o.get("media_url") and o.get("media_type"))]
+
+        # 1) Bloco textual (v1) para ofertas sem mídia
+        if text_only:
+            try:
+                await text_sender(_format_offers_text_block(text_only, header))
+            except Exception as exc:  # noqa: BLE001
+                log.warning("pre_handoff_offers.text_send_failed",
+                            tenant=tenant_id, exc=str(exc))
+
+        # 2) Uma mensagem por oferta com mídia
+        provider = (channel_cfg or {}).get("provider") if channel_cfg else None
+        phone_clean = "".join(c for c in phone if c.isdigit())
+
+        for o in with_media:
+            caption = _offer_caption(o)
+            sent_as_media = False
+            if provider and channel_cfg:
+                result = await cm.send_media(
+                    provider, channel_cfg,
+                    media_type=o["media_type"],
+                    phone=phone_clean,
+                    caption=caption,
+                    media_url=o["media_url"],
+                )
+                if result.get("ok"):
+                    sent_as_media = True
+                else:
+                    log.warning(
+                        "pre_handoff_offers.media_failed_fallback_text",
+                        tenant=tenant_id, provider=provider,
+                        media_type=o.get("media_type"),
+                        error=result.get("error"),
+                    )
+            if not sent_as_media:
+                # Fallback: provider sem suporte ou erro → manda só caption
+                try:
+                    await text_sender(caption)
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("pre_handoff_offers.media_text_fallback_failed",
+                                tenant=tenant_id, exc=str(exc))
+
         log.info(
-            "pre_handoff_offers.appended",
-            tenant=tenant_id, count=len(offers),
+            "pre_handoff_offers.sent",
+            tenant=tenant_id,
+            text_count=len(text_only),
+            media_count=len(with_media),
         )
-        return f"{base_message}\n\n{block}"
     except Exception as exc:  # noqa: BLE001
-        log.warning(
-            "pre_handoff_offers.failed",
-            tenant=tenant_id, exc=str(exc),
-        )
-        return base_message
+        log.warning("pre_handoff_offers.failed",
+                    tenant=tenant_id, exc=str(exc))
 
 
 # ── Main task ─────────────────────────────────────────────────────────────────
@@ -310,6 +370,7 @@ async def _run_graph(
         except Exception as exc:  # noqa: BLE001
             log.warning("webhook.handoff.lookup_failed", tenant=tenant_id, exc=str(exc))
 
+        handoff_was_executed = False
         try:
             from services.handoff import should_handoff, transfer_to_human
             do_handoff, reason = should_handoff(
@@ -318,6 +379,7 @@ async def _run_graph(
                 user_message=current_message,
             )
             if do_handoff:
+                handoff_was_executed = True
                 log.info(
                     "webhook.handoff.triggered",
                     tenant=tenant_id, reason=reason,
@@ -339,10 +401,6 @@ async def _run_graph(
                         handoff_cfg.get("transfer_message")
                         or "Estou te transferindo para um atendente agora. Um momento, por favor."
                     )
-                # Pre-handoff offers: anexa ao TEXTO QUE VAI AO CLIENTE pelo
-                # canal (callback_url abaixo). NÃO mexe em transfer_to_human
-                # (que é a camada de ticket/atendente, não a camada cliente).
-                response_text = await _maybe_append_offers(tenant_id, response_text)
                 skill_used = "handoff"
                 log.info("webhook.handoff.result", ok=hresult.get("ok"),
                          status_code=hresult.get("status_code"))
@@ -370,6 +428,27 @@ async def _run_graph(
                 "tenant_id": tenant_id,
             },
         )
+
+        # Ofertas pré-handoff: enviadas COMO MENSAGENS SEPARADAS,
+        # depois da mensagem de transferência principal.
+        if handoff_was_executed:
+            async def _send_text(text: str) -> None:
+                await _deliver_response(
+                    callback_url,
+                    {
+                        "phone": phone,
+                        "session_id": session_id,
+                        "message": text,
+                        "tenant_id": tenant_id,
+                        "kind": "pre_handoff_offer",
+                    },
+                )
+            await _send_pre_handoff_offers(
+                tenant_id,
+                phone=phone,
+                channel_cfg=handoff_cfg,
+                text_sender=_send_text,
+            )
 
         log.info(
             "task.done",
@@ -678,6 +757,7 @@ async def _run_broker_flow(
             handoff_cfg = {}
     agent_escalate = bool(final_state.get("escalate")) if final_state else False
     handoff_result: dict | None = None
+    handoff_was_executed = False
     try:
         from services.handoff import should_handoff, transfer_to_human
         do_handoff, reason = should_handoff(
@@ -686,6 +766,7 @@ async def _run_broker_flow(
             user_message=message,
         )
         if do_handoff:
+            handoff_was_executed = True
             log.info("broker.flow.handoff_triggered",
                      tenant=tenant_id, reason=reason, phone_prefix=phone_clean[:4])
             handoff_result = await transfer_to_human(
@@ -700,10 +781,6 @@ async def _run_broker_flow(
             if not agent_escalate:
                 reply_text = (handoff_cfg.get("transfer_message")
                               or "Estou te transferindo para um atendente agora. Um momento, por favor.")
-            # Pre-handoff offers: anexa ao reply_text que vai pelo broker
-            # (reply_url abaixo) — esse é o caminho que efetivamente entrega
-            # a mensagem no canal do cliente (WhatsApp/Telegram/etc.).
-            reply_text = await _maybe_append_offers(tenant_id, reply_text)
             skill_used = "handoff"
             # Pausa a IA pra esse cliente — atendente humano vai assumir
             if handoff_result and handoff_result.get("ok"):
@@ -783,6 +860,28 @@ async def _run_broker_flow(
             forward_error = f"Falha ao conectar no destino: {exc}"
             log.warning("broker.flow.forward_failed",
                         tenant=tenant_id, url=integration["reply_url"], exc=str(exc))
+
+    # Ofertas pré-handoff: enviadas COMO MENSAGENS SEPARADAS,
+    # depois do reply principal já ter sido forward-eado.
+    if handoff_was_executed and integration["reply_mode"] == "forward" and integration["reply_url"]:
+        async def _send_text(text: str) -> None:
+            ctx = {**reply_context, "reply": text, "_kind": "pre_handoff_offer"}
+            body = (
+                broker_svc.apply_mapping(template, ctx) if template else {"reply": text}
+            )
+            method = (integration.get("reply_method") or "POST").upper()
+            headers = {str(k): str(v) for k, v in
+                       (integration.get("reply_headers") or {}).items() if k and v}
+            async with httpx.AsyncClient(timeout=15) as client:
+                await client.request(method, integration["reply_url"],
+                                     json=body, headers=headers)
+
+        await _send_pre_handoff_offers(
+            tenant_id,
+            phone=phone_clean,
+            channel_cfg=handoff_cfg,
+            text_sender=_send_text,
+        )
 
     # Persist final state (com info do forward, se houve)
     canonical_combined = {**reply_context, "_reply_body": reply_body, "_error": error}

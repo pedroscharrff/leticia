@@ -24,6 +24,12 @@ x-api-env: &api-env
   ANALYST_MAX_RETRIES:         ${ANALYST_MAX_RETRIES:-1}
   LLM_TIMEOUT_SECONDS:         ${LLM_TIMEOUT_SECONDS:-30}
   CELERY_WORKERS_CONCURRENCY:  ${CELERY_WORKERS_CONCURRENCY:-16}
+  MINIO_ENDPOINT:              ${MINIO_ENDPOINT:-minio:9000}
+  MINIO_ACCESS_KEY:            ${MINIO_ACCESS_KEY:-farmacia}
+  MINIO_SECRET_KEY:            ${MINIO_SECRET_KEY}
+  MINIO_BUCKET:                ${MINIO_BUCKET:-offers-media}
+  MINIO_SECURE:                ${MINIO_SECURE:-false}
+  MINIO_PUBLIC_URL:            ${MINIO_PUBLIC_URL:-http://localhost:9000}
 
 services:
 
@@ -160,6 +166,26 @@ services:
       retries: 5
     restart: unless-stopped
 
+  # ── MinIO (object storage para mídia de ofertas) ─────────────────────────────
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER:     ${MINIO_ACCESS_KEY:-farmacia}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY}
+    volumes:
+      - minio_data:/data
+    ports:
+      - "127.0.0.1:9000:9000"   # API S3 (público em prod via nginx, ver MINIO_PUBLIC_URL)
+      - "127.0.0.1:9001:9001"   # Console admin (apenas localhost)
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+
   # ── RabbitMQ ─────────────────────────────────────────────────────────────────
   rabbitmq:
     image: rabbitmq:3.13-management-alpine
@@ -213,3 +239,4 @@ volumes:
   grafana_data:
   certbot_certs:    # certificados Let's Encrypt (compartilhado: nginx + certbot)
   certbot_www:      # webroot para ACME challenge   (compartilhado: nginx + certbot)
+  minio_data:       # arquivos de mídia das ofertas

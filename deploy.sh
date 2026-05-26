@@ -176,6 +176,7 @@ collect_config() {
     done
     API_DOMAIN="api.${DOMAIN}"
     ADMIN_DOMAIN="admin.${DOMAIN}"
+    STORAGE_DOMAIN="storage.${DOMAIN}"
 
     # E-mail SSL
     while true; do
@@ -219,6 +220,8 @@ collect_config() {
     DB_PASSWORD=$(openssl rand -hex 32)
     SECRET_KEY=$(openssl rand -hex 64)
     RABBITMQ_PASS=$(openssl rand -hex 16)
+    MINIO_SECRET_KEY=$(openssl rand -hex 24)
+    MINIO_ACCESS_KEY="farmacia"
 
     # Resumo
     echo
@@ -226,6 +229,7 @@ collect_config() {
     echo -e "  ┌──────────────────────────────────────────────────┐"
     echo -e "  │  API:         ${CYAN}https://${API_DOMAIN}${NC}"
     echo -e "  │  Admin:       ${CYAN}https://${ADMIN_DOMAIN}${NC}"
+    echo -e "  │  Storage:     ${CYAN}https://${STORAGE_DOMAIN}${NC}"
     echo -e "  │  Admin email: ${CYAN}${ADMIN_EMAIL}${NC}"
     echo -e "  │  SSL e-mail:  ${CYAN}${SSL_EMAIL}${NC}"
     echo -e "  └──────────────────────────────────────────────────┘"
@@ -247,7 +251,7 @@ check_dns() {
 
     local all_ok=true
 
-    for fqdn in "${API_DOMAIN}" "${ADMIN_DOMAIN}"; do
+    for fqdn in "${API_DOMAIN}" "${ADMIN_DOMAIN}" "${STORAGE_DOMAIN}"; do
         local resolved
         resolved=$(dig +short "${fqdn}" 2>/dev/null | grep -E '^[0-9]+\.' | tail -1 || echo "")
 
@@ -264,8 +268,9 @@ check_dns() {
         warn "DNS ainda não propagado para um ou mais domínios."
         echo -e "  Configure no painel do seu registrador:"
         echo
-        echo -e "    ${BOLD}A   api.${DOMAIN}    →  ${server_ip}${NC}"
-        echo -e "    ${BOLD}A   admin.${DOMAIN}  →  ${server_ip}${NC}"
+        echo -e "    ${BOLD}A   api.${DOMAIN}      →  ${server_ip}${NC}"
+        echo -e "    ${BOLD}A   admin.${DOMAIN}    →  ${server_ip}${NC}"
+        echo -e "    ${BOLD}A   storage.${DOMAIN}  →  ${server_ip}${NC}"
         echo
         warn "A propagação pode levar até 48h (geralmente < 5 min na Cloudflare)."
         echo
@@ -337,6 +342,14 @@ LLM_TIMEOUT_SECONDS=30
 
 # ─── Grafana ─────────────────────────────────────────────────────────────────
 GRAFANA_PASSWORD='${GRAFANA_PASSWORD}'
+
+# ─── MinIO (object storage para mídia das ofertas) ───────────────────────────
+MINIO_ENDPOINT='minio:9000'
+MINIO_ACCESS_KEY='${MINIO_ACCESS_KEY}'
+MINIO_SECRET_KEY='${MINIO_SECRET_KEY}'
+MINIO_BUCKET='offers-media'
+MINIO_SECURE='false'
+MINIO_PUBLIC_URL='https://${STORAGE_DOMAIN}'
 EOF
 
     chmod 600 "${SCRIPT_DIR}/.env"
@@ -350,7 +363,7 @@ write_nginx_http() {
 # ─── Configuração temporária HTTP — emissão do certificado Let's Encrypt ──────
 server {
     listen 80;
-    server_name ${API_DOMAIN} ${ADMIN_DOMAIN};
+    server_name ${API_DOMAIN} ${ADMIN_DOMAIN} ${STORAGE_DOMAIN};
 
     # ACME challenge (Let's Encrypt)
     location /.well-known/acme-challenge/ {
@@ -371,7 +384,7 @@ EOF
 write_nginx_https() {
     cat > "${SCRIPT_DIR}/nginx/default.conf" << EOF
 # ─── Gerado por deploy.sh em $(date) ─────────────────────────────────────────
-# Domínios: ${API_DOMAIN}  |  ${ADMIN_DOMAIN}
+# Domínios: ${API_DOMAIN}  |  ${ADMIN_DOMAIN}  |  ${STORAGE_DOMAIN}
 
 # Rate limiting zones
 limit_req_zone \$binary_remote_addr zone=webhook:10m  rate=30r/m;
@@ -381,7 +394,7 @@ limit_req_zone \$binary_remote_addr zone=api_auth:10m rate=10r/m;
 # ── HTTP → HTTPS redirect + ACME renewal ─────────────────────────────────────
 server {
     listen 80;
-    server_name ${API_DOMAIN} ${ADMIN_DOMAIN};
+    server_name ${API_DOMAIN} ${ADMIN_DOMAIN} ${STORAGE_DOMAIN};
 
     location /.well-known/acme-challenge/ {
         root /var/www/certbot;
@@ -537,6 +550,50 @@ server {
         proxy_read_timeout    30s;
     }
 }
+
+# ── Storage (MinIO) — https://${STORAGE_DOMAIN} ──────────────────────────────
+# Serve as mídias das ofertas (imagens/áudios) por URL pública.
+# Brokers de canal (Z-API, WA Cloud, etc.) baixam direto daqui sem auth.
+server {
+    listen 443 ssl http2;
+    server_name ${STORAGE_DOMAIN};
+
+    # Reusa o certificado SAN emitido para o API_DOMAIN (cobre os 3 subdomínios)
+    ssl_certificate     /etc/letsencrypt/live/${API_DOMAIN}/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/${API_DOMAIN}/privkey.pem;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_ciphers         ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384;
+    ssl_session_cache   shared:SSL:10m;
+    ssl_session_timeout 1d;
+
+    add_header Strict-Transport-Security "max-age=63072000; includeSubDomains; preload" always;
+    add_header X-Content-Type-Options    nosniff                                         always;
+
+    # Permite upload via API; downloads não têm restrição (assets pequenos).
+    # 20MB folga acima do limite de 16MB de áudio.
+    client_max_body_size 20M;
+
+    resolver 127.0.0.11 valid=10s ipv6=off;
+
+    # Proxy direto para o MinIO (porta 9000 da S3 API).
+    # GET /<bucket>/<key> serve o arquivo público — a policy do bucket
+    # já libera s3:GetObject anônimo (definida em services/storage.py).
+    location / {
+        set \$upstream_minio minio:9000;
+        proxy_pass            http://\$upstream_minio;
+        proxy_http_version    1.1;
+        proxy_set_header      Host              \$host;
+        proxy_set_header      X-Real-IP         \$remote_addr;
+        proxy_set_header      X-Forwarded-For   \$proxy_add_x_forwarded_for;
+        proxy_set_header      X-Forwarded-Proto \$scheme;
+        proxy_connect_timeout 10s;
+        proxy_read_timeout    60s;
+
+        # MinIO retorna chunks grandes — desabilita buffering p/ streaming
+        proxy_buffering       off;
+        proxy_request_buffering off;
+    }
+}
 EOF
     success "Configuração HTTPS do nginx gerada"
 }
@@ -575,7 +632,7 @@ issue_ssl() {
     # garantindo que o container execute 'certonly' em vez de travar no loop.
     # Saída exibida no terminal (sem redirecionar) para diagnóstico em tempo real.
     # Timeout de 180s evita travamento se Let's Encrypt não responder.
-    info "Solicitando certificado para: ${API_DOMAIN}, ${ADMIN_DOMAIN}"
+    info "Solicitando certificado para: ${API_DOMAIN}, ${ADMIN_DOMAIN}, ${STORAGE_DOMAIN}"
     timeout 180 docker compose -f "${SCRIPT_DIR}/docker-compose.yml" \
         run --rm --entrypoint certbot certbot certonly \
         --webroot \
@@ -587,6 +644,7 @@ issue_ssl() {
         --non-interactive \
         -d "${API_DOMAIN}" \
         -d "${ADMIN_DOMAIN}" \
+        -d "${STORAGE_DOMAIN}" \
         || error "Falha ao emitir certificado. Verifique: (1) DNS apontado, (2) porta 80 aberta na nuvem, (3) logs em ${LOG_FILE}"
 
     success "Certificado SSL emitido com sucesso!"
@@ -681,10 +739,12 @@ save_credentials() {
 
 📊  Monitoramento — acessar via SSH Tunnel
 ──────────────────────────────────────────────────────────────────────
-  Comando:    ssh -L 3000:localhost:3000 -L 15672:localhost:15672 user@${server_ip:-SERVER_IP}
+  Comando:    ssh -L 3000:localhost:3000 -L 15672:localhost:15672 -L 9001:localhost:9001 user@${server_ip:-SERVER_IP}
   Grafana:    http://localhost:3000    (admin / ${GRAFANA_PASSWORD})
   RabbitMQ:   http://localhost:15672  (farmacia / ${RABBITMQ_PASS})
   Prometheus: http://localhost:9090
+  MinIO:      http://localhost:9001   (${MINIO_ACCESS_KEY} / ${MINIO_SECRET_KEY})
+  Storage:    https://${STORAGE_DOMAIN}  (URLs públicas das mídias)
 
 🔗  Integração com Gateway WhatsApp (WAHA / Uazapi / Evolution API)
 ──────────────────────────────────────────────────────────────────────
@@ -727,6 +787,7 @@ EOF
     echo -e "    Webhook API:   ${BOLD}https://${API_DOMAIN}/webhook/{tenant_id}${NC}"
     echo -e "    Painel Admin:  ${BOLD}https://${ADMIN_DOMAIN}${NC}"
     echo -e "    Swagger:       ${BOLD}https://${API_DOMAIN}/docs${NC}"
+    echo -e "    Storage:       ${BOLD}https://${STORAGE_DOMAIN}/{bucket}/{key}${NC}"
     echo
     echo -e "  ${CYAN}${BOLD}Próximos passos:${NC}"
     echo    "    1. Verifique o DNS se ainda não configurou:"

@@ -30,6 +30,40 @@ async def get_callback_url(tenant_id: str) -> str | None:
     return row["callback_url"]
 
 
+async def get_active_channel_config(tenant_id: str) -> dict | None:
+    """Retorna o handoff_config (canal ativo + provider) do PRIMEIRO canal
+    ativo do tenant. None se não houver. Usado para resolver provider de
+    envio de mídia em uso PROATIVO (jobs).
+
+    Dentro do worker per-message, prefira usar a integração já carregada
+    em escopo (já tem o handoff_config). Esta função evita um SELECT extra.
+    """
+    async with get_db_conn() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT handoff_config
+              FROM public.tenant_channels
+             WHERE tenant_id = $1
+               AND active = TRUE
+               AND handoff_config IS NOT NULL
+               AND handoff_config != '{}'::jsonb
+             ORDER BY created_at
+             LIMIT 1
+            """,
+            tenant_id,
+        )
+    if not row or not row["handoff_config"]:
+        return None
+    cfg = row["handoff_config"]
+    if isinstance(cfg, str):
+        import json as _json
+        try:
+            return _json.loads(cfg) or None
+        except Exception:
+            return None
+    return dict(cfg) if cfg else None
+
+
 async def send_proactive_message(
     tenant_id: str,
     phone: str,

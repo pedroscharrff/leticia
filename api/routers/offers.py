@@ -12,13 +12,19 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Annotated
 
+import asyncio
+
 import structlog
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, Depends, HTTPException, Response, UploadFile, File
 from pydantic import BaseModel, Field
 
 from db.postgres import get_db_conn
 from security import require_tenant_user, TenantUserContext
 from services.audit import log_event
+from services.storage import (
+    StorageError, upload_offer_media, classify_mime,
+    MAX_IMAGE_BYTES, MAX_AUDIO_BYTES,
+)
 
 log = structlog.get_logger()
 router = APIRouter(prefix="/portal/offers", tags=["portal:offers"])
@@ -51,11 +57,16 @@ class OfferOut(BaseModel):
     valid_until: datetime | None
     priority:    int
     active:      bool
+    media_type:  str | None = None
+    media_url:   str | None = None
+    media_mime:  str | None = None
     created_at:  datetime
     updated_at:  datetime
 
 
 def _row(r) -> OfferOut:
+    # Após a migration 037, todas as queries SELECT * trazem media_*.
+    keys = set(r.keys())
     return OfferOut(
         id=str(r["id"]),
         title=r["title"],
@@ -64,6 +75,9 @@ def _row(r) -> OfferOut:
         valid_until=r["valid_until"],
         priority=int(r["priority"] or 0),
         active=bool(r["active"]),
+        media_type=r["media_type"] if "media_type" in keys else None,
+        media_url=r["media_url"]  if "media_url"  in keys else None,
+        media_mime=r["media_mime"] if "media_mime" in keys else None,
         created_at=r["created_at"],
         updated_at=r["updated_at"],
     )
@@ -190,3 +204,92 @@ async def delete_offer(offer_id: str, user: TenantUser) -> Response:
         tenant_id=user.tenant_id, target=offer_id, meta={},
     )
     return Response(status_code=204)
+
+
+# ── Mídia da oferta (imagem OU áudio) ───────────────────────────────────────
+
+_MAX_UPLOAD_BYTES = max(MAX_IMAGE_BYTES, MAX_AUDIO_BYTES)
+
+
+@router.post("/{offer_id}/media", response_model=OfferOut)
+async def upload_media(
+    offer_id: str,
+    user: TenantUser,
+    file: UploadFile = File(...),
+) -> OfferOut:
+    """Upload de imagem (jpg/png/webp) ou áudio (mp3/ogg/m4a/aac) para a
+    oferta. Substitui mídia existente (sobrescreve as colunas, não apaga o
+    arquivo antigo do bucket — cleanup futuro).
+    """
+    user.assert_role("manager")
+
+    data = await file.read()
+    if not data:
+        raise HTTPException(status_code=422, detail="Arquivo vazio.")
+    if len(data) > _MAX_UPLOAD_BYTES:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Arquivo acima do limite ({_MAX_UPLOAD_BYTES // (1024*1024)} MB).",
+        )
+    mime = file.content_type or ""
+
+    # Validação de MIME antes de subir (rápido, evita gastar MinIO)
+    try:
+        classify_mime(mime)
+    except StorageError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc))
+
+    # Upload é blocking (minio SDK), roda em thread
+    try:
+        public_url, media_type, _key = await asyncio.to_thread(
+            upload_offer_media, user.tenant_id, data, mime,
+        )
+    except StorageError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc))
+
+    async with get_db_conn() as conn:
+        row = await conn.fetchrow(
+            """
+            UPDATE public.offers
+               SET media_type = $1, media_url = $2, media_mime = $3,
+                   updated_at = NOW()
+             WHERE id = $4 AND tenant_id = $5
+             RETURNING *
+            """,
+            media_type, public_url, mime, offer_id, user.tenant_id,
+        )
+    if not row:
+        raise HTTPException(status_code=404, detail="Oferta não encontrada")
+
+    await log_event(
+        action="offer.media_upload",
+        actor_id=user.email, actor_type="user",
+        tenant_id=user.tenant_id, target=offer_id,
+        meta={"media_type": media_type, "mime": mime, "size": len(data)},
+    )
+    return _row(row)
+
+
+@router.delete("/{offer_id}/media", response_model=OfferOut)
+async def delete_media(offer_id: str, user: TenantUser) -> OfferOut:
+    """Limpa mídia da oferta (deixa o arquivo no bucket — cleanup futuro)."""
+    user.assert_role("manager")
+    async with get_db_conn() as conn:
+        row = await conn.fetchrow(
+            """
+            UPDATE public.offers
+               SET media_type = NULL, media_url = NULL, media_mime = NULL,
+                   updated_at = NOW()
+             WHERE id = $1 AND tenant_id = $2
+             RETURNING *
+            """,
+            offer_id, user.tenant_id,
+        )
+    if not row:
+        raise HTTPException(status_code=404, detail="Oferta não encontrada")
+    await log_event(
+        action="offer.media_delete",
+        actor_id=user.email, actor_type="user",
+        tenant_id=user.tenant_id, target=offer_id, meta={},
+    )
+    return _row(row)

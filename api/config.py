@@ -80,6 +80,17 @@ class Settings(BaseSettings):
     media_max_audio_bytes: int = 16 * 1024 * 1024   # 16 MB
     media_max_image_bytes: int = 5 * 1024 * 1024    # 5 MB
 
+    # MinIO / S3-compatible object storage (mídia de ofertas, etc.)
+    # Em prod, MINIO_PUBLIC_URL deve apontar para a URL externa pública do bucket
+    # (ex.: https://media.farmacia.io) — é o que vai no body das mensagens enviadas
+    # aos providers de canal (que precisam baixar a URL).
+    minio_endpoint:    str  = "minio:9000"     # host:port interno (cliente Python)
+    minio_access_key:  str  = "farmacia"
+    minio_secret_key:  str  = ""
+    minio_bucket:      str  = "offers-media"
+    minio_secure:      bool = False             # True = HTTPS no cliente interno
+    minio_public_url:  str  = "http://localhost:9000"  # base URL para os assets servidos
+
     # External medication/bulas API (used by farmaceutico tool-skill)
     bulas_api_base_url: str = ""
     bulas_api_key: str = ""
