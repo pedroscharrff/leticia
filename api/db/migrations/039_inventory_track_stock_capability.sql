@@ -1,14 +1,19 @@
 -- ─────────────────────────────────────────────────────────────────────────────
 -- Capability: inventory.track_stock
 --
--- Controla se o agente vai informar QUANTIDADE em estoque ao cliente. Em
--- farmácias que mantêm o catálogo via Sheets/Excel/CSV, o campo `stock_qty`
--- frequentemente fica zerado (a planilha não tem coluna de estoque). Quando
--- essa capability está OFF, o `buscar_produto` apenas informa "disponível" se
--- o produto existe no catálogo, sem mencionar quantidade.
+-- Controla se o AGENTE recebe a quantidade em estoque do produto na consulta
+-- ao catálogo. Em farmácias com integração em tempo real (ERP/PDV via REST/SQL),
+-- a quantidade é confiável e ajuda o agente a tomar decisões internas:
+--   • sugerir genérico quando estoque baixo
+--   • limitar quantidade no carrinho
+--   • alertar balconista quando produto está perto de zerar
 --
--- Ativar SÓ quando a fonte do estoque é confiável (integração com PDV/ERP em
--- tempo real).
+-- IMPORTANTE: mesmo quando ATIVA, o agente é instruído a NUNCA citar o número
+-- ao cliente final. Para o cliente, a resposta é sempre "tem" ou "não tem".
+-- A quantidade é informação interna para decisões do bot.
+--
+-- Em farmácias com catálogo via Sheets/Excel/CSV (estoque não-autoritativo),
+-- esta capability deve ficar OFF — o agente sabe apenas se o produto existe.
 -- ─────────────────────────────────────────────────────────────────────────────
 
 INSERT INTO public.capability_catalog
@@ -17,25 +22,29 @@ INSERT INTO public.capability_catalog
      default_enabled, status, icon, sort_order)
 VALUES
 ('inventory.track_stock',
- 'Mostrar quantidade em estoque',
+ 'Quantidade em estoque para o agente',
  'vendas',
- 'O robô informa quantas unidades têm em estoque do produto consultado. Só ative se o estoque é atualizado em tempo real.',
- $md$**Como funciona**
-Quando ATIVO, a tool `buscar_produto` informa ao cliente "X unidades em estoque" junto com o preço. Útil para farmácias com integração via REST/SQL com o PDV, onde o estoque é confiável.
+ 'O agente passa a conhecer a quantidade em estoque (para decisões internas como sugerir alternativa quando baixo). O cliente continua vendo apenas "tem" ou "não tem".',
+ $md$**O que muda**
+Quando ATIVA, a tool interna `buscar_produto` retorna ao agente o nome, preço E a quantidade em estoque do produto. O agente usa esse dado para **decisões internas**:
+- Sugerir um genérico ou marca alternativa quando o estoque está baixo
+- Limitar a quantidade que o cliente pode adicionar ao carrinho
+- Avisar internamente o balconista que um SKU está zerando
 
-Quando DESATIVADO (padrão), a tool só responde "disponível" — informa que o produto está no catálogo sem citar quantidade. Esse é o modo recomendado para quem mantém o catálogo via Sheets/Excel/CSV, onde a coluna de estoque costuma estar zerada ou desatualizada.
+**O cliente NUNCA vê o número.** O bot é instruído a responder ao cliente apenas com "temos sim" ou "esse não temos" — independentemente desta capability estar ON ou OFF. A diferença é só na qualidade da decisão do agente.
 
 **Quando ativar**
-- Você tem integração via REST API ou SQL com seu PDV
-- Os syncs rodam várias vezes ao dia
-- Não tem risco de o bot vender produto que acabou no balcão
+- Você integra o catálogo via REST API ou SQL direto com seu PDV/ERP
+- O estoque é atualizado a cada poucos minutos
+- Você quer que o bot evite oferecer produtos quase esgotados
 
-**Quando NÃO ativar**
-- Catálogo via Google Sheets / Excel / CSV (estoque não é autoritativo)
-- Atualizações esporádicas
-- Balconista valida disponibilidade antes de fechar
+**Quando NÃO ativar (default)**
+- Catálogo via Google Sheets / Excel / CSV
+- Coluna de estoque inexistente, zerada ou desatualizada
+- Balconista valida disponibilidade no momento de fechar
+- Você quer o comportamento mais conservador: bot só sabe "tem ou não tem"
 $md$,
- 'Aumenta confiança no checkout',
+ 'Decisões mais inteligentes do agente',
  'basic', '{}', '{}',
  '{}'::jsonb,
  '{}'::jsonb,

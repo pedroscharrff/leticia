@@ -17,10 +17,11 @@ def make_inventory_tool(schema_name: str, tenant_id: str | None = None):
     """
     Factory — retorna uma tool com o schema do tenant injetado via closure.
 
-    Quando a capability `inventory.track_stock` está OFF (default), a tool
-    NÃO menciona a quantidade em estoque — apenas "disponível" para produtos
-    cadastrados. Isso evita confusão em catálogos via Sheets/Excel/CSV onde
-    a coluna stock_qty fica zerada por padrão.
+    A tool sempre responde ao agente com "disponível" para produtos que
+    existem no catálogo. Quando a capability `inventory.track_stock` está ON
+    (modo ERP/PDV), inclui ADICIONALMENTE um bloco [INTERNO: X un] para o
+    agente usar em decisões — mas o agente é instruído a NÃO citar o número
+    ao cliente. O cliente sempre vê apenas "tem" ou "não tem".
     """
     @tool
     async def buscar_produto(nome: str) -> str:
@@ -33,7 +34,7 @@ def make_inventory_tool(schema_name: str, tenant_id: str | None = None):
             nome: Nome do produto, medicamento ou categoria a buscar.
         """
         # Capability: tracking de estoque (default OFF — modo Sheets/CSV).
-        # Falha fechada: se a checagem quebrar, assume OFF e esconde quantidade.
+        # Falha fechada: se a checagem quebrar, assume OFF.
         track_stock = False
         try:
             from services import capabilities as cap_svc
@@ -68,13 +69,22 @@ def make_inventory_tool(schema_name: str, tenant_id: str | None = None):
 
             lines = []
             for r in rows:
+                # Visível ao cliente: SEMPRE "disponível" — nunca quantidade.
+                base = f"• {r['name']} — R$ {r['price']:.2f} (disponível)"
+                # Bloco interno: aparece para o agente APENAS quando track_stock ON.
                 if track_stock and r["stock_qty"] is not None:
-                    qty_info = f"{r['stock_qty']} {r['unit']}"
-                else:
-                    qty_info = "disponível"
-                lines.append(f"• {r['name']} — R$ {r['price']:.2f} ({qty_info})")
+                    base += f"  [INTERNO: {r['stock_qty']} {r['unit']} — NÃO cite este número ao cliente]"
+                lines.append(base)
 
-            return "Produtos encontrados:\n" + "\n".join(lines)
+            header = "Produtos encontrados:\n"
+            if track_stock:
+                header += (
+                    "[INSTRUÇÃO INTERNA: blocos [INTERNO:...] são privados do agente "
+                    "para decisões internas (sugerir alternativa, limitar qty). "
+                    "JAMAIS repita esses números ao cliente — para ele, sempre "
+                    "responda apenas 'temos' ou 'não temos'.]\n"
+                )
+            return header + "\n".join(lines)
 
         except Exception as exc:
             log.warning("tool.buscar_produto.error", nome=nome, exc=str(exc))
