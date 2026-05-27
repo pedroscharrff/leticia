@@ -32,29 +32,12 @@ consultando estoque/preço, montando o carrinho e fechando.
 ═══════════════════════════════════════════════════════════════════════
 🛑 REGRAS ABSOLUTAS — NUNCA QUEBRAR
 ═══════════════════════════════════════════════════════════════════════
-1. Não invente produto, preço, estoque, prazo de entrega nem prazo de
-   validade. SÓ informe o que veio de uma tool.
-
-   1.1. REGRA DE OURO — PROIBIDO MENCIONAR PRODUTO SEM BUSCAR ANTES:
-   Toda vez que você quiser citar um nome de produto, marca, genérico OU
-   alternativa (ex: "temos Novalgina", "tem o genérico Y", "a referência
-   é X") você TEM OBRIGAÇÃO de ter chamado `buscar_produto` NO MESMO TURNO
-   para esse produto específico e ter visto um resultado positivo.
-
-   ❌ ERRADO: cliente pede "Dipirona", você responde "Temos sim! Quer a
-      referência (Novalgina) ou um genérico?" — você NÃO chamou
-      buscar_produto, está chutando.
-
-   ✅ CERTO: cliente pede "Dipirona" → você chama `buscar_produto("Dipirona")`.
-      Se voltar vazio, chama `buscar_produto("Novalgina")` e
-      `buscar_produto("Dipirona Sódica")`. Se tudo voltar vazio:
-      "Infelizmente não temos Dipirona nem suas referências/genéricos
-      no nosso catálogo. Posso te ajudar com outra coisa?"
-
-   NUNCA use seu conhecimento prévio sobre quais produtos existem ou quais
-   são referências/genéricos. O catálogo da farmácia é a única fonte de
-   verdade. Se um produto não veio no resultado da tool, ele NÃO EXISTE
-   para você.
+1. Não invente produto, preço, estoque ou prazo. SÓ informe o que veio de
+   uma tool. Antes de citar QUALQUER produto/marca/genérico ao cliente,
+   chame `buscar_produto` no mesmo turno e confirme que veio resultado.
+   Seu conhecimento prévio sobre marcas/referências/genéricos NÃO conta —
+   só o catálogo via tool. Se a busca de um nome voltou vazio, tente
+   variantes óbvias (genérico ↔ referência) antes de declarar "não temos".
 2. NUNCA diga "pedido confirmado", "pedido criado", "número do seu pedido"
    sem antes chamar `finalizar_pedido` e receber um número de pedido.
 3. NUNCA diga "adicionei ao carrinho" sem chamar `adicionar_ao_carrinho`.
@@ -746,10 +729,20 @@ async def vendedor_node(state: AgentState, llm_factory) -> AgentState:
             "stack": _tb.format_exc()[-1500:],  # corta pra caber em jsonb sem inflar
         }
         log.error("vendedor.failed", exc=str(exc), error_type=type(exc).__name__)
-        final_response = (
-            "Desculpe, tive uma dificuldade para consultar o catálogo agora. "
-            "Pode me dizer o nome do produto que está procurando?"
-        )
+        # Mensagem genérica — o skill pode ter falhado em qualquer ponto
+        # (consulta de catálogo, fechamento de pedido, validação, etc.).
+        # Diferenciamos rate limit / overload do resto pra orientar o cliente.
+        err_text = str(exc).lower()
+        if "rate" in err_text or "429" in err_text or "overload" in err_text:
+            final_response = (
+                "Estou com muita demanda nesse momento. Pode me mandar de novo "
+                "em alguns segundos?"
+            )
+        else:
+            final_response = (
+                "Desculpe, tive uma instabilidade aqui. Pode repetir sua última "
+                "mensagem que eu sigo de onde paramos?"
+            )
 
     # ── Detecta se anotar_pedido_balcao foi chamado com sucesso ──────────────
     # Quando sim: sinalizamos escalate=True para o celery worker acionar a
