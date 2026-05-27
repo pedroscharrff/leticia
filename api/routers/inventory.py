@@ -424,7 +424,8 @@ async def catalog_health(user: TenantUser, days: int = Query(30, ge=1, le=180)) 
         last_sync = await conn.fetchrow(
             """
             SELECT connector, created_at, status, records_in, records_upd,
-                   records_deactivated, errors, duration_ms
+                   errors, duration_ms,
+                   0 AS records_deactivated
             FROM inventory_sync_log
             ORDER BY created_at DESC
             LIMIT 1
