@@ -109,6 +109,16 @@ async def _upsert_product(conn, product: dict, source: str) -> None:
     if isinstance(stock_qty, str):
         stock_qty = _parse_int(stock_qty)
 
+    # Garante SKU idempotente: planilhas sem coluna SKU geravam duplicatas
+    # porque ON CONFLICT (sku) trata NULL como sempre-novo. Quando sku vem
+    # vazio, sintetizamos um slug determinístico a partir do nome + source.
+    sku = product.get("sku")
+    if not sku and product.get("name"):
+        sku = f"{source}:{_slugify(product['name'])}"
+    elif not sku:
+        # sem nome nem sku — pula esse registro
+        return
+
     await conn.execute(
         """
         INSERT INTO products (sku, name, brand, category, description, price, stock_qty, unit, barcode, source, tags, meta)
@@ -119,7 +129,7 @@ async def _upsert_product(conn, product: dict, source: str) -> None:
             unit=EXCLUDED.unit, barcode=EXCLUDED.barcode, tags=EXCLUDED.tags,
             meta=EXCLUDED.meta, source=EXCLUDED.source, active=TRUE, updated_at=NOW()
         """,
-        product.get("sku"), product.get("name", ""), product.get("brand"),
+        sku, product.get("name", ""), product.get("brand"),
         product.get("category"), product.get("description"), price,
         stock_qty or 0, product.get("unit", "un"), product.get("barcode"),
         source, product.get("tags", []) or [], json.dumps(product.get("meta", {})),
@@ -167,6 +177,14 @@ def _parse_int(v: Any) -> int:
         return int(float(str(v).strip().replace(",", ".")))
     except ValueError:
         return 0
+
+
+def _slugify(s: str) -> str:
+    """Slug ASCII determinístico a partir do nome do produto, p/ usar como SKU sintético."""
+    import unicodedata
+    s = unicodedata.normalize("NFKD", str(s)).encode("ascii", "ignore").decode().lower()
+    s = re.sub(r"[^a-z0-9]+", "-", s).strip("-")
+    return s[:80] or "sem-nome"
 
 
 # ── REST API Connector ────────────────────────────────────────────────────────
@@ -342,14 +360,6 @@ class GoogleSheetsConnector(InventoryConnector):
                     break  # sucesso!
                 attempt_errors.append(f"{label}: 0 linhas no CSV")
 
-        # Se o usuário não definiu mapping, aplica auto-detect pelos cabeçalhos.
-        # Assim quem usa o atalho "Conectar Google Sheets" sem passar pelo preview
-        # também acerta os campos quando as colunas seguem nomes comuns (PT-BR).
-        if rows and not mapping:
-            mapping = suggest_mapping(list(rows[0].keys()))
-            log.info("inventory.google_sheets.auto_mapping",
-                     mapping=mapping, headers=list(rows[0].keys()))
-
         if not rows:
             raise RuntimeError(
                 "Não consegui ler a planilha por nenhuma estratégia disponível. "
@@ -360,7 +370,24 @@ class GoogleSheetsConnector(InventoryConnector):
                 f"Tentativas: {' | '.join(attempt_errors)}"
             )
 
-        return [_apply_mapping(r, mapping) for r in rows]
+        # Se o usuário não definiu mapping, aplica auto-detect pelos cabeçalhos.
+        # Assim quem usa o atalho "Conectar Google Sheets" sem passar pelo preview
+        # também acerta os campos quando as colunas seguem nomes comuns (PT-BR).
+        extras: list[str] = []
+        if not mapping:
+            headers = list(rows[0].keys())
+            mapping = suggest_mapping(headers)
+            mapped_cols = set(mapping.values())
+            # Atributos do produto (Formato, Dosagem, Apresentação, etc) que não
+            # foram mapeados a nenhum campo interno viram parte da description.
+            extras = [
+                h for h in headers
+                if h and h not in mapped_cols and _is_attribute_column(h)
+            ]
+            log.info("inventory.google_sheets.auto_mapping",
+                     mapping=mapping, headers=headers, extras=extras)
+
+        return [_enrich_description(r, mapping, extras) for r in rows]
 
 
 _SHEET_ID_RE = re.compile(r"/spreadsheets/d/(?:e/)?([a-zA-Z0-9-_]+)")
@@ -475,7 +502,7 @@ _FIELD_HINTS: dict[str, list[str]] = {
     "name":            [r"^nome$", r"^name$", r"descricao[._-]?produto", r"^produto$", r"desc[._-]?prod", r"nm[._-]?prod"],
     "brand":           [r"^marca$", r"^brand$"],
     "category":        [r"categoria", r"^category$", r"^grupo$", r"departamento"],
-    "description":     [r"^descricao$", r"^description$", r"observac", r"dosagem", r"formato"],
+    "description":     [r"^descricao$", r"^description$", r"observac"],
     # price: pega "preco", "preco_promocional", "vl_venda", "valor_venda", "preco_de_venda", etc.
     "price":           [r"preco", r"^price$", r"vl[._-]?venda", r"valor", r"vlr"],
     "stock_qty":       [r"^estoque$", r"qtd[._-]?estoque", r"^qtde$", r"^quantidade$", r"^saldo$", r"^stock$"],
@@ -483,6 +510,35 @@ _FIELD_HINTS: dict[str, list[str]] = {
     "principio_ativo": [r"principio[._-]?ativo", r"active[._-]?ingredient"],
     "fabricante":      [r"fabricante", r"laboratorio", r"^lab$"],
 }
+
+
+_ATTRIBUTE_PATTERNS = [
+    r"formato", r"dosagem", r"apresentacao", r"sabor", r"volume",
+    r"peso", r"tamanho", r"cor", r"miligramas", r"^mg$",
+]
+
+
+def _is_attribute_column(header: str) -> bool:
+    """Detecta colunas que descrevem atributos do produto (úteis para enriquecer a description)."""
+    norm = _normalize(header)
+    return any(re.search(p, norm) for p in _ATTRIBUTE_PATTERNS)
+
+
+def _enrich_description(row: dict, mapping: dict, extras: list[str]) -> dict:
+    """Aplica mapping e (se houver extras) concatena valores na description."""
+    mapped = _apply_mapping(row, mapping)
+    if not extras:
+        return mapped
+    parts = []
+    if mapped.get("description"):
+        parts.append(str(mapped["description"]).strip())
+    for col in extras:
+        val = row.get(col)
+        if val is not None and str(val).strip():
+            parts.append(f"{col}: {val}")
+    if parts:
+        mapped["description"] = " | ".join(parts)
+    return mapped
 
 
 def suggest_mapping(headers: list[str]) -> dict[str, str]:
