@@ -18,7 +18,7 @@ INSERT INTO public.capability_catalog
 VALUES
 ('inventory.track_stock',
  'Mostrar quantidade em estoque',
- 'estoque',
+ 'vendas',
  'O robô informa quantas unidades têm em estoque do produto consultado. Só ative se o estoque é atualizado em tempo real.',
  $md$**Como funciona**
 Quando ATIVO, a tool `buscar_produto` informa ao cliente "X unidades em estoque" junto com o preço. Útil para farmácias com integração via REST/SQL com o PDV, onde o estoque é confiável.
