@@ -80,6 +80,10 @@ class InventoryConnector:
         log.info("inventory.sync", tenant=tenant_id, source=self.source,
                  records_in=records_in, records_upd=records_upd,
                  records_deactivated=records_deactivated, errors=len(errors))
+        # Loga cada erro individualmente para aparecer no stdout/docker logs
+        for err_msg in errors:
+            log.warning("inventory.sync.error_detail",
+                        tenant=tenant_id, source=self.source, error=err_msg)
         return {
             "status": status,
             "records_in": records_in,

@@ -139,10 +139,14 @@ export function PortalEstoque() {
       const result = pendingKind === "csv"
         ? await importProductsCsv(previewFile, mapping)
         : await importProductsXlsx(previewFile, { mapping });
-      setImportMsg(
-        `Importados: ${result.records_upd} de ${result.records_in}` +
-        (result.errors.length ? ` (${result.errors.length} erros)` : ""),
-      );
+      if (result.errors?.length) {
+        setImportMsg(
+          `Importados: ${result.records_upd} de ${result.records_in}. ` +
+          `Primeiro erro: ${result.errors[0]}`,
+        );
+      } else {
+        setImportMsg(`Importados: ${result.records_upd} de ${result.records_in}.`);
+      }
       setPreviewFile(null);
       setPreview(null);
       load();
@@ -176,12 +180,16 @@ export function PortalEstoque() {
         deactivate_missing: sheetsDeactivate,
         sync_now: true,
       });
-      setImportMsg(
-        `Google Sheets sincronizado: ${result.records_upd} de ${result.records_in}` +
-        (result.records_deactivated ? ` · ${result.records_deactivated} desativados` : "") +
-        (result.errors.length ? ` (${result.errors.length} erros)` : ""),
-      );
-      setShowSheetsModal(false);
+      if (result.errors?.length) {
+        // Mostra o primeiro erro completo (geralmente é o que importa).
+        setImportMsg(`Erro do Google Sheets: ${result.errors[0]}`);
+      } else {
+        setImportMsg(
+          `Google Sheets sincronizado: ${result.records_upd} de ${result.records_in}` +
+          (result.records_deactivated ? ` · ${result.records_deactivated} desativados` : ""),
+        );
+        setShowSheetsModal(false);
+      }
       load();
     } catch (err: any) {
       setImportMsg(`Erro: ${err?.response?.data?.detail ?? err.message}`);
