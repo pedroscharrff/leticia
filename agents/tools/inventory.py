@@ -7,6 +7,7 @@ Tools de inventário e vendas usadas pelo skill vendedor:
 from __future__ import annotations
 
 import json
+import re
 import structlog
 from langchain_core.tools import tool
 
