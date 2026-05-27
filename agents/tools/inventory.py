@@ -13,9 +13,14 @@ from langchain_core.tools import tool
 log = structlog.get_logger()
 
 
-def make_inventory_tool(schema_name: str):
+def make_inventory_tool(schema_name: str, tenant_id: str | None = None):
     """
     Factory — retorna uma tool com o schema do tenant injetado via closure.
+
+    Quando a capability `inventory.track_stock` está OFF (default), a tool
+    NÃO menciona a quantidade em estoque — apenas "disponível" para produtos
+    cadastrados. Isso evita confusão em catálogos via Sheets/Excel/CSV onde
+    a coluna stock_qty fica zerada por padrão.
     """
     @tool
     async def buscar_produto(nome: str) -> str:
@@ -27,13 +32,22 @@ def make_inventory_tool(schema_name: str):
         Args:
             nome: Nome do produto, medicamento ou categoria a buscar.
         """
+        # Capability: tracking de estoque (default OFF — modo Sheets/CSV).
+        # Falha fechada: se a checagem quebrar, assume OFF e esconde quantidade.
+        track_stock = False
+        try:
+            from services import capabilities as cap_svc
+            track_stock = await cap_svc.is_enabled(tenant_id, "inventory.track_stock")
+        except Exception as _exc:  # noqa: BLE001
+            log.warning("tool.buscar_produto.cap_check_failed", exc=str(_exc))
+
         try:
             from db.postgres import get_db_conn
             async with get_db_conn() as conn:
                 await conn.execute(f"SET search_path = {schema_name}, public")
                 rows = await conn.fetch(
                     """
-                    SELECT name, price, stock_qty, unit, active, principio_ativo, fabricante
+                    SELECT name, price, stock_qty, unit, active, principio_ativo, fabricante, source
                     FROM products
                     WHERE active = TRUE
                       AND (
@@ -54,7 +68,10 @@ def make_inventory_tool(schema_name: str):
 
             lines = []
             for r in rows:
-                qty_info = f"{r['stock_qty']} {r['unit']}" if r["stock_qty"] is not None else "disponível"
+                if track_stock and r["stock_qty"] is not None:
+                    qty_info = f"{r['stock_qty']} {r['unit']}"
+                else:
+                    qty_info = "disponível"
                 lines.append(f"• {r['name']} — R$ {r['price']:.2f} ({qty_info})")
 
             return "Produtos encontrados:\n" + "\n".join(lines)

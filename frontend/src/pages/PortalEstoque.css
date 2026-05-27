@@ -24,3 +24,27 @@
 .muted { color: var(--color-secondary); font-size: 13px; margin-bottom: 12px; }
 details { margin-top: 12px; }
 details > summary { cursor: pointer; font-size: 13px; color: var(--color-secondary); padding: 6px 0; }
+
+/* Catálogo Saúde — KPIs */
+.kpi-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; margin-bottom: 24px; }
+.kpi-card { background: var(--color-surface); border: 1px solid var(--color-border); border-radius: 12px; padding: 16px; }
+.kpi-label { font-size: 12px; color: var(--color-secondary); margin-bottom: 6px; }
+.kpi-value { font-size: 24px; font-weight: 700; line-height: 1.2; }
+.kpi-sub { font-size: 11px; color: var(--color-secondary); margin-top: 4px; }
+
+/* Seções */
+.catalog-section { margin-bottom: 32px; }
+.section-title { font-size: 16px; font-weight: 700; margin-bottom: 8px; }
+
+/* Mini gráfico de barras */
+.bars-row { display: flex; gap: 8px; align-items: flex-end; height: 160px; padding: 12px; background: var(--color-surface); border: 1px solid var(--color-border); border-radius: 12px; overflow-x: auto; }
+.bar-col { display: flex; flex-direction: column; align-items: center; gap: 4px; min-width: 36px; }
+.bar-wrap { display: flex; flex-direction: column-reverse; height: 130px; width: 24px; }
+.bar { width: 100%; min-height: 1px; }
+.bar--green { background: #16a34a; }
+.bar--gray  { background: #94a3b8; }
+.bar-label { font-size: 10px; color: var(--color-secondary); }
+.bars-legend { display: flex; gap: 16px; margin-top: 8px; font-size: 12px; color: var(--color-secondary); align-items: center; }
+.legend-swatch { display: inline-block; width: 12px; height: 12px; border-radius: 2px; margin-right: 4px; vertical-align: middle; }
+.legend-swatch--green { background: #16a34a; }
+.legend-swatch--gray  { background: #94a3b8; }

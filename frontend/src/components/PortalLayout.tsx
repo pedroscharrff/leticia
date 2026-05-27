@@ -51,6 +51,7 @@ const NAV_SECTIONS: NavSection[] = [
     icon: "🛒",
     items: [
       { path: "/portal/estoque",      label: "Produtos & Estoque",   icon: "📦", key: "estoque"     },
+      { path: "/portal/catalogo-saude", label: "Saúde do Catálogo",  icon: "📊", key: "catalogo-saude" },
       { path: "/portal/recursos",     label: "Recursos do seu Robô", icon: "🧩", key: "recursos"    },
       { path: "/portal/entregas",     label: "Frete & Entrega",      icon: "🚚", key: "entregas"    },
       { path: "/portal/ofertas",      label: "Ofertas",              icon: "🏷️", key: "ofertas"     },

@@ -17,6 +17,7 @@ import { PortalLogs }       from "./pages/PortalLogs";
 // PortalIntegracao foi descontinuada — seu conteúdo virou bloco em PortalCanais
 import { PortalBilling }    from "./pages/PortalBilling";
 import { PortalEstoque }    from "./pages/PortalEstoque";
+import { PortalCatalogoSaude } from "./pages/PortalCatalogoSaude";
 import { PortalClientes }   from "./pages/PortalClientes";
 import { PortalCanais }     from "./pages/PortalCanais";
 import { PortalTraces }    from "./pages/PortalTraces";
@@ -69,6 +70,7 @@ export function App() {
       <Route path="/portal/skills"     element={<TenantRoute><PortalSkills /></TenantRoute>} />
       <Route path="/portal/canais"     element={<TenantRoute><PortalCanais /></TenantRoute>} />
       <Route path="/portal/estoque"    element={<TenantRoute><PortalEstoque /></TenantRoute>} />
+      <Route path="/portal/catalogo-saude" element={<TenantRoute><PortalCatalogoSaude /></TenantRoute>} />
       <Route path="/portal/clientes"   element={<TenantRoute><PortalClientes /></TenantRoute>} />
       <Route path="/portal/clientes/:id" element={<TenantRoute><PortalClienteDetalhe /></TenantRoute>} />
       <Route path="/portal/logs"       element={<TenantRoute><PortalLogs /></TenantRoute>} />

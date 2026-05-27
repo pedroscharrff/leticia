@@ -405,3 +405,136 @@ async def connector_logs(connector_type: str, user: TenantUser, limit: int = 20)
             connector_type, limit,
         )
     return [dict(r) for r in rows]
+
+
+# ── Catalog health (relatório de produtos buscados) ──────────────────────────
+
+@router.get("/catalog-health")
+async def catalog_health(user: TenantUser, days: int = Query(30, ge=1, le=180)) -> dict:
+    """Dashboard agregado do catálogo:
+       - última sync (qualquer connector)
+       - top produtos buscados (com taxa de "não encontrado")
+       - top produtos NÃO encontrados (pauta de catálogo)
+       - top produtos efetivamente pedidos (carrinho + pré-atendimento)
+       - pedidos por dia (com/sem preço)
+    """
+    schema = await _get_schema(user.tenant_id)
+
+    async with tenant_conn(schema) as conn:
+        last_sync = await conn.fetchrow(
+            """
+            SELECT connector, created_at, status, records_in, records_upd,
+                   records_deactivated, errors, duration_ms
+            FROM inventory_sync_log
+            ORDER BY created_at DESC
+            LIMIT 1
+            """
+        )
+
+        # Total de produtos ativos no catálogo
+        active_count_row = await conn.fetchrow(
+            "SELECT COUNT(*) AS n, COUNT(DISTINCT source) AS sources "
+            "FROM products WHERE active = TRUE"
+        )
+
+        # Tool calls do skill vendedor — agrupa por produto e tool name
+        tool_rows = await conn.fetch(
+            f"""
+            WITH calls AS (
+                SELECT
+                    a.created_at,
+                    tc->>'name' AS tool_name,
+                    tc->'args' AS args,
+                    tc->>'result_preview' AS preview
+                FROM agent_traces a,
+                     jsonb_array_elements(a.steps) step,
+                     jsonb_array_elements(step->'data'->'tool_calls') tc
+                WHERE step->>'node' = 'skill:vendedor'
+                  AND a.created_at > NOW() - INTERVAL '{int(days)} days'
+            )
+            SELECT tool_name, args, preview, created_at
+            FROM calls
+            """
+        )
+
+        # Pedidos por dia + ratio com preço
+        orders_daily = await conn.fetch(
+            f"""
+            SELECT
+                DATE(created_at) AS dia,
+                COUNT(*) AS total,
+                SUM(CASE WHEN total > 0 THEN 1 ELSE 0 END) AS com_preco,
+                SUM(CASE WHEN total = 0 THEN 1 ELSE 0 END) AS sem_preco
+            FROM orders
+            WHERE created_at > NOW() - INTERVAL '{int(days)} days'
+            GROUP BY DATE(created_at)
+            ORDER BY dia DESC
+            LIMIT 30
+            """
+        )
+
+    # Agregação em Python (json mais flexível que SQL pra extrair múltiplos nomes)
+    searched: dict[str, dict] = {}      # buscar_produto: {hits, misses}
+    requested: dict[str, int] = {}      # itens efetivamente pedidos
+    for r in tool_rows:
+        tool = r["tool_name"]
+        args = r["args"]
+        if isinstance(args, str):
+            try:
+                args = json.loads(args)
+            except (json.JSONDecodeError, ValueError):
+                args = {}
+        args = args or {}
+        preview = (r["preview"] or "").lower()
+
+        if tool == "buscar_produto":
+            nome = (args.get("nome") or "").strip().lower()
+            if not nome:
+                continue
+            slot = searched.setdefault(nome, {"hits": 0, "misses": 0})
+            if "não encontrado" in preview or "nao encontrado" in preview:
+                slot["misses"] += 1
+            else:
+                slot["hits"] += 1
+
+        elif tool == "anotar_pedido_balcao":
+            for item in (args.get("itens") or []):
+                name = (item.get("name") or "").strip().lower()
+                qty = int(item.get("qty") or 1)
+                if name:
+                    requested[name] = requested.get(name, 0) + qty
+
+        elif tool == "adicionar_ao_carrinho":
+            produto = (args.get("produto") or "").strip().lower()
+            qty = int(args.get("quantidade") or 1)
+            if produto:
+                requested[produto] = requested.get(produto, 0) + qty
+
+    # Ordena e formata
+    top_searched = sorted(
+        [{"produto": k, **v, "total": v["hits"] + v["misses"]}
+         for k, v in searched.items()],
+        key=lambda x: x["total"], reverse=True,
+    )[:20]
+
+    top_missing = sorted(
+        [{"produto": k, "misses": v["misses"]}
+         for k, v in searched.items() if v["misses"] > 0],
+        key=lambda x: x["misses"], reverse=True,
+    )[:20]
+
+    top_requested = sorted(
+        [{"produto": k, "quantidade": v} for k, v in requested.items()],
+        key=lambda x: x["quantidade"], reverse=True,
+    )[:20]
+
+    return {
+        "last_sync": dict(last_sync) if last_sync else None,
+        "products_active": int(active_count_row["n"]) if active_count_row else 0,
+        "sources_count": int(active_count_row["sources"]) if active_count_row else 0,
+        "top_searched": top_searched,
+        "top_missing": top_missing,
+        "top_requested": top_requested,
+        "orders_daily": [dict(r) for r in orders_daily],
+        "days_window": days,
+    }

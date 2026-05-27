@@ -244,6 +244,29 @@ export async function listPdvTemplates(): Promise<PdvTemplate[]> {
   return (await api.get(`/portal/inventory/templates`)).data;
 }
 
+export interface CatalogHealth {
+  last_sync: {
+    connector: string;
+    created_at: string;
+    status: string;
+    records_in: number;
+    records_upd: number;
+    records_deactivated: number;
+    duration_ms: number;
+  } | null;
+  products_active: number;
+  sources_count: number;
+  top_searched: { produto: string; hits: number; misses: number; total: number }[];
+  top_missing: { produto: string; misses: number }[];
+  top_requested: { produto: string; quantidade: number }[];
+  orders_daily: { dia: string; total: number; com_preco: number; sem_preco: number }[];
+  days_window: number;
+}
+
+export async function getCatalogHealth(days = 30): Promise<CatalogHealth> {
+  return (await api.get(`/portal/inventory/catalog-health?days=${days}`)).data;
+}
+
 export async function configureGoogleSheets(body: {
   sheet_url: string;
   gid?: string;
