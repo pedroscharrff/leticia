@@ -31,7 +31,8 @@ async def get_active_offers(tenant_id: str, limit: int = 3) -> list[dict[str, An
     async with get_db_conn() as conn:
         rows = await conn.fetch(
             """
-            SELECT id, title, description, valid_until, priority
+            SELECT id, title, description, valid_until, priority,
+                   media_type, media_url, media_mime
               FROM public.offers
              WHERE tenant_id = $1
                AND active   = TRUE
