@@ -58,21 +58,27 @@ def make_inventory_tool(schema_name: str, tenant_id: str | None = None):
             async with get_db_conn() as conn:
                 await conn.execute(f"SET search_path = {schema_name}, public")
 
-                # Estratégia 1: tenta a frase inteira (mais preciso)
+                # Estratégia 1: tenta a frase inteira (mais preciso).
+                # Inclui CATEGORY para permitir buscas genéricas tipo
+                # "Vitaminas", "Dermocosméticos" — devolve todos os produtos
+                # da categoria.
                 rows = await conn.fetch(
                     """
                     SELECT name, price, stock_qty, unit, description,
-                           principio_ativo, fabricante
+                           principio_ativo, fabricante, category
                     FROM products
                     WHERE active = TRUE
                       AND (
                           name ILIKE $1
                           OR description ILIKE $1
                           OR principio_ativo ILIKE $1
+                          OR category ILIKE $1
                           OR barcode = $2
                       )
-                    ORDER BY name
-                    LIMIT 10
+                    ORDER BY
+                      CASE WHEN name ILIKE $1 THEN 0 ELSE 1 END,
+                      name
+                    LIMIT 15
                     """,
                     f"%{nome}%",
                     nome,
@@ -91,16 +97,17 @@ def make_inventory_tool(schema_name: str, tenant_id: str | None = None):
                     rows = await conn.fetch(
                         """
                         SELECT name, price, stock_qty, unit, description,
-                               principio_ativo, fabricante
+                               principio_ativo, fabricante, category
                         FROM products
                         WHERE active = TRUE
                           AND (
                               name ILIKE $1
                               OR description ILIKE $1
                               OR principio_ativo ILIKE $1
+                              OR category ILIKE $1
                           )
                         ORDER BY name
-                        LIMIT 10
+                        LIMIT 15
                         """,
                         f"%{primary}%",
                     )
@@ -123,7 +130,7 @@ def make_inventory_tool(schema_name: str, tenant_id: str | None = None):
                     base += f"  [INTERNO: {r['stock_qty']} {r['unit']} — NÃO cite este número ao cliente]"
                 lines.append(base)
 
-            header = "Produtos encontrados:\n"
+            header = f"Produtos encontrados ({len(rows)}):\n"
             header += (
                 "[INSTRUÇÃO INTERNA: confie nos formatos/tamanhos exatamente "
                 "como aparecem acima — NÃO invente outras opções de embalagem "
@@ -131,6 +138,13 @@ def make_inventory_tool(schema_name: str, tenant_id: str | None = None):
                 "Se o cliente pedir um tamanho que não está listado, ofereça "
                 "o que existe sem inventar variantes.]\n"
             )
+            if len(rows) > 4:
+                header += (
+                    "[INSTRUÇÃO INTERNA: a busca devolveu vários itens (categoria "
+                    "ampla). NÃO liste todos ao cliente de uma vez — mostre 2-3 "
+                    "opções relevantes e pergunte qual interessa, ou peça uma "
+                    "indicação mais específica antes de continuar.]\n"
+                )
             if track_stock:
                 header += (
                     "[INSTRUÇÃO INTERNA: blocos [INTERNO:...] são privados do agente "
