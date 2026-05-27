@@ -30,6 +30,17 @@ x-api-env: &api-env
   MINIO_BUCKET:                ${MINIO_BUCKET:-offers-media}
   MINIO_SECURE:                ${MINIO_SECURE:-false}
   MINIO_PUBLIC_URL:            ${MINIO_PUBLIC_URL:-http://localhost:9000}
+  # ── Tenant secrets encryption (Fernet) ──────────────────────────────────────
+  ENCRYPTION_KEY:              ${ENCRYPTION_KEY}
+  # ── Billing (opcionais; deixe vazios se não usar) ───────────────────────────
+  STRIPE_API_KEY:              ${STRIPE_API_KEY:-}
+  STRIPE_WEBHOOK_SECRET:       ${STRIPE_WEBHOOK_SECRET:-}
+  ASAAS_API_KEY:               ${ASAAS_API_KEY:-}
+  # ── Email transacional (Resend) ─────────────────────────────────────────────
+  RESEND_API_KEY:              ${RESEND_API_KEY:-}
+  # ── Self-service signup ─────────────────────────────────────────────────────
+  ALLOW_SIGNUP:                ${ALLOW_SIGNUP:-false}
+  DEFAULT_TRIAL_DAYS:          ${DEFAULT_TRIAL_DAYS:-7}
 
 services:
 
