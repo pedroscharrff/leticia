@@ -77,6 +77,10 @@ async def provision(name: str, callback_url: str, plan: str, database_url: str) 
         # Migration 010: ensure cart has sales_attempts column for this fresh schema
         await conn.execute("SELECT public.add_sales_attempts_to_cart($1)", schema_name)
 
+        # Migration 038: CHECK constraint atualizado em products/customers
+        # (libera sources 'xlsx' e 'google_sheets').
+        await conn.execute("SELECT public.create_tenant_schema_source_fix($1)", schema_name)
+
         # Default sales config row (required customer fields, retry policy)
         await conn.execute(
             "INSERT INTO public.tenant_sales_config (tenant_id) VALUES ($1) ON CONFLICT DO NOTHING",

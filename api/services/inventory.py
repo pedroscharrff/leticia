@@ -342,6 +342,14 @@ class GoogleSheetsConnector(InventoryConnector):
                     break  # sucesso!
                 attempt_errors.append(f"{label}: 0 linhas no CSV")
 
+        # Se o usuário não definiu mapping, aplica auto-detect pelos cabeçalhos.
+        # Assim quem usa o atalho "Conectar Google Sheets" sem passar pelo preview
+        # também acerta os campos quando as colunas seguem nomes comuns (PT-BR).
+        if rows and not mapping:
+            mapping = suggest_mapping(list(rows[0].keys()))
+            log.info("inventory.google_sheets.auto_mapping",
+                     mapping=mapping, headers=list(rows[0].keys()))
+
         if not rows:
             raise RuntimeError(
                 "Não consegui ler a planilha por nenhuma estratégia disponível. "
@@ -462,17 +470,18 @@ def _apply_mapping(item: dict, mapping: dict) -> dict:
 
 # Regex de heurística para sugerir mapping a partir de nomes de colunas comuns no Brasil
 _FIELD_HINTS: dict[str, list[str]] = {
-    "sku":             [r"^sku$", r"codigo", r"^cod$", r"cod[._-]?prod", r"id[._-]?prod"],
-    "barcode":         [r"barcode", r"cod[._-]?barra", r"ean", r"gtin"],
-    "name":            [r"^nome$", r"^name$", r"descricao[._-]?produto", r"produto", r"desc[._-]?prod", r"nm[._-]?prod"],
-    "brand":           [r"^marca$", r"brand", r"fabricante"],
-    "category":        [r"categoria", r"category", r"grupo", r"departamento"],
-    "description":     [r"^descricao$", r"^description$", r"observac"],
-    "price":           [r"^preco$", r"^price$", r"vl[._-]?venda", r"valor", r"vlr"],
-    "stock_qty":       [r"^estoque$", r"qtd[._-]?estoque", r"qtde", r"quantidade", r"saldo", r"stock"],
+    "sku":             [r"^sku$", r"^codigo$", r"^cod$", r"cod[._-]?prod", r"id[._-]?prod"],
+    "barcode":         [r"barcode", r"cod[._-]?barra", r"^ean$", r"^gtin$"],
+    "name":            [r"^nome$", r"^name$", r"descricao[._-]?produto", r"^produto$", r"desc[._-]?prod", r"nm[._-]?prod"],
+    "brand":           [r"^marca$", r"^brand$"],
+    "category":        [r"categoria", r"^category$", r"^grupo$", r"departamento"],
+    "description":     [r"^descricao$", r"^description$", r"observac", r"dosagem", r"formato"],
+    # price: pega "preco", "preco_promocional", "vl_venda", "valor_venda", "preco_de_venda", etc.
+    "price":           [r"preco", r"^price$", r"vl[._-]?venda", r"valor", r"vlr"],
+    "stock_qty":       [r"^estoque$", r"qtd[._-]?estoque", r"^qtde$", r"^quantidade$", r"^saldo$", r"^stock$"],
     "unit":            [r"^unidade$", r"^unid$", r"^un$", r"^unit$"],
     "principio_ativo": [r"principio[._-]?ativo", r"active[._-]?ingredient"],
-    "fabricante":      [r"fabricante", r"laboratorio", r"lab\b"],
+    "fabricante":      [r"fabricante", r"laboratorio", r"^lab$"],
 }
 
 

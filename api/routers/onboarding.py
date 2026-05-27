@@ -102,6 +102,10 @@ async def signup(body: SignupRequest) -> SignupResponse:
             await conn.execute(
                 "SELECT public.create_tenant_schema_recovery_ext($1)", schema_name
             )
+            # Garante CHECK constraint atualizado em products/customers (migration 038)
+            await conn.execute(
+                "SELECT public.create_tenant_schema_source_fix($1)", schema_name
+            )
             # Seed default sales_config para o novo tenant
             await conn.execute(
                 """
