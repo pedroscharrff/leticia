@@ -372,13 +372,20 @@ export function PortalEstoque() {
           <div className="modal-box" onClick={(e) => e.stopPropagation()}>
             <h2>Conectar Google Sheets</h2>
             <p className="muted">
-              A planilha precisa estar com <b>"Qualquer pessoa com o link pode visualizar"</b>.
+              <b>Recomendado:</b> use <b>Arquivo → Compartilhar → Publicar na web</b> na sua
+              planilha, escolha a aba, formato <b>CSV</b>, e cole aqui a URL gerada
+              (termina em <code>/pub?output=csv</code>). Esse caminho é estável para
+              servidores em produção.
+              <br /><br />
+              Alternativa: cole a URL normal da planilha (precisa estar com
+              "Qualquer pessoa com o link — Leitor"). Em alguns servidores o Google
+              limita esse tipo de acesso e o caminho acima é mais confiável.
             </p>
             <label className="form-label">
-              <span>URL da planilha</span>
+              <span>URL da planilha (pub ou edit)</span>
               <input
                 className="form-input"
-                placeholder="https://docs.google.com/spreadsheets/d/…"
+                placeholder="https://docs.google.com/spreadsheets/d/e/.../pub?output=csv"
                 value={sheetsUrl}
                 onChange={(e) => setSheetsUrl(e.target.value)}
               />
