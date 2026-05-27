@@ -42,13 +42,26 @@ def make_inventory_tool(schema_name: str, tenant_id: str | None = None):
         except Exception as _exc:  # noqa: BLE001
             log.warning("tool.buscar_produto.cap_check_failed", exc=str(_exc))
 
+        # Tokeniza a busca: "benegripe 36 comprimidos" → ["benegripe", "36", "comprimidos"]
+        # Tokens muito curtos ou stopwords são ignorados.
+        _STOPWORDS = {"de", "do", "da", "com", "para", "em", "ml", "mg", "un"}
+        tokens = [
+            t for t in re.split(r"[\s,/\-]+", nome.lower().strip())
+            if t and len(t) >= 3 and t not in _STOPWORDS
+        ]
+        if not tokens:
+            tokens = [nome.strip().lower()]
+
         try:
             from db.postgres import get_db_conn
             async with get_db_conn() as conn:
                 await conn.execute(f"SET search_path = {schema_name}, public")
+
+                # Estratégia 1: tenta a frase inteira (mais preciso)
                 rows = await conn.fetch(
                     """
-                    SELECT name, price, stock_qty, unit, active, principio_ativo, fabricante, source
+                    SELECT name, price, stock_qty, unit, description,
+                           principio_ativo, fabricante
                     FROM products
                     WHERE active = TRUE
                       AND (
@@ -64,6 +77,33 @@ def make_inventory_tool(schema_name: str, tenant_id: str | None = None):
                     nome,
                 )
 
+                # Estratégia 2 (fallback): se a frase exata não casou, exige que
+                # CADA token apareça em name OU description. Isso pega
+                # "benegripe 36 comprimidos" → "Benegrip" (name) + "12 comprimidos"
+                # (description) — vai aparecer mas dá pro agente ver que o
+                # tamanho do pacote real é 12, não 36.
+                if not rows and len(tokens) >= 2:
+                    # Constrói condição: (name ILIKE %t1% OR description ILIKE %t1%)
+                    #                AND (name ILIKE %t2% OR description ILIKE %t2%) ...
+                    # Sempre exige o PRIMEIRO token (provavelmente o nome do produto).
+                    primary = tokens[0]
+                    rows = await conn.fetch(
+                        """
+                        SELECT name, price, stock_qty, unit, description,
+                               principio_ativo, fabricante
+                        FROM products
+                        WHERE active = TRUE
+                          AND (
+                              name ILIKE $1
+                              OR description ILIKE $1
+                              OR principio_ativo ILIKE $1
+                          )
+                        ORDER BY name
+                        LIMIT 10
+                        """,
+                        f"%{primary}%",
+                    )
+
             if not rows:
                 return f"Produto '{nome}' não encontrado no catálogo."
 
@@ -71,12 +111,25 @@ def make_inventory_tool(schema_name: str, tenant_id: str | None = None):
             for r in rows:
                 # Visível ao cliente: SEMPRE "disponível" — nunca quantidade.
                 base = f"• {r['name']} — R$ {r['price']:.2f} (disponível)"
+                # Description traz "Formato: Caixa c/ 12 | Dosagem: ..." — crítico
+                # para o agente saber o tamanho real do pacote sem inventar.
+                if r["description"]:
+                    desc = str(r["description"]).strip()
+                    if desc:
+                        base += f"  — {desc}"
                 # Bloco interno: aparece para o agente APENAS quando track_stock ON.
                 if track_stock and r["stock_qty"] is not None:
                     base += f"  [INTERNO: {r['stock_qty']} {r['unit']} — NÃO cite este número ao cliente]"
                 lines.append(base)
 
             header = "Produtos encontrados:\n"
+            header += (
+                "[INSTRUÇÃO INTERNA: confie nos formatos/tamanhos exatamente "
+                "como aparecem acima — NÃO invente outras opções de embalagem "
+                "(ex: '20 ou 36 comprimidos') se elas não constarem aqui. "
+                "Se o cliente pedir um tamanho que não está listado, ofereça "
+                "o que existe sem inventar variantes.]\n"
+            )
             if track_stock:
                 header += (
                     "[INSTRUÇÃO INTERNA: blocos [INTERNO:...] são privados do agente "
