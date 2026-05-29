@@ -38,6 +38,16 @@ DEFAULT_FALLBACK = (
     "é só me chamar de volta que finalizo na hora!"
 )
 
+# Métodos de pagamento que o tenant pode aceitar (label legível p/ o agente)
+PAYMENT_METHODS: dict[str, str] = {
+    "pix":             "PIX",
+    "cartao_credito":  "Cartão de crédito",
+    "cartao_debito":   "Cartão de débito",
+    "dinheiro":        "Dinheiro",
+    "boleto":          "Boleto",
+}
+ALL_PAYMENT_METHODS = list(PAYMENT_METHODS.keys())
+
 SALES_CONFIG_DEFAULTS: dict[str, Any] = {
     "required_fields": ["nome"],
     "max_attempts": 3,
@@ -45,6 +55,7 @@ SALES_CONFIG_DEFAULTS: dict[str, Any] = {
     "checkout_mode": "completo",   # 'coleta' | 'completo'
     "ask_payment": True,
     "ask_delivery": False,
+    "accepted_payment_methods": list(ALL_PAYMENT_METHODS),
 }
 
 
@@ -58,16 +69,24 @@ async def load_sales_config(tenant_id: str) -> dict:
         try:
             row = await conn.fetchrow(
                 "SELECT required_fields, max_attempts, fallback_message, "
-                "checkout_mode, ask_payment, ask_delivery "
+                "checkout_mode, ask_payment, ask_delivery, accepted_payment_methods "
                 "FROM public.tenant_sales_config WHERE tenant_id = $1",
                 tenant_id,
             )
-        except Exception:  # noqa: BLE001 — colunas novas ausentes
-            row = await conn.fetchrow(
-                "SELECT required_fields, max_attempts, fallback_message "
-                "FROM public.tenant_sales_config WHERE tenant_id = $1",
-                tenant_id,
-            )
+        except Exception:  # noqa: BLE001 — colunas novas ausentes (schema drift)
+            try:
+                row = await conn.fetchrow(
+                    "SELECT required_fields, max_attempts, fallback_message, "
+                    "checkout_mode, ask_payment, ask_delivery "
+                    "FROM public.tenant_sales_config WHERE tenant_id = $1",
+                    tenant_id,
+                )
+            except Exception:  # noqa: BLE001
+                row = await conn.fetchrow(
+                    "SELECT required_fields, max_attempts, fallback_message "
+                    "FROM public.tenant_sales_config WHERE tenant_id = $1",
+                    tenant_id,
+                )
     if not row:
         return dict(SALES_CONFIG_DEFAULTS)
     cfg = {
@@ -77,6 +96,7 @@ async def load_sales_config(tenant_id: str) -> dict:
         "checkout_mode": "completo",
         "ask_payment": True,
         "ask_delivery": False,
+        "accepted_payment_methods": list(ALL_PAYMENT_METHODS),
     }
     # Campos novos (podem não existir no row dependendo do SELECT usado)
     keys = row.keys()
@@ -86,6 +106,9 @@ async def load_sales_config(tenant_id: str) -> dict:
         cfg["ask_payment"] = bool(row["ask_payment"])
     if "ask_delivery" in keys:
         cfg["ask_delivery"] = bool(row["ask_delivery"])
+    if "accepted_payment_methods" in keys:
+        methods = [m for m in (row["accepted_payment_methods"] or []) if m in PAYMENT_METHODS]
+        cfg["accepted_payment_methods"] = methods or list(ALL_PAYMENT_METHODS)
     return cfg
 
 
@@ -125,11 +148,60 @@ def missing_required_fields(config: dict, customer: dict | None) -> list[str]:
     return [f for f in required if not _customer_value(cust, f)]
 
 
+def _format_known_address(customer: dict | None) -> str:
+    """Monta uma linha legível com o endereço já salvo do cliente, se houver."""
+    cust = customer or {}
+    street = (cust.get("street") or "").strip()
+    number = (cust.get("street_number") or "").strip()
+    comp = (cust.get("complement") or "").strip()
+    bairro = (cust.get("neighborhood") or "").strip()
+    city = (cust.get("city") or "").strip()
+    uf = (cust.get("state") or "").strip()
+    cep = (cust.get("cep") or "").strip()
+    if not any([street, bairro, city, cep]):
+        return ""
+    parts = []
+    if street:
+        parts.append(street + (f", {number}" if number else ""))
+    if comp:
+        parts.append(comp)
+    if bairro:
+        parts.append(bairro)
+    if city:
+        parts.append(city + (f"/{uf}" if uf else ""))
+    if cep:
+        parts.append(f"CEP {cep}")
+    return ", ".join(parts)
+
+
+def build_known_address_hint(config: dict, customer: dict | None) -> str:
+    """Linha VOLÁTIL (depende do customer) com o endereço já cadastrado, para o
+    agente confirmar em vez de pedir do zero. Só vale no modo completo c/
+    ask_delivery. Vai no bloco volátil do prompt (não cacheado)."""
+    if (config.get("checkout_mode") or "completo").lower() != "completo":
+        return ""
+    if not config.get("ask_delivery", False):
+        return ""
+    known = _format_known_address(customer)
+    if not known:
+        return ""
+    return (
+        "[ENTREGA — endereço já cadastrado deste cliente]\n"
+        f"«{known}»\n"
+        "Se o cliente escolher ENTREGA, confirme se é nesse mesmo endereço em "
+        "vez de pedir tudo de novo. Só peça dados novos se ele quiser outro "
+        "endereço (aí use `salvar_dados_cliente`)."
+    )
+
+
 def build_checkout_flow_block(config: dict) -> str:
     """
     Bloco que dita a PROFUNDIDADE do fechamento — definido pela farmácia,
     não pela intuição do agente. Sobrepõe o comportamento de fechamento
     padrão do prompt do vendedor.
+
+    100% ESTÁVEL (depende só da config do tenant) → fica no prefixo cacheado.
+    O endereço conhecido do cliente sai em build_known_address_hint (volátil).
     """
     mode = (config.get("checkout_mode") or "completo").lower()
 
@@ -152,6 +224,11 @@ def build_checkout_flow_block(config: dict) -> str:
     # modo "completo"
     ask_payment = config.get("ask_payment", True)
     ask_delivery = config.get("ask_delivery", False)
+    accepted = [m for m in (config.get("accepted_payment_methods") or ALL_PAYMENT_METHODS)
+                if m in PAYMENT_METHODS]
+    if not accepted:
+        accepted = list(ALL_PAYMENT_METHODS)
+
     lines = [
         "═══════════════════════════════════════════════════════════════",
         "MODO DE FECHAMENTO: COMPLETO (definido pela farmácia)",
@@ -159,11 +236,15 @@ def build_checkout_flow_block(config: dict) -> str:
         "Conduza o cliente até o fechamento do pedido.",
     ]
     if ask_payment:
+        labels = ", ".join(PAYMENT_METHODS[m] for m in accepted)
         lines.append(
-            "• Pergunte a forma de pagamento quando for fechar: pix, cartão de "
-            "crédito, cartão de débito, dinheiro ou boleto. Passe a escolha "
-            "para `finalizar_pedido`."
+            f"• Pergunte a forma de pagamento quando for fechar. Esta farmácia "
+            f"aceita APENAS: {labels}. NUNCA ofereça um método fora dessa lista. "
+            f"Passe a escolha (chave) para `finalizar_pedido`."
         )
+        # Dica de mapeamento label→chave para o agente
+        keymap = " | ".join(f"{PAYMENT_METHODS[m]}={m}" for m in accepted)
+        lines.append(f"  (chaves válidas: {keymap})")
     else:
         lines.append(
             "• NÃO pergunte forma de pagamento — chame "
@@ -172,7 +253,10 @@ def build_checkout_flow_block(config: dict) -> str:
     if ask_delivery:
         lines.append(
             "• Antes de fechar, pergunte se é ENTREGA ou RETIRADA na loja. "
-            "Se for entrega, peça/anote o endereço (use `salvar_dados_cliente`)."
+            "Se for entrega, peça o endereço e salve com `salvar_dados_cliente` "
+            "— mas ANTES verifique se já há um endereço cadastrado (pode aparecer "
+            "um bloco \"[ENTREGA — endereço já cadastrado]\" abaixo) e confirme "
+            "esse em vez de pedir do zero."
         )
     else:
         lines.append(

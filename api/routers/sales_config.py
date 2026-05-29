@@ -25,6 +25,8 @@ from services.sales_config import (
     ALLOWED_FIELDS,
     DEFAULT_FALLBACK,
     SALES_CONFIG_DEFAULTS,
+    PAYMENT_METHODS,
+    ALL_PAYMENT_METHODS,
     load_sales_config,
 )
 
@@ -46,6 +48,8 @@ class SalesConfigOut(BaseModel):
     checkout_mode: str
     ask_payment: bool
     ask_delivery: bool
+    accepted_payment_methods: list[str]
+    available_payment_methods: list[FieldOption]
 
 
 class SalesConfigUpdate(BaseModel):
@@ -55,6 +59,7 @@ class SalesConfigUpdate(BaseModel):
     checkout_mode: str | None = Field(default=None)
     ask_payment: bool | None = Field(default=None)
     ask_delivery: bool | None = Field(default=None)
+    accepted_payment_methods: list[str] | None = Field(default=None)
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -87,6 +92,10 @@ async def _to_out(tenant_id: str) -> SalesConfigOut:
         checkout_mode=cfg.get("checkout_mode", "completo"),
         ask_payment=cfg.get("ask_payment", True),
         ask_delivery=cfg.get("ask_delivery", False),
+        accepted_payment_methods=cfg.get("accepted_payment_methods", list(ALL_PAYMENT_METHODS)),
+        available_payment_methods=[
+            FieldOption(key=k, label=v) for k, v in PAYMENT_METHODS.items()
+        ],
     )
 
 
@@ -110,6 +119,17 @@ async def _update(tenant_id: str, body: SalesConfigUpdate, actor_email: str) -> 
         updates["ask_payment"] = body.ask_payment
     if body.ask_delivery is not None:
         updates["ask_delivery"] = body.ask_delivery
+    if body.accepted_payment_methods is not None:
+        bad = [m for m in body.accepted_payment_methods if m not in PAYMENT_METHODS]
+        if bad:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Métodos inválidos: {bad}. Permitidos: {ALL_PAYMENT_METHODS}",
+            )
+        # Dedupe preservando ordem; vazio = todos (evita travar fechamento)
+        seen: set[str] = set()
+        methods = [m for m in body.accepted_payment_methods if not (m in seen or seen.add(m))]
+        updates["accepted_payment_methods"] = methods or list(ALL_PAYMENT_METHODS)
 
     if not updates:
         return await _to_out(tenant_id)

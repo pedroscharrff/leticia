@@ -539,6 +539,8 @@ export interface SalesConfig {
   checkout_mode: "coleta" | "completo";
   ask_payment: boolean;
   ask_delivery: boolean;
+  accepted_payment_methods: string[];
+  available_payment_methods: SalesFieldOption[];
 }
 
 export type SalesConfigUpdate = Partial<{
@@ -548,6 +550,7 @@ export type SalesConfigUpdate = Partial<{
   checkout_mode: "coleta" | "completo";
   ask_payment: boolean;
   ask_delivery: boolean;
+  accepted_payment_methods: string[];
 }>;
 
 export async function getSalesConfig(): Promise<SalesConfig> {

@@ -75,7 +75,7 @@ export function PortalCatalogoSaude() {
                 <div className="kpi-label">Última sincronização</div>
                 <div className="kpi-value">
                   {data.last_sync ? (
-                    <Badge variant={data.last_sync.status === "ok" ? "green" : "gray"}>
+                    <Badge variant={data.last_sync.status === "ok" ? "success" : "neutral"}>
                       {data.last_sync.status}
                     </Badge>
                   ) : "—"}
@@ -120,7 +120,7 @@ export function PortalCatalogoSaude() {
                     {data.top_missing.map((p) => (
                       <tr key={p.produto}>
                         <td className="product-name">{p.produto}</td>
-                        <td><Badge variant="gray">{p.misses}</Badge></td>
+                        <td><Badge variant="neutral">{p.misses}</Badge></td>
                       </tr>
                     ))}
                   </tbody>
@@ -141,8 +141,8 @@ export function PortalCatalogoSaude() {
                       <tr key={p.produto}>
                         <td className="product-name">{p.produto}</td>
                         <td>{p.total}</td>
-                        <td><Badge variant="green">{p.hits}</Badge></td>
-                        <td>{p.misses > 0 ? <Badge variant="gray">{p.misses}</Badge> : "—"}</td>
+                        <td><Badge variant="success">{p.hits}</Badge></td>
+                        <td>{p.misses > 0 ? <Badge variant="neutral">{p.misses}</Badge> : "—"}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -163,7 +163,7 @@ export function PortalCatalogoSaude() {
                     {data.top_requested.map((p) => (
                       <tr key={p.produto}>
                         <td className="product-name">{p.produto}</td>
-                        <td><Badge variant="green">{p.quantidade}</Badge></td>
+                        <td><Badge variant="success">{p.quantidade}</Badge></td>
                       </tr>
                     ))}
                   </tbody>

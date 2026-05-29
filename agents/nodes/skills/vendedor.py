@@ -520,6 +520,16 @@ async def vendedor_node(state: AgentState, llm_factory) -> AgentState:
             except Exception as _exc:  # noqa: BLE001
                 log.warning("vendedor.sales_config_block_failed", exc=str(_exc))
 
+            # Endereço já cadastrado (modo completo + ask_delivery) — depende do
+            # cliente → volátil. Permite confirmar em vez de pedir do zero.
+            try:
+                from services.sales_config import build_known_address_hint
+                addr_hint = build_known_address_hint(sales_config, customer)
+                if addr_hint:
+                    volatile_parts.append(addr_hint)
+            except Exception as _exc:  # noqa: BLE001
+                log.warning("vendedor.address_hint_failed", exc=str(_exc))
+
             if received_handoff:
                 volatile_parts.append(
                     "[CONTINUAÇÃO INTERNA — não é visível ao cliente]\n"

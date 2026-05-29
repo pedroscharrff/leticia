@@ -16,6 +16,7 @@ export function PortalVendas() {
   const [checkoutMode, setCheckoutMode] = useState<"coleta" | "completo">("completo");
   const [askPayment, setAskPayment] = useState(true);
   const [askDelivery, setAskDelivery] = useState(false);
+  const [acceptedMethods, setAcceptedMethods] = useState<Set<string>>(new Set());
 
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -32,6 +33,7 @@ export function PortalVendas() {
         setCheckoutMode(cfg.checkout_mode ?? "completo");
         setAskPayment(cfg.ask_payment ?? true);
         setAskDelivery(cfg.ask_delivery ?? false);
+        setAcceptedMethods(new Set(cfg.accepted_payment_methods ?? []));
       })
       .catch(() => setError("Erro ao carregar configuração."))
       .finally(() => setLoading(false));
@@ -42,6 +44,13 @@ export function PortalVendas() {
     if (next.has(key)) next.delete(key);
     else next.add(key);
     setRequired(next);
+  }
+
+  function toggleMethod(key: string) {
+    const next = new Set(acceptedMethods);
+    if (next.has(key)) next.delete(key);
+    else next.add(key);
+    setAcceptedMethods(next);
   }
 
   async function handleSave(e: React.FormEvent) {
@@ -57,6 +66,7 @@ export function PortalVendas() {
         checkout_mode: checkoutMode,
         ask_payment: askPayment,
         ask_delivery: askDelivery,
+        accepted_payment_methods: Array.from(acceptedMethods),
       });
       setConfig(updated);
       setSuccess("Configuração salva com sucesso.");
@@ -123,8 +133,35 @@ export function PortalVendas() {
                   checked={askPayment}
                   onChange={(e) => setAskPayment(e.target.checked)}
                 />
-                <span>Perguntar forma de pagamento (pix, cartão, dinheiro, boleto)</span>
+                <span>Perguntar forma de pagamento</span>
               </label>
+
+              {askPayment && (
+                <div className="vendas-subgroup">
+                  <p className="vendas-section-desc" style={{ margin: "0 0 4px" }}>
+                    Métodos que a farmácia aceita (o robô só vai oferecer estes):
+                  </p>
+                  {config?.available_payment_methods.map((m) => (
+                    <label
+                      key={m.key}
+                      className={`vendas-field ${acceptedMethods.has(m.key) ? "vendas-field--checked" : ""}`}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={acceptedMethods.has(m.key)}
+                        onChange={() => toggleMethod(m.key)}
+                      />
+                      <span>{m.label}</span>
+                    </label>
+                  ))}
+                  {acceptedMethods.size === 0 && (
+                    <p className="form-hint" style={{ color: "#b45309" }}>
+                      Nenhum método marcado — o robô vai aceitar todos por padrão.
+                    </p>
+                  )}
+                </div>
+              )}
+
               <label className="vendas-field">
                 <input
                   type="checkbox"
