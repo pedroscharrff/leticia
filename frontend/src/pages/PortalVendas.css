@@ -90,3 +90,12 @@
   padding: 10px 12px;
   font-size: 0.9rem;
 }
+
+.vendas-subgroup {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 14px;
+  padding-left: 12px;
+  border-left: 2px solid var(--color-border, #e5e7eb);
+}

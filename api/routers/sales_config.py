@@ -43,12 +43,18 @@ class SalesConfigOut(BaseModel):
     max_attempts: int
     fallback_message: str
     available_fields: list[FieldOption]
+    checkout_mode: str
+    ask_payment: bool
+    ask_delivery: bool
 
 
 class SalesConfigUpdate(BaseModel):
     required_fields: list[str] | None = Field(default=None)
     max_attempts: int | None = Field(default=None, ge=1, le=10)
     fallback_message: str | None = Field(default=None, max_length=2000)
+    checkout_mode: str | None = Field(default=None)
+    ask_payment: bool | None = Field(default=None)
+    ask_delivery: bool | None = Field(default=None)
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -78,6 +84,9 @@ async def _to_out(tenant_id: str) -> SalesConfigOut:
         available_fields=[
             FieldOption(key=k, label=v["label"]) for k, v in ALLOWED_FIELDS.items()
         ],
+        checkout_mode=cfg.get("checkout_mode", "completo"),
+        ask_payment=cfg.get("ask_payment", True),
+        ask_delivery=cfg.get("ask_delivery", False),
     )
 
 
@@ -90,6 +99,17 @@ async def _update(tenant_id: str, body: SalesConfigUpdate, actor_email: str) -> 
     if body.fallback_message is not None:
         msg = body.fallback_message.strip()
         updates["fallback_message"] = msg or DEFAULT_FALLBACK
+    if body.checkout_mode is not None:
+        if body.checkout_mode not in ("coleta", "completo"):
+            raise HTTPException(
+                status_code=422,
+                detail="checkout_mode deve ser 'coleta' ou 'completo'.",
+            )
+        updates["checkout_mode"] = body.checkout_mode
+    if body.ask_payment is not None:
+        updates["ask_payment"] = body.ask_payment
+    if body.ask_delivery is not None:
+        updates["ask_delivery"] = body.ask_delivery
 
     if not updates:
         return await _to_out(tenant_id)

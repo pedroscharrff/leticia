@@ -13,6 +13,9 @@ export function PortalVendas() {
   const [required, setRequired] = useState<Set<string>>(new Set());
   const [maxAttempts, setMaxAttempts] = useState(3);
   const [fallback, setFallback] = useState("");
+  const [checkoutMode, setCheckoutMode] = useState<"coleta" | "completo">("completo");
+  const [askPayment, setAskPayment] = useState(true);
+  const [askDelivery, setAskDelivery] = useState(false);
 
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -26,6 +29,9 @@ export function PortalVendas() {
         setRequired(new Set(cfg.required_fields));
         setMaxAttempts(cfg.max_attempts);
         setFallback(cfg.fallback_message);
+        setCheckoutMode(cfg.checkout_mode ?? "completo");
+        setAskPayment(cfg.ask_payment ?? true);
+        setAskDelivery(cfg.ask_delivery ?? false);
       })
       .catch(() => setError("Erro ao carregar configuração."))
       .finally(() => setLoading(false));
@@ -48,6 +54,9 @@ export function PortalVendas() {
         required_fields: Array.from(required),
         max_attempts: maxAttempts,
         fallback_message: fallback,
+        checkout_mode: checkoutMode,
+        ask_payment: askPayment,
+        ask_delivery: askDelivery,
       });
       setConfig(updated);
       setSuccess("Configuração salva com sucesso.");
@@ -78,6 +87,56 @@ export function PortalVendas() {
       </div>
 
       <form className="vendas-form" onSubmit={handleSave}>
+        <section className="vendas-card">
+          <h2 className="vendas-section-title">Modo de fechamento</h2>
+          <p className="vendas-section-desc">
+            Define até onde o agente conduz a compra. Em <b>Coleta simples</b>,
+            ele só monta o pedido e encaminha ao balcão — sem perguntar
+            pagamento ou entrega. Em <b>Completo</b>, ele conduz o checkout.
+          </p>
+          <div className="vendas-fields-grid">
+            <label className={`vendas-field ${checkoutMode === "coleta" ? "vendas-field--checked" : ""}`}>
+              <input
+                type="radio"
+                name="checkout_mode"
+                checked={checkoutMode === "coleta"}
+                onChange={() => setCheckoutMode("coleta")}
+              />
+              <span><b>Coleta simples</b> — só coleta o pedido, balcão resolve o resto</span>
+            </label>
+            <label className={`vendas-field ${checkoutMode === "completo" ? "vendas-field--checked" : ""}`}>
+              <input
+                type="radio"
+                name="checkout_mode"
+                checked={checkoutMode === "completo"}
+                onChange={() => setCheckoutMode("completo")}
+              />
+              <span><b>Completo</b> — conduz pagamento e (opcional) entrega</span>
+            </label>
+          </div>
+
+          {checkoutMode === "completo" && (
+            <div className="vendas-subgroup">
+              <label className="vendas-field">
+                <input
+                  type="checkbox"
+                  checked={askPayment}
+                  onChange={(e) => setAskPayment(e.target.checked)}
+                />
+                <span>Perguntar forma de pagamento (pix, cartão, dinheiro, boleto)</span>
+              </label>
+              <label className="vendas-field">
+                <input
+                  type="checkbox"
+                  checked={askDelivery}
+                  onChange={(e) => setAskDelivery(e.target.checked)}
+                />
+                <span>Perguntar entrega ou retirada (e pedir endereço se entrega)</span>
+              </label>
+            </div>
+          )}
+        </section>
+
         <section className="vendas-card">
           <h2 className="vendas-section-title">Campos obrigatórios</h2>
           <p className="vendas-section-desc">

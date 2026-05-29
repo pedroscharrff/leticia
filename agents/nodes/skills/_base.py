@@ -155,9 +155,41 @@ def _persona_prefix(persona: dict) -> str:
     return "\n".join(parts)
 
 
-def _build_messages(state: AgentState, system_prompt: str) -> list:
-    """Constrói lista de mensagens LangChain com histórico."""
-    lc_messages = [SystemMessage(content=system_prompt)]
+def _build_messages(
+    state: AgentState,
+    system_prompt: str,
+    provider: str | None = None,
+    volatile_prompt: str = "",
+) -> list:
+    """Constrói lista de mensagens LangChain com histórico.
+
+    `system_prompt`   = bloco ESTÁVEL (regras, persona, instruções). É o maior
+                        bloco e re-enviado em TODA chamada (inclusive retries do
+                        analyst, segundos depois). Vai no prefixo cacheado.
+    `volatile_prompt` = estado por-turno (carrinho, handoff, status de campos).
+                        Colocado APÓS o marcador de cache → nunca invalida o
+                        prefixo. Skills sem estado volátil deixam vazio.
+
+    provider: "anthropic" liga o cache_control explícito; outros providers
+    degradam para SystemMessage simples (OpenAI cacheia automático >=1024 tk).
+    Default = settings.default_skill_provider (anthropic no projeto).
+    """
+    if provider is None:
+        try:
+            from config import settings
+            provider = getattr(settings, "default_skill_provider", "anthropic")
+        except Exception:  # noqa: BLE001
+            provider = "anthropic"
+
+    try:
+        from llm.caching import system_message
+        lc_messages = [system_message(system_prompt, provider=provider, volatile=volatile_prompt)]
+    except Exception:  # noqa: BLE001
+        # Fallback ultra-seguro: nunca deixa o build de mensagens quebrar.
+        full = system_prompt
+        if volatile_prompt and volatile_prompt.strip():
+            full = f"{system_prompt}\n\n{volatile_prompt}"
+        lc_messages = [SystemMessage(content=full)]
 
     # Skip blank entries — Anthropic rejects any message with empty content.
     for msg in state.get("messages", []):

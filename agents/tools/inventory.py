@@ -292,6 +292,7 @@ _VALID_PAYMENT = {
     "cartao_debito":    "Cartão de débito",
     "dinheiro":         "Dinheiro",
     "boleto":           "Boleto",
+    "a_combinar":       "A combinar no balcão",
 }
 # Desconto padrão por forma de pagamento (em %). Pode ser sobrescrito por tenant_sales_config.
 _PAYMENT_DISCOUNT = {"pix": 0.10}
@@ -329,7 +330,8 @@ def make_finalize_order_tool(
 
         Args:
             forma_pagamento: uma de "pix", "cartao_credito", "cartao_debito",
-                             "dinheiro", "boleto". Padrão: "pix".
+                             "dinheiro", "boleto" ou "a_combinar" (quando a
+                             farmácia resolve pagamento no balcão). Padrão: "pix".
             observacoes: notas opcionais (endereço de entrega, instruções).
         """
         if not cart.get("items"):

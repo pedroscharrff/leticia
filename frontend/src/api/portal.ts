@@ -536,12 +536,18 @@ export interface SalesConfig {
   max_attempts: number;
   fallback_message: string;
   available_fields: SalesFieldOption[];
+  checkout_mode: "coleta" | "completo";
+  ask_payment: boolean;
+  ask_delivery: boolean;
 }
 
 export type SalesConfigUpdate = Partial<{
   required_fields: string[];
   max_attempts: number;
   fallback_message: string;
+  checkout_mode: "coleta" | "completo";
+  ask_payment: boolean;
+  ask_delivery: boolean;
 }>;
 
 export async function getSalesConfig(): Promise<SalesConfig> {

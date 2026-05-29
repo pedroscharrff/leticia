@@ -42,24 +42,51 @@ SALES_CONFIG_DEFAULTS: dict[str, Any] = {
     "required_fields": ["nome"],
     "max_attempts": 3,
     "fallback_message": DEFAULT_FALLBACK,
+    "checkout_mode": "completo",   # 'coleta' | 'completo'
+    "ask_payment": True,
+    "ask_delivery": False,
 }
 
 
 async def load_sales_config(tenant_id: str) -> dict:
-    """Returns the tenant's sales config (with defaults filled in)."""
+    """Returns the tenant's sales config (with defaults filled in).
+
+    Defensivo a schema drift: se as colunas de checkout_mode ainda não
+    existirem (migration 041 não rodada), cai no SELECT antigo + defaults.
+    """
     async with get_db_conn() as conn:
-        row = await conn.fetchrow(
-            "SELECT required_fields, max_attempts, fallback_message "
-            "FROM public.tenant_sales_config WHERE tenant_id = $1",
-            tenant_id,
-        )
+        try:
+            row = await conn.fetchrow(
+                "SELECT required_fields, max_attempts, fallback_message, "
+                "checkout_mode, ask_payment, ask_delivery "
+                "FROM public.tenant_sales_config WHERE tenant_id = $1",
+                tenant_id,
+            )
+        except Exception:  # noqa: BLE001 — colunas novas ausentes
+            row = await conn.fetchrow(
+                "SELECT required_fields, max_attempts, fallback_message "
+                "FROM public.tenant_sales_config WHERE tenant_id = $1",
+                tenant_id,
+            )
     if not row:
         return dict(SALES_CONFIG_DEFAULTS)
-    return {
+    cfg = {
         "required_fields": list(row["required_fields"] or []),
         "max_attempts": int(row["max_attempts"] or 3),
         "fallback_message": row["fallback_message"] or DEFAULT_FALLBACK,
+        "checkout_mode": "completo",
+        "ask_payment": True,
+        "ask_delivery": False,
     }
+    # Campos novos (podem não existir no row dependendo do SELECT usado)
+    keys = row.keys()
+    if "checkout_mode" in keys:
+        cfg["checkout_mode"] = row["checkout_mode"] or "completo"
+    if "ask_payment" in keys:
+        cfg["ask_payment"] = bool(row["ask_payment"])
+    if "ask_delivery" in keys:
+        cfg["ask_delivery"] = bool(row["ask_delivery"])
+    return cfg
 
 
 def _customer_value(customer: dict, field_key: str) -> Any:
@@ -96,6 +123,63 @@ def missing_required_fields(config: dict, customer: dict | None) -> list[str]:
     required = config.get("required_fields") or []
     cust = customer or {}
     return [f for f in required if not _customer_value(cust, f)]
+
+
+def build_checkout_flow_block(config: dict) -> str:
+    """
+    Bloco que dita a PROFUNDIDADE do fechamento — definido pela farmácia,
+    não pela intuição do agente. Sobrepõe o comportamento de fechamento
+    padrão do prompt do vendedor.
+    """
+    mode = (config.get("checkout_mode") or "completo").lower()
+
+    if mode == "coleta":
+        return (
+            "═══════════════════════════════════════════════════════════════\n"
+            "MODO DE FECHAMENTO: COLETA SIMPLES (definido pela farmácia)\n"
+            "═══════════════════════════════════════════════════════════════\n"
+            "Esta farmácia NÃO quer que você conduza pagamento nem entrega. "
+            "Seu papel é só montar o pedido e encaminhar ao balcão.\n"
+            "Quando o cliente confirmar os itens (\"é só isso\", \"pode fechar\"):\n"
+            "• Chame `finalizar_pedido(forma_pagamento=\"a_combinar\")` direto.\n"
+            "• NUNCA pergunte forma de pagamento.\n"
+            "• NUNCA pergunte entrega, retirada, endereço ou frete.\n"
+            "• Após criar o pedido, confirme o número e diga que um atendente "
+            "vai dar sequência para combinar pagamento e entrega.\n"
+            "Isto SOBREPÕE qualquer instrução de fechamento padrão acima."
+        )
+
+    # modo "completo"
+    ask_payment = config.get("ask_payment", True)
+    ask_delivery = config.get("ask_delivery", False)
+    lines = [
+        "═══════════════════════════════════════════════════════════════",
+        "MODO DE FECHAMENTO: COMPLETO (definido pela farmácia)",
+        "═══════════════════════════════════════════════════════════════",
+        "Conduza o cliente até o fechamento do pedido.",
+    ]
+    if ask_payment:
+        lines.append(
+            "• Pergunte a forma de pagamento quando for fechar: pix, cartão de "
+            "crédito, cartão de débito, dinheiro ou boleto. Passe a escolha "
+            "para `finalizar_pedido`."
+        )
+    else:
+        lines.append(
+            "• NÃO pergunte forma de pagamento — chame "
+            "`finalizar_pedido(forma_pagamento=\"a_combinar\")`."
+        )
+    if ask_delivery:
+        lines.append(
+            "• Antes de fechar, pergunte se é ENTREGA ou RETIRADA na loja. "
+            "Se for entrega, peça/anote o endereço (use `salvar_dados_cliente`)."
+        )
+    else:
+        lines.append(
+            "• NÃO pergunte sobre entrega, retirada ou endereço — isso é "
+            "tratado no balcão. Apenas feche o pedido."
+        )
+    return "\n".join(lines)
 
 
 def build_sales_config_block(config: dict, customer: dict | None) -> str:

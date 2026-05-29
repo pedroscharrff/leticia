@@ -365,39 +365,43 @@ async def vendedor_node(state: AgentState, llm_factory) -> AgentState:
     try:
         if use_preattendimento:
             # ── Modo pré-atendimento (sem estoque) ───────────────────────────
+            # parts = ESTÁVEL (cacheado) · volatile_parts = por-turno (não cacheado)
             parts: list[str] = []
+            volatile_parts: list[str] = []
             persona_txt = _persona_prefix(persona)
             if persona_txt:
                 parts.append(persona_txt)
 
             parts.append(skill_prompts.get("vendedor_preattendimento", _SYSTEM_PRE_ATENDIMENTO))
 
+            skill_extra = skill_instructions.get("vendedor", "")
+            if skill_extra:
+                parts.append("[INSTRUÇÕES EXTRAS DO DONO DA FARMÁCIA]\n" + skill_extra)
+
+            # ── Volátil: status do cliente + contexto de handoff ─────────────
             try:
                 customer_block = _build_preattendimento_customer_block(sales_config, customer)
                 if customer_block:
-                    parts.append(customer_block)
+                    volatile_parts.append(customer_block)
             except Exception as _exc:  # noqa: BLE001
                 log.warning("vendedor.pre_customer_block_failed", exc=str(_exc))
 
             if received_handoff and handoff_context:
-                parts.append(
+                volatile_parts.append(
                     "[CONTEXTO DE HANDOFF]\n"
                     f"O cliente já mencionou interesse em: {handoff_context}\n"
                     "Adicione esse produto à lista de itens e continue a coleta. "
                     "Não precisa perguntar novamente sobre ele — só confirme e pergunte se quer mais algo."
                 )
             elif received_handoff and prev_response:
-                parts.append(
+                volatile_parts.append(
                     "[CONTEXTO DE HANDOFF]\n"
                     f"Continuando atendimento iniciado: {prev_response[:200]}"
                 )
 
-            skill_extra = skill_instructions.get("vendedor", "")
-            if skill_extra:
-                parts.append("[INSTRUÇÕES EXTRAS DO DONO DA FARMÁCIA]\n" + skill_extra)
-
             system_prompt = "\n\n".join(parts)
-            messages = _build_messages(state, system_prompt)
+            volatile_prompt = "\n\n".join(volatile_parts)
+            messages = _build_messages(state, system_prompt, volatile_prompt=volatile_prompt)
 
             from agents.tools.customer import make_save_customer_tool
             from agents.tools.balcao import make_anotar_pedido_balcao_tool
@@ -408,19 +412,12 @@ async def vendedor_node(state: AgentState, llm_factory) -> AgentState:
 
         else:
             # ── Modo normal (com consulta de estoque) ────────────────────────
+            # parts = ESTÁVEL (cacheado) · volatile_parts = por-turno (não cacheado)
             parts = []
+            volatile_parts = []
             persona_txt = _persona_prefix(persona)
             if persona_txt:
                 parts.append(persona_txt)
-
-            if caps["customer_memory"]:
-                try:
-                    from services.persona import build_customer_memory_block
-                    mem_block = build_customer_memory_block(customer)
-                    if mem_block:
-                        parts.append(mem_block)
-                except Exception as _exc:  # noqa: BLE001
-                    log.warning("vendedor.memory_block_failed", exc=str(_exc))
 
             parts.append(skill_prompts.get("vendedor", _SYSTEM))
 
@@ -484,13 +481,16 @@ async def vendedor_node(state: AgentState, llm_factory) -> AgentState:
                     "siga o atendimento naturalmente."
                 )
 
+            # Modo de fechamento (coleta vs completo) — definido pela farmácia,
+            # sobrepõe a intuição do agente sobre perguntar pagamento/entrega.
+            # É ESTÁVEL (depende só da config do tenant) → fica no prefixo cacheado.
             try:
-                from services.sales_config import build_sales_config_block
-                sales_block = build_sales_config_block(sales_config, customer)
-                if sales_block:
-                    parts.append(sales_block)
+                from services.sales_config import build_checkout_flow_block
+                checkout_block = build_checkout_flow_block(sales_config)
+                if checkout_block:
+                    parts.append(checkout_block)
             except Exception as _exc:  # noqa: BLE001
-                log.warning("vendedor.sales_config_block_failed", exc=str(_exc))
+                log.warning("vendedor.checkout_flow_block_failed", exc=str(_exc))
 
             skill_extra = skill_instructions.get("vendedor", "")
             if skill_extra:
@@ -499,8 +499,29 @@ async def vendedor_node(state: AgentState, llm_factory) -> AgentState:
                     f"comportamento padrão]\n{skill_extra}"
                 )
 
+            # ── VOLÁTIL (após o marcador de cache) ───────────────────────────
+            # Dados do cliente (memória) — mudam conforme o cadastro.
+            if caps["customer_memory"]:
+                try:
+                    from services.persona import build_customer_memory_block
+                    mem_block = build_customer_memory_block(customer)
+                    if mem_block:
+                        volatile_parts.append(mem_block)
+                except Exception as _exc:  # noqa: BLE001
+                    log.warning("vendedor.memory_block_failed", exc=str(_exc))
+
+            # Status dos campos obrigatórios ("✓ temos / ✗ falta") — muda a cada
+            # dado que o cliente fornece → volátil.
+            try:
+                from services.sales_config import build_sales_config_block
+                sales_block = build_sales_config_block(sales_config, customer)
+                if sales_block:
+                    volatile_parts.append(sales_block)
+            except Exception as _exc:  # noqa: BLE001
+                log.warning("vendedor.sales_config_block_failed", exc=str(_exc))
+
             if received_handoff:
-                parts.append(
+                volatile_parts.append(
                     "[CONTINUAÇÃO INTERNA — não é visível ao cliente]\n"
                     f"Você acabou de dizer (como parte da mesma conversa contínua):\n"
                     f"\"\"\"\n{prev_response}\n\"\"\"\n"
@@ -516,15 +537,17 @@ async def vendedor_node(state: AgentState, llm_factory) -> AgentState:
                     "• Se o produto não estiver no estoque, ofereça alternativa do catálogo."
                 )
 
+            # Carrinho — muda a cada add/remove → o principal motivo do cache miss.
             if cart.get("items"):
                 cart_lines = [f"  • {i['qty']}x {i['name']} — R$ {i['price']:.2f}" for i in cart["items"]]
-                parts.append(
+                volatile_parts.append(
                     "Carrinho atual do cliente:\n" + "\n".join(cart_lines)
                     + f"\n  Subtotal: R$ {cart.get('subtotal', 0):.2f}"
                 )
 
             system_prompt = "\n\n".join(parts)
-            messages = _build_messages(state, system_prompt)
+            volatile_prompt = "\n\n".join(volatile_parts)
+            messages = _build_messages(state, system_prompt, volatile_prompt=volatile_prompt)
 
             from agents.tools.inventory import (
                 make_inventory_tool,
