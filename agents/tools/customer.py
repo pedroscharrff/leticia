@@ -3,6 +3,7 @@ Tools de cadastro de cliente e gerenciamento de pedidos pendentes.
 
   • salvar_dados_cliente — UPSERT em customers conforme cliente informa
                             (nome, CPF, endereço, etc.)
+  • consultar_pedido     — busca o status de um pedido pelo código único
   • cancelar_pedido      — marca pedido pending/confirmed como cancelled
   • editar_pedido        — altera itens/observações de pedido pending
 """
@@ -15,6 +16,18 @@ import structlog
 from langchain_core.tools import tool
 
 log = structlog.get_logger()
+
+
+# Status técnico → frase amigável para o cliente no WhatsApp.
+_STATUS_LABEL = {
+    "pending":           "Recebido — aguardando confirmação do atendente",
+    "aguardando_balcao": "Recebido — o atendente vai finalizar no balcão",
+    "confirmed":         "Confirmado — em preparação",
+    "processing":        "Em preparação",
+    "shipped":           "Saiu para entrega",
+    "delivered":         "Entregue",
+    "cancelled":         "Cancelado",
+}
 
 
 # Mapa: chave amigável (usada pela tool) → coluna na tabela customers
@@ -127,6 +140,93 @@ def make_save_customer_tool(schema_name: str, phone: str, customer: dict):
             return "Não consegui salvar os dados agora. Tente novamente."
 
     return salvar_dados_cliente
+
+
+def make_consultar_pedido_tool(schema_name: str, phone: str):
+    """
+    Consulta o status de um pedido pelo código único (o ID curto entregue ao
+    cliente no fechamento, ex.: '7e2a5b91') ou pelo ID completo.
+
+    Escopo SEMPRE no phone do cliente — um cliente só enxerga os próprios
+    pedidos, mesmo que informe um código de outra pessoa.
+    """
+    @tool
+    async def consultar_pedido(codigo: str = "") -> str:
+        """
+        Consulta o status e os detalhes de um pedido do cliente pelo código
+        único. Use quando o cliente perguntar "cadê meu pedido", "qual o status
+        do pedido X", "meu pedido já saiu", etc.
+
+        Args:
+            codigo: código único do pedido (ID curto, ex.: '7e2a5b91') ou
+                    completo. Se vazio, retorna o pedido mais recente do cliente.
+        """
+        try:
+            from db.postgres import get_db_conn
+            async with get_db_conn() as conn:
+                await conn.execute(f"SET search_path = {schema_name}, public")
+
+                if codigo and codigo.strip():
+                    needle = codigo.strip().lstrip("#").lower()
+                    row = await conn.fetchrow(
+                        """
+                        SELECT o.id, o.status, o.items, o.total, o.created_at, o.notes
+                        FROM orders o
+                        JOIN customers c ON c.id = o.customer_id
+                        WHERE c.phone = $1 AND o.id::text ILIKE $2
+                        ORDER BY o.created_at DESC LIMIT 1
+                        """,
+                        phone, f"{needle}%",
+                    )
+                else:
+                    row = await conn.fetchrow(
+                        """
+                        SELECT o.id, o.status, o.items, o.total, o.created_at, o.notes
+                        FROM orders o
+                        JOIN customers c ON c.id = o.customer_id
+                        WHERE c.phone = $1
+                        ORDER BY o.created_at DESC LIMIT 1
+                        """,
+                        phone,
+                    )
+
+            if not row:
+                if codigo and codigo.strip():
+                    return (
+                        f"Não encontrei nenhum pedido com o código '{codigo.strip()}' "
+                        "nos seus registros. Confere se o código está certo?"
+                    )
+                return "Não encontrei nenhum pedido seu no sistema."
+
+            short_id = str(row["id"])[:8]
+            status_label = _STATUS_LABEL.get(row["status"], row["status"])
+
+            items = row["items"] or []
+            if isinstance(items, str):
+                items = json.loads(items)
+
+            lines = [
+                f"Pedido #{short_id}",
+                f"Status: {status_label}",
+            ]
+            if items:
+                lines.append("Itens:")
+                for it in items:
+                    qty = it.get("qty", 1)
+                    name = it.get("name", "?")
+                    lines.append(f"  • {qty}x {name}")
+            total = float(row["total"] or 0)
+            if total > 0:
+                lines.append(f"Total: R$ {total:.2f}")
+            if row["created_at"]:
+                lines.append(f"Feito em: {row['created_at']:%d/%m/%Y %H:%M}")
+            return "\n".join(lines)
+
+        except Exception as exc:
+            log.error("tool.consultar_pedido.error", phone=phone, exc=str(exc))
+            return "Não consegui consultar o pedido agora. Tente novamente em instantes."
+
+    return consultar_pedido
 
 
 def make_cancel_order_tool(schema_name: str, phone: str):

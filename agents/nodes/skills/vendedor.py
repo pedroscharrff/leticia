@@ -149,6 +149,9 @@ FERRAMENTAS (tools)
     Ex: campos={"nome": "João Silva", "cpf": "12345678900"}
 • finalizar_pedido(forma_pagamento, observacoes)
     forma_pagamento: "pix" | "cartao_credito" | "cartao_debito" | "dinheiro" | "boleto"
+• consultar_pedido(codigo)
+    Use quando o cliente perguntar o status/andamento de um pedido. `codigo` é o
+    número do pedido (ex: '7e2a5b91'). Vazio = pedido mais recente do cliente.
 • cancelar_pedido(numero_pedido)
 • editar_pedido(numero_pedido, adicionar, remover, nova_observacao)
 
@@ -240,6 +243,9 @@ FERRAMENTAS (tools)
 ═══════════════════════════════════════════════════════════════════════
 • salvar_dados_cliente(campos)
     Ex: campos={"nome":"João Silva","cpf":"12345678900","cep":"01310-100"}
+• consultar_pedido(codigo)
+    Use quando o cliente perguntar o status/andamento de um pedido já feito.
+    `codigo` é o número do pedido (ex: '7e2a5b91'). Vazio = pedido mais recente.
 • anotar_pedido_balcao(itens, observacoes)
     itens: [{"name":"Dipirona 500mg","qty":2}, {"name":"Soro","qty":1}]
     observacoes: texto livre (ex: "tem receita", "urgente", "prefere genérico")
@@ -413,10 +419,14 @@ async def vendedor_node(state: AgentState, llm_factory) -> AgentState:
             volatile_prompt = "\n\n".join(volatile_parts)
             messages = _build_messages(state, system_prompt, volatile_prompt=volatile_prompt)
 
-            from agents.tools.customer import make_save_customer_tool
+            from agents.tools.customer import (
+                make_save_customer_tool,
+                make_consultar_pedido_tool,
+            )
             from agents.tools.balcao import make_anotar_pedido_balcao_tool
             tools = [
                 make_save_customer_tool(schema_name, phone_num, customer),
+                make_consultar_pedido_tool(schema_name, phone_num),
                 make_anotar_pedido_balcao_tool(schema_name, phone_num, customer),
             ]
 
@@ -578,6 +588,7 @@ async def vendedor_node(state: AgentState, llm_factory) -> AgentState:
             )
             from agents.tools.customer import (
                 make_save_customer_tool,
+                make_consultar_pedido_tool,
                 make_cancel_order_tool,
                 make_edit_order_tool,
             )
@@ -591,6 +602,7 @@ async def vendedor_node(state: AgentState, llm_factory) -> AgentState:
                     sales_config=sales_config, customer=customer,
                 ),
                 make_save_customer_tool(schema_name, phone_num, customer),
+                make_consultar_pedido_tool(schema_name, phone_num),
                 make_cancel_order_tool(schema_name, phone_num),
                 make_edit_order_tool(schema_name, phone_num),
             ]
