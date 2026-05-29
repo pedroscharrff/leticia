@@ -128,6 +128,16 @@ Quando usar `[[ESCALATE]]`:
   um de nossos atendentes." e em seguida `[[ESCALATE]]`.
 • O sistema vai fazer a transferência automaticamente.
 
+🛑 TRAVA ANTI-TRANSFERÊNCIA INDEVIDA (CRÍTICA):
+NÃO use `[[ESCALATE]]` nem `[[HANDOFF:...]]` em nenhuma outra situação além
+das listadas acima. Especificamente, NUNCA transfira quando:
+• o cliente está apenas comprando, confirmando ou respondendo "sim/não/ok";
+• você conseguiu responder normalmente (achou produto, fechou pedido);
+• o cliente só agradeceu ou se despediu.
+Na dúvida, NÃO transfira — continue o atendimento você mesmo. Transferir sem
+motivo real atrapalha o cliente e sobrecarrega o balcão. Só transfira se um
+dos gatilhos explícitos acima realmente ocorreu na ÚLTIMA mensagem do cliente.
+
 ═══════════════════════════════════════════════════════════════════════
 FERRAMENTAS (tools)
 ═══════════════════════════════════════════════════════════════════════
@@ -826,12 +836,39 @@ async def vendedor_node(state: AgentState, llm_factory) -> AgentState:
     history_new = list(skill_history) + ["vendedor"]
     handoff_count = state.get("handoff_count", 0)
 
+    # Determina o motivo da transferência (se houve) para auditoria.
+    if balcao_called:
+        escalate_reason = "balcao_preatendimento"
+    elif explicit_escalate:
+        escalate_reason = "explicit_escalate_llm"
+    elif handoff_target:
+        escalate_reason = f"handoff:{handoff_target}"
+    else:
+        escalate_reason = None
+
+    # Última mensagem do cliente — contexto pra entender transferências "do nada".
+    _last_user_msg = (state.get("current_message", "") or "")[:200]
+
+    # Loga toda transferência com o gatilho, pra monitorar via docker logs.
+    if escalate_reason:
+        log.warning(
+            "vendedor.transfer",
+            reason=escalate_reason,
+            trigger_msg=_last_user_msg,
+            mode="pre_atendimento" if use_preattendimento else "normal",
+            session=state.get("session_id", ""),
+            schema=schema_name,
+        )
+
     import time as _time
     _trace_data: dict = {
         "mode":        "pre_atendimento" if use_preattendimento else "normal",
         "cart_items":  len(cart.get("items", [])),
         "handoff_to":  handoff_target,
         "balcao":      balcao_called,
+        "escalate":    bool(balcao_called or explicit_escalate),
+        "escalate_reason": escalate_reason,
+        "trigger_msg": _last_user_msg if escalate_reason else None,
         "iters":       locals().get("iters_used", 0),
         "tool_calls":  _trace_calls,
         "chars":       len(final_response or ""),
