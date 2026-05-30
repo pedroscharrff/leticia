@@ -573,6 +573,18 @@ async def _run_graph(
                         "kind": "pre_handoff_offer",
                     },
                 )
+            # Resumo do pedido (capability-gated; antes das ofertas).
+            try:
+                from services.order_summary import send_order_summary
+                await send_order_summary(
+                    tenant_id,
+                    phone=phone,
+                    cart=(final_state or {}).get("cart"),
+                    text_sender=_send_text,
+                )
+            except Exception as exc:  # noqa: BLE001
+                log.warning("webhook.order_summary_failed",
+                            tenant=tenant_id, exc=str(exc))
             await _send_pre_handoff_offers(
                 tenant_id,
                 phone=phone,
@@ -1061,6 +1073,18 @@ async def _run_broker_flow(
                 await client.request(method, integration["reply_url"],
                                      json=body, headers=headers)
 
+        # Resumo do pedido (capability-gated; antes das ofertas).
+        try:
+            from services.order_summary import send_order_summary
+            await send_order_summary(
+                tenant_id,
+                phone=phone_clean,
+                cart=(final_state or {}).get("cart"),
+                text_sender=_send_text,
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.warning("broker.order_summary_failed",
+                        tenant=tenant_id, exc=str(exc))
         await _send_pre_handoff_offers(
             tenant_id,
             phone=phone_clean,
