@@ -251,6 +251,14 @@ async def _maybe_close_or_reset_session(
     )
 
     cfg = coerce_session_config(session_cfg)
+    keywords = cfg.get("close_keywords") or []
+    log.info(
+        "session.lifecycle_check",
+        tenant=tenant_id, phone_prefix=phone[:4],
+        msg_preview=(current_message or "")[:60],
+        close_keywords_count=len(keywords),
+        has_session_cfg=bool(cfg),
+    )
 
     # 1) Reset automático: cliente voltou após handoff (closed_at marcado e
     #    janela de pausa expirada — paused_until <= NOW ou ai_paused=FALSE).
@@ -280,7 +288,6 @@ async def _maybe_close_or_reset_session(
                     tenant=tenant_id, phone=phone[:4], exc=str(exc))
 
     # 2) Palavra-chave de encerramento enviada pelo cliente.
-    keywords = cfg.get("close_keywords") or []
     matched = matches_close_keyword(current_message, keywords)
     if not matched:
         return False

@@ -13,6 +13,7 @@ session_config (JSONB, em tenant_integrations e tenant_channels):
 from __future__ import annotations
 
 import json
+import re
 import unicodedata
 from typing import Any
 
@@ -47,22 +48,32 @@ def coerce_session_config(raw: Any) -> dict:
 def matches_close_keyword(message: str, keywords: list[str] | None) -> str | None:
     """Retorna a keyword que casou, ou None.
 
-    Casamento: a mensagem normalizada (lowercase, sem acentos) precisa ser
-    EXATAMENTE igual a uma das keywords normalizadas — evita falso-positivo
-    de palavras embutidas em frases longas (ex: "fim" dentro de "perfil").
-    Aceita também a keyword precedida apenas de pontuação leve.
+    Casamento (com fronteiras de palavra para evitar falso-positivo tipo
+    "fim" dentro de "perfil"):
+      1) Match exato da mensagem inteira contra a keyword (após normalizar
+         e remover pontuação leve nas bordas).
+      2) Match de palavra inteira no meio da mensagem — usa regex \\b ao
+         redor da keyword normalizada.
+
+    Normalização: NFKD (sem acentos) + lowercase + strip.
     """
     if not keywords:
         return None
     msg_norm = _normalize(message)
     if not msg_norm:
         return None
-    # Tira pontuação simples nas bordas
     msg_stripped = msg_norm.strip(".!?,;:\"'()[]")
     for kw in keywords:
         kw_norm = _normalize(kw)
         if not kw_norm:
             continue
+        # 1) Match exato da mensagem inteira
         if msg_stripped == kw_norm:
+            return kw
+        # 2) Match como palavra inteira no meio da frase
+        # Escapa regex chars; \b funciona bem com keywords compostas tipo
+        # "encerrar atendimento" (cada token vira palavra delimitada).
+        pattern = r"\b" + re.escape(kw_norm) + r"\b"
+        if re.search(pattern, msg_norm):
             return kw
     return None
