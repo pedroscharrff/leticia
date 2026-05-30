@@ -223,6 +223,91 @@ async def _send_pre_handoff_offers(
                     tenant=tenant_id, exc=str(exc))
 
 
+# ── Session close keyword + auto-reset ──────────────────────────────────────
+
+async def _maybe_close_or_reset_session(
+    tenant_id: str,
+    phone: str,
+    current_message: str,
+    session_cfg: dict,
+    *,
+    text_sender,   # async (text: str) -> None — entrega a confirmação ao cliente
+) -> bool:
+    """Aplica o ciclo de vida da sessão antes de rodar o agente.
+
+    1) Se a conversa está com `closed_at` marcado E NÃO está pausada (janela
+       de handoff já expirou), reseta — próxima mensagem inicia atendimento
+       do zero.
+    2) Se a mensagem casa com uma `close_keywords` configurada, encerra a
+       sessão, manda a `close_message` e retorna True (sinaliza ao caller
+       para PULAR o agente).
+
+    Retorna True quando a mensagem deve ser tratada como "encerramento" e
+    o agente NÃO deve rodar; False para seguir o fluxo normal.
+    """
+    from services import conversation_state as cs
+    from services.session_close import (
+        coerce_session_config, matches_close_keyword, DEFAULT_CLOSE_MESSAGE,
+    )
+
+    cfg = coerce_session_config(session_cfg)
+
+    # 1) Reset automático: cliente voltou após handoff (closed_at marcado e
+    #    janela de pausa expirada — paused_until <= NOW ou ai_paused=FALSE).
+    try:
+        state = await cs.get_state(tenant_id, phone)
+        if state.get("closed_at"):
+            from datetime import datetime, timezone
+            paused_until = state.get("paused_until")
+            still_paused = False
+            if state.get("ai_paused"):
+                if not paused_until:
+                    still_paused = True
+                else:
+                    pu = datetime.fromisoformat(paused_until)
+                    if pu > datetime.now(timezone.utc):
+                        still_paused = True
+            if not still_paused:
+                await cs.reset_session(
+                    tenant_id, phone,
+                    by="auto:new_contact",
+                    reason="post_close_new_contact",
+                )
+                log.info("session.reset_on_new_contact",
+                         tenant=tenant_id, phone=phone[:4])
+    except Exception as exc:  # noqa: BLE001
+        log.warning("session.reset_check_failed",
+                    tenant=tenant_id, phone=phone[:4], exc=str(exc))
+
+    # 2) Palavra-chave de encerramento enviada pelo cliente.
+    keywords = cfg.get("close_keywords") or []
+    matched = matches_close_keyword(current_message, keywords)
+    if not matched:
+        return False
+
+    close_msg = (cfg.get("close_message") or DEFAULT_CLOSE_MESSAGE).strip()
+    try:
+        await cs.end_session(
+            tenant_id, phone,
+            by="customer:keyword",
+            reason=f"close_keyword:{matched}",
+            clear_history=True,
+        )
+    except Exception as exc:  # noqa: BLE001
+        log.warning("session.close_via_keyword_failed",
+                    tenant=tenant_id, phone=phone[:4], exc=str(exc))
+
+    try:
+        await text_sender(close_msg)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("session.close_message_delivery_failed",
+                    tenant=tenant_id, phone=phone[:4], exc=str(exc))
+
+    log.info("session.closed_by_keyword",
+             tenant=tenant_id, phone=phone[:4], keyword=matched)
+    return True
+
+
 # ── Main task ─────────────────────────────────────────────────────────────────
 
 @celery_app.task(name="process_message", bind=True, max_retries=0)
@@ -278,6 +363,44 @@ async def _run_graph(
         active_skills = [r["skill_name"] for r in rows]
 
     llm_cfg = await load_tenant_llm_config(tenant_id)
+
+    # ── Session lifecycle (close keyword + auto-reset pós-handoff) ───────────
+    # Lê session_config do primeiro canal ativo com config preenchida.
+    try:
+        async with get_db_conn() as conn:
+            ch_row = await conn.fetchrow(
+                """
+                SELECT session_config
+                  FROM public.tenant_channels
+                 WHERE tenant_id = $1 AND active = TRUE
+                 ORDER BY created_at
+                 LIMIT 1
+                """,
+                tenant_id,
+            )
+        session_cfg = (ch_row and ch_row["session_config"]) or {}
+        if isinstance(session_cfg, str):
+            session_cfg = json.loads(session_cfg) if session_cfg else {}
+
+        async def _send_via_callback(text: str) -> None:
+            await _deliver_response(callback_url, {
+                "phone": phone,
+                "session_id": session_id,
+                "message": text,
+                "tenant_id": tenant_id,
+                "kind": "session_closed",
+            })
+
+        ended = await _maybe_close_or_reset_session(
+            tenant_id, phone, current_message,
+            session_cfg,
+            text_sender=_send_via_callback,
+        )
+        if ended:
+            return
+    except Exception as exc:  # noqa: BLE001
+        log.warning("webhook.flow.session_lifecycle_failed",
+                    tenant=tenant_id, exc=str(exc))
 
     tenant_cfg = TenantConfig(
         tenant_id=tenant_id,
@@ -647,6 +770,54 @@ async def _run_broker_flow(
     message = canonical_input.get("message") or ""
     session_id = canonical_input.get("session_id") or phone_clean
 
+    # ── Ciclo de vida da sessão ─────────────────────────────────────────────
+    # 1) Reseta a sessão se o cliente voltou após handoff (closed_at marcado
+    #    e janela de pausa expirada).
+    # 2) Encerra agora se a msg casa com palavra-chave configurada no canal.
+    async def _send_via_broker(text: str) -> None:
+        """Envia texto pelo reply_url do gateway (mesmo caminho do reply normal)."""
+        from services import broker as broker_svc
+        ctx = {
+            "input": canonical_input, "reply": text,
+            "phone": phone, "message": message,
+            "name": canonical_input.get("name"),
+            "session_id": session_id, "event_id": raw_event_id,
+        }
+        template = integration["reply_body_template"] or {}
+        body = (broker_svc.apply_mapping(template, ctx) if template
+                else {"reply": text})
+        if integration["reply_mode"] == "forward" and integration["reply_url"]:
+            method = (integration.get("reply_method") or "POST").upper()
+            headers = {str(k): str(v) for k, v in
+                       (integration.get("reply_headers") or {}).items() if k and v}
+            async with httpx.AsyncClient(timeout=15) as client:
+                await client.request(method, integration["reply_url"],
+                                     json=body, headers=headers)
+
+    try:
+        ended = await _maybe_close_or_reset_session(
+            tenant_id, phone_clean, message,
+            integration.get("session_config") or {},
+            text_sender=_send_via_broker,
+        )
+        if ended:
+            # Persist como evento processado (skip do agente)
+            try:
+                async with get_db_conn() as conn:
+                    await conn.execute(
+                        "UPDATE public.broker_raw_events "
+                        "SET status='processed', canonical_event='session.closed_by_keyword', "
+                        "    attempts=attempts+1, processed_at=NOW() "
+                        "WHERE id=$1",
+                        raw_event_id,
+                    )
+            except Exception:
+                pass
+            return
+    except Exception as exc:  # noqa: BLE001
+        log.warning("broker.flow.session_lifecycle_failed",
+                    tenant=tenant_id, exc=str(exc))
+
     # Safety net: se canonical_input não trouxer mídia, tenta auto-detectar
     # no payload bruto do evento (cobre o caso de canonical antigo ou
     # bundling com versão anterior do código).
@@ -830,7 +1001,14 @@ async def _run_broker_flow(
     forward_response: dict | None = None
     forward_error: str | None = None
 
-    if integration["reply_mode"] == "forward" and integration["reply_url"]:
+    # IMPORTANTE: quando o handoff foi executado, `transfer_to_human` JÁ entregou
+    # a mensagem de transferência ao cliente (POST no endpoint ClickMassa com o
+    # `body`). Forwardear `reply_text` de novo aqui pelo reply_url duplicaria a
+    # mensagem na conversa do cliente. Então pulamos o forward principal nesse
+    # caso — as ofertas pré-handoff abaixo continuam saindo normalmente.
+    if handoff_was_executed:
+        log.info("broker.flow.skip_reply_forward_after_handoff", tenant=tenant_id)
+    elif integration["reply_mode"] == "forward" and integration["reply_url"]:
         method = (integration.get("reply_method") or "POST").upper()
         headers = {str(k): str(v) for k, v in
                    (integration.get("reply_headers") or {}).items() if k and v}

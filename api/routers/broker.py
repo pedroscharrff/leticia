@@ -93,6 +93,7 @@ class IntegrationOut(BaseModel):
     bundle_window_seconds: int = 10
     skip_rules: list[dict] = Field(default_factory=list)
     handoff_config: dict = Field(default_factory=dict)
+    session_config: dict = Field(default_factory=dict)
 
 
 class FlowConfigIn(BaseModel):
@@ -108,6 +109,7 @@ class FlowConfigIn(BaseModel):
     bundle_window_seconds: int = Field(default=10, ge=2, le=120)
     skip_rules: list[dict[str, Any]] = Field(default_factory=list)
     handoff_config: dict[str, Any] = Field(default_factory=dict)
+    session_config: dict[str, Any] = Field(default_factory=dict)
 
 
 class MappingIn(BaseModel):
@@ -267,6 +269,7 @@ def _integration_out(row: dict, ingest_url: str) -> IntegrationOut:
         bundle_window_seconds=row.get("bundle_window_seconds") or 10,
         skip_rules=row.get("skip_rules") or [],
         handoff_config=row.get("handoff_config") or {},
+        session_config=row.get("session_config") or {},
         config_json=row.get("config_json") or {},
     )
 
@@ -878,6 +881,7 @@ async def save_flow(
                 bundle_window_seconds  = $10,
                 skip_rules             = $11,
                 handoff_config         = $12,
+                session_config         = $13,
                 updated_at             = NOW()
             WHERE id = $1
             RETURNING *
@@ -894,6 +898,7 @@ async def save_flow(
             body.bundle_window_seconds,
             body.skip_rules,
             body.handoff_config,
+            body.session_config,
         )
         tenant = await conn.fetchrow(
             "SELECT api_key FROM public.tenants WHERE id = $1", user.tenant_id,

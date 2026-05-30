@@ -432,6 +432,7 @@ function FlowTab({ integration, onSaved }: { integration: Integration; onSaved: 
         skip_rules,
         // Preserva config de handoff (editada na aba "Transferir p/ atendente")
         handoff_config: integration.handoff_config || {},
+        session_config: integration.session_config || {},
       });
       setSaveMsg("✓ Configuração salva!");
       onSaved();
@@ -1144,6 +1145,10 @@ const DEFAULT_TRIGGER_KEYWORDS = [
   "falar com alguém", "falar com alguem", "atendimento humano",
 ];
 
+const DEFAULT_CLOSE_KEYWORDS = ["encerrar", "encerrar atendimento", "tchau", "fim"];
+const DEFAULT_CLOSE_MESSAGE =
+  "Atendimento encerrado. Quando precisar de algo, é só me chamar!";
+
 function HandoffTab({ integration, onSaved }: { integration: Integration; onSaved: () => void }) {
   const cfg = integration.handoff_config || {};
   const [enabled, setEnabled] = useState<boolean>(!!cfg.enabled);
@@ -1160,6 +1165,18 @@ function HandoffTab({ integration, onSaved }: { integration: Integration; onSave
       ? cfg.trigger_keywords
       : DEFAULT_TRIGGER_KEYWORDS
     ).join(", ")
+  );
+
+  // ── Encerrar atendimento (session_config) ─────────────────────────────────
+  const sessCfg = integration.session_config || {};
+  const [closeKeywordsText, setCloseKeywordsText] = useState<string>(
+    (sessCfg.close_keywords && sessCfg.close_keywords.length
+      ? sessCfg.close_keywords
+      : DEFAULT_CLOSE_KEYWORDS
+    ).join(", ")
+  );
+  const [closeMessage, setCloseMessage] = useState<string>(
+    sessCfg.close_message ?? DEFAULT_CLOSE_MESSAGE
   );
 
   const [saving, setSaving] = useState(false);
@@ -1182,12 +1199,22 @@ function HandoffTab({ integration, onSaved }: { integration: Integration; onSave
       ? c.trigger_keywords
       : DEFAULT_TRIGGER_KEYWORDS
     ).join(", "));
+    const s = integration.session_config || {};
+    setCloseKeywordsText((s.close_keywords && s.close_keywords.length
+      ? s.close_keywords
+      : DEFAULT_CLOSE_KEYWORDS
+    ).join(", "));
+    setCloseMessage(s.close_message ?? DEFAULT_CLOSE_MESSAGE);
     setTestResult(null);
     setSaveMsg("");
   }, [integration.id]);
 
   function parseKeywords(): string[] {
     return keywordsText.split(",").map(s => s.trim()).filter(Boolean);
+  }
+
+  function parseCloseKeywords(): string[] {
+    return closeKeywordsText.split(",").map(s => s.trim()).filter(Boolean);
   }
 
   async function save() {
@@ -1215,6 +1242,10 @@ function HandoffTab({ integration, onSaved }: { integration: Integration; onSave
         bundle_window_seconds: integration.bundle_window_seconds,
         skip_rules: integration.skip_rules || [],
         handoff_config,
+        session_config: {
+          close_keywords: parseCloseKeywords(),
+          close_message: closeMessage.trim() || DEFAULT_CLOSE_MESSAGE,
+        },
       });
       setSaveMsg("✓ Configuração de transferência salva!");
       onSaved();
@@ -1356,6 +1387,49 @@ function HandoffTab({ integration, onSaved }: { integration: Integration; onSave
             mesmo do agente responder. Deixe vazio para depender apenas do escalate
             do agente.
           </small>
+        </label>
+      </div>
+
+      {/* Bloco 3b: encerrar atendimento via palavra-chave do cliente */}
+      <div className="broker-card">
+        <h3 className="broker-card-title">Encerrar atendimento</h3>
+        <p className="broker-card-sub">
+          Quando o cliente enviar uma das palavras-chave abaixo, a sessão é
+          encerrada e o histórico é zerado. O próximo contato dele começa um
+          atendimento novo, do zero. <strong>Também acontece automaticamente
+          depois de uma transferência:</strong> quando o cliente voltar a
+          falar (após a janela de pausa do balcão), o agente abre uma nova
+          conversa em vez de continuar a anterior.
+        </p>
+
+        <label className="broker-field">
+          <span>Palavras-chave que encerram o atendimento</span>
+          <input
+            value={closeKeywordsText}
+            onChange={(e) => setCloseKeywordsText(e.target.value)}
+            placeholder="encerrar, tchau, fim"
+          />
+          <small style={{ color: "#86868b", fontSize: 12 }}>
+            Lista separada por vírgula. Comparação exata (case-insensitive,
+            sem acentos) — evita acionar dentro de frases longas. Ex: "fim"
+            casa só com a mensagem "fim", não com "perfil".
+          </small>
+        </label>
+
+        <label className="broker-field">
+          <span>Mensagem de confirmação enviada ao cliente</span>
+          <textarea
+            value={closeMessage}
+            onChange={(e) => setCloseMessage(e.target.value)}
+            rows={2}
+            placeholder={DEFAULT_CLOSE_MESSAGE}
+            style={{
+              width: "100%", padding: "8px 10px",
+              border: "1px solid var(--color-border, #e5e7eb)",
+              borderRadius: 6, fontSize: 14, fontFamily: "inherit",
+              resize: "vertical",
+            }}
+          />
         </label>
       </div>
 

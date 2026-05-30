@@ -80,7 +80,10 @@ async def is_ai_paused(tenant_id: str, phone: str) -> tuple[bool, str | None]:
 
     Uma conversa está "pausada" quando:
       • ai_paused=TRUE E (paused_until IS NULL OR paused_until > NOW())
-      • OU closed_at IS NOT NULL (atendimento encerrado)
+
+    Nota: `closed_at` sozinho NÃO bloqueia mais (vira marcador de "sessão
+    encerrada — resetar no próximo contato"). O bloqueio efetivo durante
+    o handoff vem do `ai_paused` (auto_pause_after_handoff define ambos).
     """
     cache_hit = None
     try:
@@ -103,10 +106,7 @@ async def is_ai_paused(tenant_id: str, phone: str) -> tuple[bool, str | None]:
     paused = False
     reason: str | None = None
 
-    if state["closed_at"]:
-        paused = True
-        reason = "atendimento_encerrado"
-    elif state["ai_paused"]:
+    if state["ai_paused"]:
         until = state["paused_until"]
         if until is None:
             paused = True
@@ -248,6 +248,52 @@ async def close(
     return await get_state(tenant_id, phone)
 
 
+async def end_session(
+    tenant_id: str,
+    phone: str,
+    *,
+    by: str,
+    reason: str | None = None,
+    clear_history: bool = True,
+) -> None:
+    """Encerra a sessão SEM pausar a IA — o próximo contato vai detectar o
+    marker `closed_at` e abrir um novo atendimento do zero.
+
+    Diferença vs. `close()`: este NÃO seta ai_paused, então a próxima
+    mensagem do cliente é processada (e dispara o reset automático).
+
+    Usado quando o cliente envia a palavra-chave configurada no canal.
+    """
+    async with get_db_conn() as conn:
+        await conn.execute(
+            """
+            INSERT INTO public.conversation_state
+                (tenant_id, phone, ai_paused, paused_until, paused_by,
+                 paused_reason, closed_at, updated_at)
+            VALUES ($1, $2, FALSE, NULL, $3, $4, NOW(), NOW())
+            ON CONFLICT (tenant_id, phone) DO UPDATE SET
+                ai_paused     = FALSE,
+                paused_until  = NULL,
+                paused_by     = EXCLUDED.paused_by,
+                paused_reason = EXCLUDED.paused_reason,
+                closed_at     = NOW(),
+                updated_at    = NOW()
+            """,
+            tenant_id, phone, by, reason or "ended",
+        )
+    await _invalidate_cache(tenant_id, phone)
+
+    if clear_history:
+        try:
+            redis = get_redis()
+            await redis.delete(f"hist:{tenant_id}:{phone}")
+        except Exception:
+            pass
+
+    log.info("convstate.ended", tenant=tenant_id, phone=phone[:4],
+             by=by, reason=reason)
+
+
 # ── Helpers para o handoff automático ────────────────────────────────────────
 
 async def auto_pause_after_handoff(
@@ -264,15 +310,80 @@ async def auto_pause_after_handoff(
     if pause_minutes <= 0:
         return
     try:
-        await pause(
-            tenant_id, phone,
-            until_minutes=pause_minutes,
-            by="auto:handoff",
-            reason="atendente_humano_assumiu",
-        )
+        # Marca também closed_at: quando o cliente voltar a falar depois do
+        # fim da janela de pausa, o webhook/worker detecta o marker e abre
+        # um novo atendimento do zero (reset_session) em vez de continuar
+        # o histórico anterior.
+        from datetime import timedelta
+        paused_until = datetime.now(timezone.utc) + timedelta(minutes=pause_minutes)
+        async with get_db_conn() as conn:
+            await conn.execute(
+                """
+                INSERT INTO public.conversation_state
+                    (tenant_id, phone, ai_paused, paused_until,
+                     paused_by, paused_reason, closed_at, updated_at)
+                VALUES ($1, $2, TRUE, $3, 'auto:handoff',
+                        'atendente_humano_assumiu', NOW(), NOW())
+                ON CONFLICT (tenant_id, phone) DO UPDATE SET
+                    ai_paused     = TRUE,
+                    paused_until  = EXCLUDED.paused_until,
+                    paused_by     = 'auto:handoff',
+                    paused_reason = 'atendente_humano_assumiu',
+                    closed_at     = NOW(),
+                    updated_at    = NOW()
+                """,
+                tenant_id, phone, paused_until,
+            )
+        await _invalidate_cache(tenant_id, phone)
+        log.info("convstate.auto_pause_after_handoff",
+                 tenant=tenant_id, phone=phone[:4],
+                 until=paused_until.isoformat())
     except Exception as exc:
         log.warning("convstate.auto_pause_failed",
                     tenant=tenant_id, phone=phone[:4], exc=str(exc))
+
+
+async def reset_session(
+    tenant_id: str,
+    phone: str,
+    *,
+    by: str,
+    reason: str | None = None,
+) -> None:
+    """Zera a sessão da conversa: limpa pausa, closed_at e o histórico Redis.
+
+    Usado quando o cliente envia palavra-chave de encerramento OU quando volta
+    a falar após um handoff (closed_at marcado e janela de pausa expirada) —
+    o próximo atendimento começa do zero.
+    """
+    async with get_db_conn() as conn:
+        await conn.execute(
+            """
+            INSERT INTO public.conversation_state
+                (tenant_id, phone, ai_paused, paused_until, paused_by,
+                 paused_reason, closed_at, updated_at)
+            VALUES ($1, $2, FALSE, NULL, $3, $4, NULL, NOW())
+            ON CONFLICT (tenant_id, phone) DO UPDATE SET
+                ai_paused     = FALSE,
+                paused_until  = NULL,
+                paused_by     = EXCLUDED.paused_by,
+                paused_reason = EXCLUDED.paused_reason,
+                closed_at     = NULL,
+                updated_at    = NOW()
+            """,
+            tenant_id, phone, by, reason or "session_reset",
+        )
+    await _invalidate_cache(tenant_id, phone)
+
+    try:
+        redis = get_redis()
+        # session_id padrão é "{tenant_id}:{phone}" (LangGraph thread_id)
+        await redis.delete(f"hist:{tenant_id}:{phone}")
+    except Exception:
+        pass
+
+    log.info("convstate.reset", tenant=tenant_id, phone=phone[:4],
+             by=by, reason=reason)
 
 
 async def list_recent(

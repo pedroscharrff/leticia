@@ -21,7 +21,13 @@ export interface Integration {
   bundle_window_seconds: number;
   skip_rules: { path: string; equals: unknown; comment?: string }[];
   handoff_config: HandoffConfig;
+  session_config: SessionConfig;
   config_json: IntegrationConfig;
+}
+
+export interface SessionConfig {
+  close_keywords?: string[];
+  close_message?: string;
 }
 
 export interface IntegrationConfig {
@@ -55,6 +61,7 @@ export interface FlowConfig {
   bundle_window_seconds?: number;
   skip_rules?: { path: string; equals: unknown; comment?: string }[];
   handoff_config?: HandoffConfig;
+  session_config?: SessionConfig;
 }
 
 export interface IntegrationInput {
