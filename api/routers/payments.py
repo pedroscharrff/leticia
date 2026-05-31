@@ -147,17 +147,22 @@ async def recovery_stats(user: TenantUser) -> RecoveryStatsOut:
     import asyncpg
 
     async def _safe_count(conn, sql: str, label: str) -> int:
-        # Schema drift (migrations 023/025) pode deixar colunas faltando em
-        # tenants antigos; em vez de devolver 500 ao portal, contamos 0 e
-        # logamos para a equipe rodar as migrations.
+        # Dois modos de falha:
+        #   1) Schema drift (migrations 023/025 mudas): UndefinedColumn/Table.
+        #   2) Dados sujos: ex. `cart.items` com valor escalar em vez de array
+        #      dispara InvalidParameterValueError ("cannot get array length of
+        #      a scalar"). O planner pode reordenar AND e avaliar
+        #      jsonb_array_length antes do jsonb_typeof guard.
+        # Em qualquer caso, melhor contar 0 e logar do que devolver 500.
         try:
             v = await conn.fetchval(sql)
             return int(v or 0)
-        except (asyncpg.UndefinedColumnError,
-                asyncpg.UndefinedTableError) as e:
-            log.warning("recovery.stats.schema_drift",
+        except asyncpg.PostgresError as e:
+            log.warning("recovery.stats.query_failed",
                         tenant_id=str(user.tenant_id),
-                        query=label, error=str(e))
+                        query=label,
+                        error_type=type(e).__name__,
+                        error=str(e))
             return 0
 
     async with get_db_conn() as conn:
@@ -191,12 +196,15 @@ async def recovery_stats(user: TenantUser) -> RecoveryStatsOut:
             log.warning("recovery.stats.no_customers_table", schema=schema)
 
         # Carrinhos abandonados (itens > 0 + última atualização > 4h e sem nudge ainda)
-        # jsonb_typeof guard evita "cannot get array length of a scalar" quando items é
-        # um escalar ou objeto em vez de array.
+        # CASE WHEN é o guard correto: jsonb_typeof num AND não impede o
+        # planner de avaliar jsonb_array_length primeiro e estourar
+        # InvalidParameterValueError quando `items` é um escalar/objeto.
         carts_pending = await _safe_count(conn, """
             SELECT COUNT(*) FROM cart
-             WHERE jsonb_typeof(COALESCE(items, '[]'::jsonb)) = 'array'
-               AND jsonb_array_length(COALESCE(items, '[]'::jsonb)) > 0
+             WHERE (CASE WHEN jsonb_typeof(COALESCE(items, '[]'::jsonb)) = 'array'
+                         THEN jsonb_array_length(COALESCE(items, '[]'::jsonb))
+                         ELSE 0
+                    END) > 0
                AND updated_at < NOW() - INTERVAL '4 hours'
                AND (sent_recovery_at IS NULL
                     OR sent_recovery_at < NOW() - INTERVAL '24 hours')
@@ -210,9 +218,10 @@ async def recovery_stats(user: TenantUser) -> RecoveryStatsOut:
 
         refill_clients = await _safe_count(conn, """
             SELECT COUNT(*) FROM customers
-             WHERE continuous_meds IS NOT NULL
-               AND jsonb_typeof(continuous_meds) = 'array'
-               AND jsonb_array_length(continuous_meds) > 0
+             WHERE (CASE WHEN jsonb_typeof(COALESCE(continuous_meds, '[]'::jsonb)) = 'array'
+                         THEN jsonb_array_length(COALESCE(continuous_meds, '[]'::jsonb))
+                         ELSE 0
+                    END) > 0
         """, "refill_clients")
 
         # Nudges enviados nos últimos 30 dias: contagem de last_nudge_at >= 30d
