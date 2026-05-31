@@ -87,16 +87,12 @@ async def load_context(state: AgentState) -> AgentState:
     try:
         from db.postgres import get_db_conn
         async with get_db_conn() as conn:
-            # Persona (tabela public.tenant_persona)
+            # Persona (tabela public.tenant_persona) — SELECT * para que NOVAS
+            # colunas (business_hours, catchphrases, forbidden_topics, etc.)
+            # cheguem ao agente sem precisar editar o SELECT a cada alteração
+            # do schema. Cf. docs/specs/02-skills.md §Persona — campos suportados.
             persona_row = await conn.fetchrow(
-                """
-                SELECT agent_name, tone, language, greeting_template, signature,
-                       custom_instructions, persona_bio, pharmacy_name,
-                       formality, emoji_usage, response_length,
-                       conversation_playbook
-                FROM public.tenant_persona
-                WHERE tenant_id = $1
-                """,
+                "SELECT * FROM public.tenant_persona WHERE tenant_id = $1",
                 tenant_id,
             )
             if persona_row:

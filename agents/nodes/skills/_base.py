@@ -93,19 +93,56 @@ def _parse_handoff(text: str) -> tuple[str, str | None, str]:
     return cleaned, target, context
 
 
+# Hints de formalidade/emoji/length — espelham services/persona.py mas vivem
+# aqui porque _persona_prefix é o único consumidor real no caminho do agente.
+# Se mudar um hint, mude nos dois lugares (e atualize spec 02 §Persona).
+_FORMALITY_HINT = {
+    "tu":     "Trate o cliente por 'tu'.",
+    "voce":   "Trate o cliente por 'você'.",
+    "senhor": "Trate o cliente por 'senhor(a)'.",
+}
+_EMOJI_HINT = {
+    "none":     "Não use emojis.",
+    "light":    "Use no máximo 1 emoji por mensagem, e só quando agregar.",
+    "moderate": "Use até 2 emojis por mensagem para reforçar o tom.",
+    "heavy":    "Use emojis livremente para tornar a conversa mais leve.",
+}
+
+
 def _persona_prefix(persona: dict) -> str:
-    """Monta instrução de persona a partir do dicionário carregado do DB."""
+    """Monta instrução de persona a partir do dicionário carregado do DB.
+
+    IMPORTANTE: esta função é a ÚNICA porta de entrada da persona no prompt
+    dos skills. Todo campo novo em `public.tenant_persona` que precise afetar
+    o comportamento do agente deve ser renderizado aqui. Salvar no DB sem
+    renderizar = config "fantasma" (operador edita e nada muda).
+    Cf. docs/specs/02-skills.md §Persona — campos suportados.
+    """
     if not persona:
         persona = {}
     # Aceita tanto o esquema novo (tenant_persona) quanto chaves antigas
-    name     = persona.get("agent_name") or persona.get("name") or "Assistente"
-    tone     = persona.get("tone") or "amigável"
-    lang     = persona.get("language") or "português brasileiro"
-    pharmacy = persona.get("pharmacy_name") or ""
-    bio      = persona.get("persona_bio") or ""
+    name      = persona.get("agent_name") or persona.get("name") or "Assistente"
+    tone      = persona.get("tone") or "amigável"
+    lang      = persona.get("language") or "português brasileiro"
+    pharmacy  = persona.get("pharmacy_name") or ""
+    tagline   = persona.get("pharmacy_tagline") or ""
+    bio       = persona.get("persona_bio") or ""
+    gender    = persona.get("agent_gender") or ""
+    formality = persona.get("formality") or ""
+    emoji     = persona.get("emoji_usage") or ""
     response_length = persona.get("response_length") or "short"
-    playbook = persona.get("conversation_playbook") or ""
-    extra    = persona.get("custom_instructions") or persona.get("extra_instructions") or ""
+    greeting  = persona.get("greeting_template") or ""
+    signature = persona.get("signature") or ""
+    playbook  = persona.get("conversation_playbook") or ""
+    forbidden = persona.get("forbidden_topics") or ""
+    catch     = persona.get("catchphrases") or []
+    business_hours   = persona.get("business_hours") or ""
+    location         = persona.get("location") or ""
+    delivery_info    = persona.get("delivery_info") or ""
+    payment_methods  = persona.get("payment_methods") or ""
+    website          = persona.get("website") or ""
+    instagram        = persona.get("instagram") or ""
+    extra = persona.get("custom_instructions") or persona.get("extra_instructions") or ""
 
     parts = [
         f"Você é {name}" + (f", atendente da {pharmacy}." if pharmacy else "."),
@@ -132,13 +169,62 @@ def _persona_prefix(persona: dict) -> str:
         "na mesma resposta. Use cada turno para UMA coisa.",
         "• Só comente disponibilidade/preço quando o cliente escolher o produto.",
     ]
+    if tagline:
+        parts.append(f"Slogan da farmácia: {tagline}")
     if bio:
         parts.append(bio)
-    parts.append(f"Tom: {tone}. Idioma: {lang}.")
+
+    # ── Estilo (tom, gênero, formalidade, emoji, tamanho, idioma) ─────────
+    style_bits: list[str] = [f"Tom: {tone}.", f"Idioma: {lang}."]
+    if gender:
+        style_bits.append(f"Use concordância de gênero {gender} ao se referir a si.")
+    if formality in _FORMALITY_HINT:
+        style_bits.append(_FORMALITY_HINT[formality])
+    if emoji in _EMOJI_HINT:
+        style_bits.append(_EMOJI_HINT[emoji])
     if response_length == "short":
-        parts.append("Tamanho preferido: respostas curtas (1-3 frases).")
+        style_bits.append("Tamanho preferido: respostas curtas (1-3 frases).")
     elif response_length == "medium":
-        parts.append("Tamanho preferido: respostas em até 2 parágrafos curtos.")
+        style_bits.append("Tamanho preferido: respostas em até 2 parágrafos curtos.")
+    elif response_length == "long":
+        style_bits.append("Tamanho preferido: respostas detalhadas quando o assunto exigir.")
+    parts.append(" ".join(style_bits))
+
+    # ── Bordões / saudação / assinatura ──────────────────────────────────
+    if isinstance(catch, (list, tuple)) and catch:
+        parts.append("Bordões da marca (use com moderação): " + "; ".join(str(c) for c in catch))
+    if greeting:
+        parts.append(f"Saudação preferida (use no PRIMEIRO contato): {greeting}")
+    if signature:
+        parts.append(f"Assinatura opcional (no fim de respostas longas): {signature}")
+
+    # ── Contexto da farmácia (loja física + canais) ───────────────────────
+    # Bloco estável — vai no prefixo cacheado. Mude no portal → próximo turno
+    # invalida o cache, depois cacheia o novo prefixo.
+    biz: list[str] = []
+    if business_hours:
+        biz.append(f"- Horário de atendimento: {business_hours}")
+    if location:
+        biz.append(f"- Endereço: {location}")
+    if delivery_info:
+        biz.append(f"- Entregas: {delivery_info}")
+    if payment_methods:
+        biz.append(f"- Pagamentos aceitos: {payment_methods}")
+    if website:
+        biz.append(f"- Site: {website}")
+    if instagram:
+        biz.append(f"- Instagram: {instagram}")
+    if biz:
+        parts.append("Contexto da farmácia (use quando o cliente perguntar):\n" + "\n".join(biz))
+
+    # ── Tópicos proibidos ────────────────────────────────────────────────
+    if forbidden:
+        parts.append(
+            "TÓPICOS PROIBIDOS — NÃO comente, NÃO opine, NÃO recomende:\n"
+            f"{forbidden}\n"
+            "Se o cliente puxar esses assuntos, redirecione gentilmente para o "
+            "atendimento da farmácia."
+        )
 
     # Playbook customizado pelo dono (fluxo de atendimento)
     if playbook:
@@ -304,26 +390,20 @@ async def run_skill(
     prev_skill         = (state.get("skill_history") or [None])[-1] if state.get("skill_history") else None
     prev_response      = state.get("final_response", "") if prev_skill and prev_skill != skill_name else ""
 
-    # Monta system prompt: persona + memória do cliente (se capability ON) +
-    # prompt customizado (se houver) + base + extra instructions
-    parts = []
+    # Monta system prompt: persona + prompt customizado (se houver) + base +
+    # extra instructions. Tudo aqui é ESTÁVEL turn-to-turn → vai no prefixo
+    # cacheado do Anthropic (cf. spec 08 §Prompt caching).
+    #
+    # Estado VOLÁTIL (memória do cliente, continuação de handoff) vai em
+    # `volatile_parts` — passado como `volatile_prompt` em _build_messages, que
+    # adiciona DEPOIS do marker de cache. Misturar volátil no system_prompt =
+    # cache miss em todo turno (já tomamos esse golpe — cf. spec 02 §Não fazer).
+    parts: list[str] = []
+    volatile_parts: list[str] = []
+
     persona_txt = _persona_prefix(persona)
     if persona_txt:
         parts.append(persona_txt)
-
-    # Bloco "o que sabemos sobre este cliente" — só injetado quando a
-    # capability `attendance.customer_memory` está ativa para o tenant.
-    # Tolerante a falhas: qualquer erro no service de capabilities cai em
-    # bloco vazio (cliente segue sendo atendido sem memória).
-    try:
-        from services import capabilities as cap_svc
-        from services.persona import build_customer_memory_block
-        if await cap_svc.is_enabled(state.get("tenant_id"), "attendance.customer_memory"):
-            mem_block = build_customer_memory_block(state.get("customer") or {})
-            if mem_block:
-                parts.append(mem_block)
-    except Exception as _exc:  # noqa: BLE001
-        log.warning("skill.customer_memory_block.failed", exc=str(_exc))
 
     # Prompt do skill — custom (tenant) substitui o base; senão usa base
     custom_prompt = skill_prompts.get(skill_name, "")
@@ -337,9 +417,27 @@ async def run_skill(
             f"comportamento padrão]\n{skill_extra}"
         )
 
-    # Se este skill recebeu um handoff, injeta o contexto e a resposta anterior
+    # ── VOLÁTIL (após o marker de cache) ──────────────────────────────────
+    # Bloco "o que sabemos sobre este cliente" — só injetado quando a
+    # capability `attendance.customer_memory` está ativa para o tenant.
+    # É volátil porque muda quando o cliente declara alergia/preferência/etc.
+    # Tolerante a falhas: qualquer erro cai em bloco vazio.
+    try:
+        from services import capabilities as cap_svc
+        from services.persona import build_customer_memory_block
+        if await cap_svc.is_enabled(state.get("tenant_id"), "attendance.customer_memory"):
+            mem_block = build_customer_memory_block(state.get("customer") or {})
+            if mem_block:
+                volatile_parts.append(mem_block)
+    except Exception as _exc:  # noqa: BLE001
+        log.warning("skill.customer_memory_block.failed", exc=str(_exc))
+
+    # Se este skill recebeu um handoff, injeta o contexto e a resposta anterior.
+    # ESTE BLOCO É VOLÁTIL — depende do skill anterior e do conteúdo da resposta
+    # dele. Se for pro prefixo estável, invalida o cache em TODO handoff
+    # (farmaceutico→vendedor é o caminho mais comum). Cf. spec 08 §regra de ouro.
     if prev_response and prev_skill and prev_skill != skill_name:
-        parts.append(
+        volatile_parts.append(
             "[CONTINUAÇÃO INTERNA — não é visível ao cliente]\n"
             f"Você acabou de dizer (como parte da mesma conversa contínua):\n"
             f"\"\"\"\n{prev_response}\n\"\"\"\n"
@@ -352,8 +450,9 @@ async def run_skill(
             "• Aja como a MESMA pessoa que escreveu o trecho acima."
         )
 
-    system_prompt = "\n\n".join(parts)
-    messages = _build_messages(state, system_prompt)
+    system_prompt   = "\n\n".join(parts)
+    volatile_prompt = "\n\n".join(volatile_parts)
+    messages = _build_messages(state, system_prompt, volatile_prompt=volatile_prompt)
 
     _node_error: dict | None = None
     tool_calls_trace: list[dict] = []

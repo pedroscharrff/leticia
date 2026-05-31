@@ -106,6 +106,36 @@ Tools: nenhuma.
 Quando: off-topic, emergência médica, conteúdo impróprio.
 Característica: **fast-path keyword** (palavras como `infarto`, `overdose`, `samu`...) → resposta hardcoded com SAMU/Bombeiros + `escalate=True` SEM chamar LLM (latência crítica).
 
+## Persona — campos suportados
+
+A persona é carregada em `agents/nodes/context.py::load_context` via `SELECT * FROM public.tenant_persona WHERE tenant_id = $1` (não listamos colunas — adicionou coluna na tabela, ela chega ao agente automaticamente).
+
+A renderização no prompt acontece em **uma única função**: `agents/nodes/skills/_base.py::_persona_prefix`. Todos os skills (incluindo `vendedor.py`, que tem fluxo próprio) passam por ela.
+
+**Regra de ouro**: campo salvo em `tenant_persona` que não é lido em `_persona_prefix` = config **fantasma** — operador edita no portal e nada muda no comportamento. Toda coluna nova precisa ter render correspondente.
+
+Campos atualmente renderizados (estável → vão no prefixo cacheado):
+
+| Campo | Onde aparece no prompt |
+|---|---|
+| `agent_name`, `pharmacy_name` | Linha de abertura ("Você é X, atendente da Y.") |
+| `pharmacy_tagline` | "Slogan da farmácia: ..." |
+| `persona_bio` | Bloco livre logo após identidade |
+| `tone`, `language` | Linha de estilo |
+| `agent_gender` | "Use concordância de gênero ... ao se referir a si" |
+| `formality` (`tu`/`voce`/`senhor`) | "Trate o cliente por ..." |
+| `emoji_usage` (`none`/`light`/`moderate`/`heavy`) | Regra de uso de emoji |
+| `response_length` (`short`/`medium`/`long`) | Tamanho preferido |
+| `catchphrases` (list[str]) | "Bordões da marca (use com moderação): ..." |
+| `greeting_template` | "Saudação preferida (use no PRIMEIRO contato): ..." |
+| `signature` | "Assinatura opcional (no fim de respostas longas): ..." |
+| `business_hours`, `location`, `delivery_info`, `payment_methods`, `website`, `instagram` | Bloco "Contexto da farmácia" (lista) |
+| `forbidden_topics` | Bloco "TÓPICOS PROIBIDOS — NÃO comente..." |
+| `conversation_playbook` | Bloco "PLAYBOOK DE ATENDIMENTO" |
+| `custom_instructions` | "Instruções extras do dono da farmácia: ..." |
+
+Para adicionar um campo novo de persona: migration adiciona a coluna em `public.tenant_persona` + entrada no `PERSONA_DEFAULTS` (`services/persona.py`) + render em `_persona_prefix`. Sem o render no `_persona_prefix`, o campo é só decoração no portal.
+
 ## Pontos de extensão
 
 ### Adicionar novo skill
@@ -135,6 +165,8 @@ Via portal `PortalLLMConfig.tsx` → `SkillOverride` (campos `llm_model`, `llm_p
 
 ## Regressões conhecidas / "Não fazer"
 
+- **Não jogar bloco de continuação de handoff (`[CONTINUAÇÃO INTERNA]`) dentro do `system_prompt` estável** em `run_skill`. Ele depende do skill anterior + texto da resposta dele → muda a cada handoff e invalida o cache. Vai em `volatile_parts` → `_build_messages(..., volatile_prompt=...)`. Já foi bug em prod: farmaceutico→vendedor (caminho mais comum) pagava input full toda vez. Mesma regra vale pro `vendedor.py` (cart, sales_config_block, address_hint, customer_memory → volátil).
+- **Não adicionar coluna em `public.tenant_persona` sem renderizar em `_persona_prefix`.** Os usuários editam no portal e acham que está aplicado, mas o agente nunca lê. Já tomamos esse golpe: `formality`, `emoji_usage`, `greeting_template`, `signature`, `business_hours`, `location`, `delivery_info`, `payment_methods`, `website`, `instagram`, `catchphrases`, `forbidden_topics`, `agent_gender`, `pharmacy_tagline` eram salvos no DB mas IGNORADOS no prompt (corrigido em 2026-05-31).
 - **Não emitir `[[HANDOFF:...]]` SEM ter respondido nada antes** (no farmaceutico, na situação de "cliente confirmou pedido"). Quebra a regra de "um único output por turno". Excepção: pedido fechado, onde só o marker está OK (vendedor concatena depois).
 - **Não chamar tools fora do `for i in range(max_iters)`**. Ultrapassa o limite e o agente fica preso em loop infinito.
 - **Não esquecer de limpar `[[HANDOFF]]` em modo pré-atendimento do vendedor**. Mesmo sem rotear, o marker aparece pro cliente se não rodar `_parse_handoff`.
