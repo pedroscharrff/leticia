@@ -6,7 +6,6 @@ Tools de inventário e vendas usadas pelo skill vendedor:
 """
 from __future__ import annotations
 
-import json
 import re
 import structlog
 from langchain_core.tools import tool
@@ -468,11 +467,11 @@ def make_finalize_order_tool(
                     """
                     INSERT INTO orders
                         (customer_id, session_key, items, subtotal, discount, total, status, notes)
-                    VALUES ($1, $2, $3::jsonb, $4, $5, $6, 'pending', $7)
+                    VALUES ($1, $2, $3, $4, $5, $6, 'pending', $7)
                     RETURNING id
                     """,
                     customer_id, session_key,
-                    json.dumps(items_snapshot),
+                    items_snapshot,
                     subtotal, discount, total, notes_full,
                 )
                 order_id = str(order_row["id"])

@@ -13,7 +13,6 @@ para que o celery worker acione a transferência ao atendente humano.
 """
 from __future__ import annotations
 
-import json
 import uuid
 
 import structlog
@@ -115,7 +114,7 @@ async def _anotar_pedido_balcao(
                 ) VALUES (
                     $1, $2, $3,
                     'aguardando_balcao',
-                    $4::jsonb,
+                    $4,
                     0, 0, 0,
                     $5,
                     FALSE,
@@ -125,7 +124,7 @@ async def _anotar_pedido_balcao(
                 order_id,
                 customer_id,
                 phone,
-                json.dumps(items_clean),
+                items_clean,
                 full_notes,
             )
         log.info(
