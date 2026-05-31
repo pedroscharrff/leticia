@@ -1,0 +1,155 @@
+# SPEC 03 — Tools (agente)
+
+**Propósito**: Tools são funções que o LLM do skill pode chamar para consultar dados reais (catálogo, bula, pedido) ou produzir efeitos (criar pedido, registrar memória).
+
+## Onde vive
+
+```
+agents/tools/
+├── inventory.py        # catálogo, carrinho, finalizar_pedido (modo normal)
+├── customer.py         # salvar_dados_cliente, consultar/cancelar/editar_pedido
+├── balcao.py           # anotar_pedido_balcao (modo pré-atendimento)
+├── bulario.py          # consultar_bula, consultar_bula_secao (ANVISA)
+└── sales_extras.py     # cross-sell, shipping, PIX, memória de cliente
+```
+
+## Padrão de implementação
+
+Toda tool é construída via **factory** que recebe contexto por closure e retorna um `@tool` LangChain:
+
+```python
+from langchain_core.tools import tool
+
+def make_buscar_produto_tool(schema_name: str, tenant_id: str, cart: dict):
+    @tool
+    async def buscar_produto(nome: str) -> str:
+        """
+        Docstring importante — é o que o LLM lê pra decidir quando chamar.
+        Descreve: o que faz, args (com tipos PT-BR amigáveis), retorno esperado.
+        """
+        # ... lógica usando schema_name/tenant_id/cart via closure
+        return "texto retornado pro LLM"
+    return buscar_produto
+```
+
+## Invariantes globais
+
+1. **Tool retorna `str`** sempre (texto que o LLM vai ler). Pra dados estruturados, encode em texto formatado legível pelo LLM.
+2. **Tool nunca lança exceção pro skill**. Captura tudo, retorna mensagem de erro humana.
+3. **Mutação de estado in-place**: `cart`/`customer` recebidos por closure devem ser mutados (skill passa a mesma ref).
+4. **Sem efeitos colaterais externos não-essenciais**: tool de consulta NÃO escreve em DB. Tool de mutação (finalizar_pedido, anotar_pedido_balcao, salvar_dados_cliente) escreve E retorna confirmação.
+5. **Marker de sucesso reconhecível**: tools de fechamento retornam strings com prefixo único (ex.: `"PEDIDO_ANOTADO:OK"`, `"PEDIDO_CRIADO:..."`) — usado pelo worker pra detectar trigger de handoff determinístico.
+6. **Tools que dependem de capability**: checar `await capabilities.is_enabled(tenant_id, "key")` dentro da tool (defesa em profundidade) — não confiar só no gating do skill.
+
+## Tools por arquivo
+
+### `inventory.py` — Modo normal (estoque real)
+
+| Tool | Args | Side effect | Retorna |
+|---|---|---|---|
+| `buscar_produto(nome)` | nome livre | nenhum | Lista de matches com nome/apresentação/preço/`[INTERNO: N un]` (se track_stock ON). Cliente NÃO vê o bloco interno. |
+| `adicionar_ao_carrinho(produto, quantidade)` | produto = nome retornado por buscar_produto | muta `cart` | Confirmação + subtotal atualizado |
+| `remover_do_carrinho(produto)` | produto exato | muta `cart` | Confirmação |
+| `atualizar_qtd_carrinho(produto, nova_quantidade)` | | muta `cart` | Confirmação |
+| `finalizar_pedido(forma_pagamento, observacoes)` | enum: pix/cartao_*/dinheiro/boleto | escreve em `orders` + `order_items`; muta `cart.just_finalized=True`, `cart.last_order={...}`, **esvazia `items`** | `"✅ Pedido confirmado #..."` com recibo formatado |
+
+`finalizar_pedido` falha **fechado** quando faltam campos obrigatórios (`sales_config.required_fields`) — incrementa `sales_attempts`, retorna mensagem de erro pedindo o campo.
+
+### `customer.py` — Cadastro + ciclo de vida de pedido
+
+| Tool | Args | Side effect | Retorna |
+|---|---|---|---|
+| `salvar_dados_cliente(campos)` | dict com chaves PT (`nome/cpf/cep/rua/...`) ou EN | upsert em `customers` + muta `customer` no state | Confirmação + estado atual |
+| `consultar_pedido(codigo)` | código (vazio = mais recente do telefone) | nenhum | Status amigável + itens + total |
+| `cancelar_pedido(numero_pedido)` | código | marca `cancelled` em `orders` | Confirmação |
+| `editar_pedido(numero_pedido, adicionar, remover, nova_observacao)` | | atualiza `orders` (apenas se status=pending) | Confirmação |
+
+`_FIELD_TO_COLUMN` mapeia chaves PT/EN → colunas reais. Adicionar campo novo = atualizar esse dict.
+
+### `balcao.py` — Modo pré-atendimento
+
+| Tool | Args | Side effect | Retorna |
+|---|---|---|---|
+| `anotar_pedido_balcao(itens, observacoes)` | itens = `[{"name", "qty"}]`, observacoes livre | escreve em `orders` com status `aguardando_balcao`; muta `cart.just_finalized=True`, `cart.last_order={...}` | `"PEDIDO_ANOTADO:OK"` (marker para o worker triggar handoff) |
+
+### `bulario.py` — Base ANVISA (compartilhada)
+
+| Tool | Args | Retorna |
+|---|---|---|
+| `consultar_bula(termo)` | termo livre | Metadata: nome, princípio ativo, fabricante, classe (top 5 matches) |
+| `consultar_bula_secao(termo_medicamento, pergunta)` | medicamento + pergunta | Trecho real da bula da seção relevante (indicações, posologia, contraindicações, etc.) |
+
+Estratégia: cache → local fuzzy (`bulario_repo`) → fallback ANVISA API com upsert.
+
+### `sales_extras.py` — Tools opcionais por capability
+
+| Tool | Capability | Args | Retorna |
+|---|---|---|---|
+| `recomendar_complementos(produto)` | `sales.cross_sell` | nome | Sugestões via `product_relations` (filtra alergias) |
+| `calcular_frete(cep, subtotal)` | `delivery.shipping_by_cep` | cep, subtotal | Valor + prazo + "frete grátis" se aplicável |
+| `gerar_link_pix(numero_pedido, valor_total)` | `payments.pix_asaas` | numero, valor | Copia-cola PIX via Asaas (pede CPF se falta) |
+| `registrar_alergia(substancia)` | `attendance.customer_memory` | | Persiste em `customers.allergies` |
+| `registrar_medicamento_continuo(nome, dose, frequencia)` | `attendance.customer_memory` | | Persiste em `customers.continuous_meds` |
+| `registrar_preferencia(chave, valor)` | `attendance.customer_memory` | | Persiste em `customers.preferences` |
+
+## Pontos de extensão
+
+### Adicionar nova tool
+
+1. Em `agents/tools/<arquivo apropriado>.py`: implementa factory `make_<tool>(...)` + função decorada `@tool`.
+2. Docstring **clara e completa** — o LLM usa ela pra decidir invocação.
+3. No skill que vai usar: bind no array de `tools` passado ao `run_skill` ou `bind_tools`.
+4. Atualizar prompt do skill mencionando a tool e quando usar.
+5. (Se capability-gated) Checar `is_enabled` no skill antes de incluir + dentro da tool como defesa.
+
+### Adicionar campo aceito em `salvar_dados_cliente`
+
+Atualizar `_FIELD_TO_COLUMN` em `customer.py`. Se for coluna nova, criar migration adicionando coluna em `customers` (via `create_tenant_schema` + função de upgrade para tenants existentes).
+
+### Adicionar provider de PIX além de Asaas
+
+`api/services/payments_asaas.py` é o cliente atual. Para abstrair:
+1. Extrair interface em `api/services/payments_provider.py`.
+2. Implementar novo provider (ex. `payments_mercadopago.py`).
+3. Resolver provider pelo `tenant_capabilities.payments.<provider>.config`.
+
+## Regressões conhecidas / "Não fazer"
+
+- **Não retornar quantidade de estoque ao cliente.** Use `[INTERNO: N un]` que só o LLM vê (instrução em `vendedor._SYSTEM` REGRA 10). Cliente vê só "tem" ou "não tem".
+- **Não confiar no `finalizar_pedido` para "sucesso = pedido criado"** sem verificar `cart.just_finalized` no worker. O LLM pode ter visto erro e ainda gerado mensagem de sucesso.
+- **Não criar tool nova fora de uma factory.** Tools sem closure não conseguem acesso ao tenant/schema/cart.
+- **Não fazer `tool.invoke` (síncrono) num evento async.** Sempre `await tool.ainvoke(args)`.
+- **Não logar PII do cliente em plaintext** (CPF, endereço completo). Logue prefixo + flags.
+- **Não inventar variantes de embalagem em buscar_produto** — `vendedor._SYSTEM` REGRA 11. Tool retorna o que existe; LLM não pode oferecer "blister/frasco/ampola" que não vieram.
+
+## Loop tool-calling (pattern)
+
+Em `_base._invoke_with_tools` e `vendedor` inline:
+
+```python
+llm_with_tools = llm.bind_tools(tools)
+for i in range(max_iters):
+    response = await llm_with_tools.ainvoke(messages)
+    if not response.tool_calls:
+        final_text = _extract_text(response.content)
+        break
+    messages.append(response)
+    for tc in response.tool_calls:
+        result = await tool_map[tc["name"]].ainvoke(tc["args"])
+        messages.append(ToolMessage(content=str(result), tool_call_id=tc["id"]))
+else:
+    # excedeu max_iters → força resposta sem tools
+    response = await llm.ainvoke(messages)
+    final_text = _extract_text(response.content)
+
+# Fallback se ficou só com tool_calls sem texto:
+if not final_text.strip():
+    messages.append(HumanMessage(content="Responda agora em texto curto..."))
+    response = await llm.ainvoke(messages)
+    final_text = _extract_text(response.content)
+```
+
+Trace records de tool_calls (cada iteração):
+```python
+{"iter": int, "name": str, "args": dict, "result_preview": str (300 chars), "error": str?}
+```
