@@ -162,7 +162,7 @@ services:
   # negocia SCRAM com o Postgres backend. Migra pra `scram-sha-256` quando
   # houver appetite pra montar o SCRAM verifier no userlist.
   pgbouncer:
-    image: edoburu/pgbouncer:v1.23.1
+    image: edoburu/pgbouncer:v1.23.1-p3
     environment:
       DB_HOST:              postgres
       DB_PORT:              "5432"
