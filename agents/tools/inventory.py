@@ -188,6 +188,35 @@ def make_add_to_cart_tool(schema_name: str, cart: dict):
             if not row:
                 return f"Produto '{produto}' não encontrado. Verifique o nome e tente novamente."
 
+            # ── Dedup determinístico por turno ─────────────────────────────
+            # O LLM em loops de tool-use às vezes chama essa tool várias vezes
+            # com os MESMOS args dentro do mesmo turno (especialmente quando
+            # "revisa" o carrinho antes de finalizar). Sem dedup, qty
+            # acumulava — bug visível: cliente pediu 1 Engov, cart guardava 4.
+            #
+            # Chave: (nome canônico do produto, quantidade). Reset entre turnos
+            # é automático: `load_context` reconstrói `cart` do banco e descarta
+            # essa key (não existe coluna correspondente).
+            canonical = row["name"].lower().strip()
+            call_sig  = f"{canonical}|{int(quantidade)}"
+            calls_seen = cart.setdefault("_calls_this_turn", [])
+            if call_sig in calls_seen:
+                # Já tinha rodado nesse turno — retorna o estado atual sem
+                # mexer no cart. Mensagem clara pro LLM parar de re-chamar.
+                cur_qty = next(
+                    (it["qty"] for it in cart.get("items", [])
+                     if it["name"].lower() == canonical),
+                    0,
+                )
+                return (
+                    f"⚠️ Já adicionei {quantidade}x {row['name']} agora mesmo. "
+                    f"Cart atual tem {cur_qty}x desse item. "
+                    f"Subtotal: R$ {cart.get('subtotal', 0):.2f}. "
+                    f"NÃO chame esta tool de novo — use `atualizar_qtd_carrinho` "
+                    f"se precisar mudar a quantidade."
+                )
+            calls_seen.append(call_sig)
+
             # Atualiza carrinho in-place
             items = cart.setdefault("items", [])
             for item in items:
