@@ -315,6 +315,53 @@ async def _maybe_close_or_reset_session(
     return True
 
 
+# ── Triggers determinísticos pós-agente ─────────────────────────────────────
+
+def _extract_order_close_signal(final_state: dict | None) -> dict | None:
+    """Retorna o snapshot do pedido fechado nesta task, ou None.
+
+    Determinístico — não depende do LLM emitir nada. Lê o marker que a tool
+    `finalizar_pedido` deixa em `cart.last_order` quando o pedido é
+    efetivamente criado no banco. Funciona pra modo normal (inventory.py).
+    Pré-atendimento (balcao.py) continua disparando via escalate=True como
+    sempre fez.
+    """
+    if not final_state:
+        return None
+    cart = final_state.get("cart") or {}
+    if not cart.get("just_finalized"):
+        return None
+    last_order = cart.get("last_order")
+    if not isinstance(last_order, dict):
+        return None
+    return last_order
+
+
+def _cart_for_summary(final_state: dict | None) -> dict | None:
+    """Retorna o cart certo pro resumo do pedido.
+
+    Se `cart.last_order` existe (pedido acabou de fechar e o cart já está
+    esvaziado), monta um dict equivalente com os itens originais — só assim
+    o resumo mostra o que o cliente realmente pediu. Caso contrário usa o
+    cart atual (caso pré-atendimento, sem finalizar_pedido).
+    """
+    if not final_state:
+        return None
+    cart = final_state.get("cart") or {}
+    last = cart.get("last_order")
+    if isinstance(last, dict) and last.get("items"):
+        return {
+            "items":    last.get("items") or [],
+            "subtotal": last.get("subtotal") or 0,
+            # Campos extras que o template do resumo pode usar no futuro
+            "discount": last.get("discount") or 0,
+            "total":    last.get("total")    or 0,
+            "payment":  last.get("payment")  or "",
+            "order_id": last.get("id")       or "",
+        }
+    return cart
+
+
 # ── Main task ─────────────────────────────────────────────────────────────────
 
 @celery_app.task(name="process_message", bind=True, max_retries=0)
@@ -473,6 +520,13 @@ async def _run_graph(
         # do PRIMEIRO canal ativo do tenant que tenha handoff habilitado.
         # (Tenants com 1 canal — a maioria — sempre cai no canal certo.)
         agent_escalate = bool(final_state.get("escalate", False))
+        # Trigger determinístico: pedido fechado nesta task força handoff
+        # mesmo sem o LLM emitir [[ESCALATE]]. Independe do prompt.
+        order_close = _extract_order_close_signal(final_state)
+        order_just_finalized = order_close is not None
+        if order_just_finalized:
+            log.info("webhook.order_finalized.trigger",
+                     tenant=tenant_id, order_id=str(order_close.get("id"))[:8])
         handoff_cfg: dict = {}
         channel_pause_minutes: int = 240  # default 4h
         try:
@@ -505,28 +559,31 @@ async def _run_graph(
             from services.handoff import should_handoff, transfer_to_human
             do_handoff, reason = should_handoff(
                 handoff_cfg,
-                agent_escalate=agent_escalate,
+                # OU escalate do agente OU pedido determinísticamente fechado
+                agent_escalate=(agent_escalate or order_just_finalized),
                 user_message=current_message,
             )
+            if order_just_finalized and not agent_escalate:
+                reason = "order_finalized"
             if do_handoff:
                 handoff_was_executed = True
                 log.info(
                     "webhook.handoff.triggered",
                     tenant=tenant_id, reason=reason,
                     phone_prefix=phone[:4], agent_escalate=agent_escalate,
+                    order_finalized=order_just_finalized,
                 )
                 phone_clean = "".join(c for c in phone if c.isdigit())
+                # Usa a resposta do agente como mensagem de transferência
+                # quando: (a) o agente escalou explicitamente (texto bem
+                # construído de despedida) OU (b) a tool de fechar pedido
+                # rodou (texto contém o recibo "✅ Pedido confirmado #...").
+                use_agent_reply = bool(response_text) and (agent_escalate or order_just_finalized)
                 hresult = await transfer_to_human(
                     handoff_cfg, phone=phone_clean,
-                    # Quando o próprio agente já mandou uma resposta de fechamento,
-                    # ela é a melhor mensagem de transição. Caso contrário usamos
-                    # a transfer_message configurada.
-                    custom_message=response_text if response_text and agent_escalate else None,
+                    custom_message=response_text if use_agent_reply else None,
                 )
-                # Substitui o texto enviado ao cliente só quando NÃO foi o
-                # agente que pediu — quando foi o agente, ele já gerou um
-                # texto de despedida apropriado e queremos mantê-lo.
-                if not agent_escalate:
+                if not use_agent_reply:
                     response_text = (
                         handoff_cfg.get("transfer_message")
                         or "Estou te transferindo para um atendente agora. Um momento, por favor."
@@ -574,12 +631,13 @@ async def _run_graph(
                     },
                 )
             # Resumo do pedido (capability-gated; antes das ofertas).
+            # Usa snapshot do pedido fechado (cart já foi esvaziado pela tool).
             try:
                 from services.order_summary import send_order_summary
                 await send_order_summary(
                     tenant_id,
                     phone=phone,
-                    cart=(final_state or {}).get("cart"),
+                    cart=_cart_for_summary(final_state),
                     text_sender=_send_text,
                 )
             except Exception as exc:  # noqa: BLE001
@@ -946,29 +1004,39 @@ async def _run_broker_flow(
         except Exception:
             handoff_cfg = {}
     agent_escalate = bool(final_state.get("escalate")) if final_state else False
+    # Trigger determinístico: pedido fechado nesta task força handoff
+    # mesmo sem o LLM emitir [[ESCALATE]]. Independe do prompt.
+    order_close = _extract_order_close_signal(final_state)
+    order_just_finalized = order_close is not None
+    if order_just_finalized:
+        log.info("broker.flow.order_finalized.trigger",
+                 tenant=tenant_id, order_id=str(order_close.get("id"))[:8])
     handoff_result: dict | None = None
     handoff_was_executed = False
     try:
         from services.handoff import should_handoff, transfer_to_human
         do_handoff, reason = should_handoff(
             handoff_cfg,
-            agent_escalate=agent_escalate,
+            agent_escalate=(agent_escalate or order_just_finalized),
             user_message=message,
         )
+        if order_just_finalized and not agent_escalate:
+            reason = "order_finalized"
         if do_handoff:
             handoff_was_executed = True
             log.info("broker.flow.handoff_triggered",
-                     tenant=tenant_id, reason=reason, phone_prefix=phone_clean[:4])
+                     tenant=tenant_id, reason=reason, phone_prefix=phone_clean[:4],
+                     agent_escalate=agent_escalate,
+                     order_finalized=order_just_finalized)
+            # Usa a resposta do agente como mensagem de transferência quando:
+            # (a) o agente escalou explicitamente OU
+            # (b) a tool finalizar_pedido rodou (resposta = recibo do pedido).
+            use_agent_reply = bool(reply_text) and (agent_escalate or order_just_finalized)
             handoff_result = await transfer_to_human(
                 handoff_cfg, phone=phone_clean,
-                # Se o agente já gerou uma resposta de despedida, prefere ela;
-                # senão usa a transfer_message configurada.
-                custom_message=reply_text if reply_text and agent_escalate else None,
+                custom_message=reply_text if use_agent_reply else None,
             )
-            # Mostra ao cliente a mensagem de transferência (em vez da resposta
-            # padrão do agente) só quando o agente NÃO foi quem pediu — quando
-            # o agente já respondeu algo sensato (ex: emergência), mantemos.
-            if not agent_escalate:
+            if not use_agent_reply:
                 reply_text = (handoff_cfg.get("transfer_message")
                               or "Estou te transferindo para um atendente agora. Um momento, por favor.")
             skill_used = "handoff"
@@ -1074,12 +1142,13 @@ async def _run_broker_flow(
                                      json=body, headers=headers)
 
         # Resumo do pedido (capability-gated; antes das ofertas).
+        # Usa snapshot do pedido fechado (cart já foi esvaziado pela tool).
         try:
             from services.order_summary import send_order_summary
             await send_order_summary(
                 tenant_id,
                 phone=phone_clean,
-                cart=(final_state or {}).get("cart"),
+                cart=_cart_for_summary(final_state),
                 text_sender=_send_text,
             )
         except Exception as exc:  # noqa: BLE001

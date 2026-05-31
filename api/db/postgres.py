@@ -27,15 +27,31 @@ async def _init_connection(conn: asyncpg.Connection) -> None:
 
 
 async def init_pool() -> None:
+    """Cria o pool de conexões com o Postgres (via PgBouncer em transaction mode).
+
+    Idempotente: se o pool já existe e está aberto, retorna sem recriar — evita
+    o vazamento clássico de um processo Celery acumular pools órfãos a cada task.
+
+    `statement_cache_size=0` é OBRIGATÓRIO em transaction pooling: o PgBouncer
+    rotaciona conexões de servidor a cada transação, então prepared statements
+    cacheados por asyncpg explodem com "prepared statement ... does not exist".
+
+    Pool pequeno por processo (1-3) porque o PgBouncer absorve a multiplexação:
+    32 forks × 3 = até 96 conexões no PgBouncer, que reusa ~25 conexões reais
+    no Postgres.
+    """
     global _pool
+    if _pool is not None and not _pool._closed:  # type: ignore[attr-defined]
+        return
     _pool = await asyncpg.create_pool(
         settings.database_url,
-        min_size=5,
-        max_size=20,
+        min_size=1,
+        max_size=3,
         command_timeout=30,
+        statement_cache_size=0,        # ← obrigatório com PgBouncer transaction
         init=_init_connection,
     )
-    log.info("postgres.pool.created")
+    log.info("postgres.pool.created", min_size=1, max_size=3)
 
 
 async def close_pool() -> None:

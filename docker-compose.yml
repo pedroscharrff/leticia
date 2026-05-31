@@ -2,7 +2,10 @@ version: "3.9"
 
 # Variáveis compartilhadas entre api e workers
 x-api-env: &api-env
-  DATABASE_URL:                postgresql://farmacia:${DB_PASSWORD}@postgres:5432/saas_farmacia
+  # App vai via PgBouncer (transaction mode, ~25 conexões reais multiplexadas
+  # entre todos os workers). Postgres direto (`postgres:5432`) continua
+  # acessível na rede interna pra migrations/admin/`psql` manual.
+  DATABASE_URL:                postgresql://farmacia:${DB_PASSWORD}@pgbouncer:5432/saas_farmacia
   REDIS_URL:                   redis://redis:6379/0
   RABBITMQ_URL:                amqp://farmacia:${RABBITMQ_PASS}@rabbitmq:5672/
   ANTHROPIC_API_KEY:           ${ANTHROPIC_API_KEY}
@@ -99,7 +102,7 @@ services:
     environment:
       <<: *api-env
     depends_on:
-      postgres:
+      pgbouncer:
         condition: service_healthy
       redis:
         condition: service_healthy
@@ -126,7 +129,7 @@ services:
     environment:
       <<: *api-env
     depends_on:
-      postgres:
+      pgbouncer:
         condition: service_healthy
       redis:
         condition: service_healthy
@@ -142,9 +145,60 @@ services:
       retries: 3
       start_period: 30s
 
+  # ── PgBouncer (transaction pooling) ─────────────────────────────────────────
+  # Sentado entre os apps (api, worker) e o Postgres. Multiplexa muitas conexões
+  # cliente (centenas) sobre poucas conexões de servidor (~25 reais), evitando
+  # estourar `max_connections` mesmo com vários workers × concurrency alta.
+  #
+  # Modo `transaction`: cada transação ganha uma conexão de servidor; ao terminar,
+  # a conexão volta pra pool e pode atender outro cliente. Requer no app:
+  #   • asyncpg.create_pool(..., statement_cache_size=0)   ← já configurado
+  #   • Nenhum LISTEN/NOTIFY, advisory lock de sessão ou SET de sessão.
+  #
+  # Auth: AUTH_TYPE=plain — o PgBouncer guarda a senha em texto no userlist.txt
+  # gerado a partir do env (rede docker interna, não exposto externamente) e
+  # negocia SCRAM com o Postgres backend. Migra pra `scram-sha-256` quando
+  # houver appetite pra montar o SCRAM verifier no userlist.
+  pgbouncer:
+    image: edoburu/pgbouncer:v1.23.1
+    environment:
+      DB_HOST:              postgres
+      DB_PORT:              "5432"
+      DB_USER:              farmacia
+      DB_PASSWORD:          ${DB_PASSWORD}
+      DB_NAME:              saas_farmacia
+      POOL_MODE:            transaction
+      AUTH_TYPE:            plain
+      MAX_CLIENT_CONN:      "500"        # clientes simultâneos (asyncpg pools)
+      DEFAULT_POOL_SIZE:    "25"         # conexões reais por (db,user) no Postgres
+      MIN_POOL_SIZE:        "5"
+      RESERVE_POOL_SIZE:    "10"
+      RESERVE_POOL_TIMEOUT: "3"
+      SERVER_RESET_QUERY:   "DISCARD ALL"
+      IGNORE_STARTUP_PARAMETERS: "extra_float_digits,search_path"
+      ADMIN_USERS:          farmacia
+      STATS_USERS:          farmacia
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "PGPASSWORD=$$DB_PASSWORD psql -h 127.0.0.1 -p 5432 -U $$DB_USER -d pgbouncer -c 'SHOW POOLS;' >/dev/null 2>&1 || pg_isready -h 127.0.0.1 -p 5432"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
   # ── PostgreSQL 16 ────────────────────────────────────────────────────────────
   postgres:
     image: postgres:16-alpine
+    # max_connections=200: o PgBouncer usa até ~25 (default_pool_size) +
+    # reserve_pool_size=10 + algumas adm; sobra folga para psql manual,
+    # migrations e ferramentas (pg_dump, etc) sem competir com o app.
+    command: >
+      postgres
+      -c max_connections=200
+      -c shared_buffers=256MB
     environment:
       POSTGRES_DB:       saas_farmacia
       POSTGRES_USER:     farmacia

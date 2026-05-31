@@ -425,6 +425,24 @@ def make_finalize_order_tool(
                     "DELETE FROM cart WHERE session_key = $1", session_key,
                 )
 
+            # ── Sinal DETERMINÍSTICO de "pedido fechado nesta task" ─────────
+            # O worker (celery_app.py) usa este marker para disparar handoff /
+            # resumo / ofertas SEM depender do LLM emitir [[ESCALATE]]. Snapshot
+            # completo porque cart.items é esvaziado logo abaixo.
+            from datetime import datetime, timezone
+            cart["last_order"] = {
+                "id":              order_id,
+                "items":           items_snapshot,
+                "subtotal":        subtotal,
+                "discount":        discount,
+                "total":           total,
+                "payment":         _VALID_PAYMENT[forma],
+                "payment_key":     forma,
+                "observacoes":     observacoes or "",
+                "finalized_at":    datetime.now(timezone.utc).isoformat(),
+            }
+            cart["just_finalized"] = True
+
             # Esvazia o carrinho em memória para refletir no state
             cart["items"] = []
             cart["subtotal"] = 0.0
