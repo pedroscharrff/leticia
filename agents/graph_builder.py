@@ -141,6 +141,7 @@ def build_graph_for_tenant(cfg: TenantConfig, redis: Any = None):
     from agents.nodes.ingest_media  import ingest_media
     from agents.nodes.orchestrator import orchestrator
     from agents.nodes.analyst      import analyst
+    from agents.nodes.safety_guard import safety_guard
     from agents.nodes.skills.farmaceutico    import farmaceutico_node
     from agents.nodes.skills.principio_ativo import principio_ativo_node
     from agents.nodes.skills.genericos       import genericos_node
@@ -196,6 +197,10 @@ def build_graph_for_tenant(cfg: TenantConfig, redis: Any = None):
     graph.add_node("analyst",      analyst_node)
     graph.add_node("save_context", save_context)
     graph.add_node("guardrails",   guard_node)   # sempre presente (safety net)
+    # Umbrella de validators pós-LLM (availability + price + prescription +
+    # delivery, todos capability-gated; passthrough total em pré-atendimento
+    # via `inventory.track_stock` OFF — sempre seguro estar no grafo).
+    graph.add_node("safety_guard", safety_guard)
 
     # Nodes de skill (apenas os ativos do tenant)
     for skill_name, node_fn in active_skill_nodes.items():
@@ -210,11 +215,20 @@ def build_graph_for_tenant(cfg: TenantConfig, redis: Any = None):
     routing_map = {**{s: s for s in active_skills}, "guardrails": "guardrails"}
     graph.add_conditional_edges("orchestrator", route_to_skill, routing_map)
 
-    # skill → handoff_router → [outro skill | analyst]
+    # skill → handoff_router → [outro skill | safety_guard → analyst]
     # Cada skill pode passar a bola para outro skill via marcador [[HANDOFF:skill:ctx]]
-    handoff_map = {**{s: s for s in active_skills}, "guardrails": "guardrails", "analyst": "analyst"}
+    # "analyst" sai do router → passa pelo safety_guard antes (passthrough em
+    # pré-atendimento ou se nenhuma capability safety.* está ON) → analyst real.
+    handoff_map = {
+        **{s: s for s in active_skills},
+        "guardrails": "guardrails",
+        "analyst":    "safety_guard",
+    }
     for skill_name in list(active_skill_nodes.keys()) + ["guardrails"]:
         graph.add_conditional_edges(skill_name, handoff_router, handoff_map)
+
+    # safety_guard → analyst (edge fixa — guard sempre delega pro analyst)
+    graph.add_edge("safety_guard", "analyst")
 
     # analyst → approved / retry / escalate (via analyst_router)
     # "retry" volta para o skill original; "approved" e "escalate" vão para save_context

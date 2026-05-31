@@ -603,7 +603,7 @@ async def vendedor_node(state: AgentState, llm_factory) -> AgentState:
                 make_edit_order_tool,
             )
             tools = [
-                make_inventory_tool(schema_name, tenant_id),
+                make_inventory_tool(schema_name, tenant_id, cart=cart),
                 make_add_to_cart_tool(schema_name, cart),
                 make_remove_from_cart_tool(cart),
                 make_update_cart_qty_tool(cart),

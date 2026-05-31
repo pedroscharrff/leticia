@@ -14,7 +14,8 @@ from langchain_core.tools import tool
 log = structlog.get_logger()
 
 
-def make_inventory_tool(schema_name: str, tenant_id: str | None = None):
+def make_inventory_tool(schema_name: str, tenant_id: str | None = None,
+                        cart: dict | None = None):
     """
     Factory — retorna uma tool com o schema do tenant injetado via closure.
 
@@ -65,7 +66,8 @@ def make_inventory_tool(schema_name: str, tenant_id: str | None = None):
                 rows = await conn.fetch(
                     """
                     SELECT name, price, stock_qty, unit, description,
-                           principio_ativo, fabricante, category
+                           principio_ativo, fabricante, category,
+                           COALESCE(prescription_required, FALSE) AS prescription_required
                     FROM products
                     WHERE active = TRUE
                       AND (
@@ -111,6 +113,45 @@ def make_inventory_tool(schema_name: str, tenant_id: str | None = None):
                         """,
                         f"%{primary}%",
                     )
+
+            # ── Registro determinístico do resultado da busca neste turno ──
+            # Consumido pelos `safety_guards` (availability/price/prescription)
+            # pra detectar alucinações. Reset entre turnos é automático:
+            # `load_context` reconstrói o cart a partir das colunas do DB e
+            # descarta esta key.
+            if cart is not None:
+                if not rows:
+                    in_stock = False
+                    matched_name = None
+                elif not track_stock:
+                    # Sem track_stock, NÃO sabemos estoque real — presumimos
+                    # disponível (modo Sheets/CSV historicamente confiável).
+                    in_stock = True
+                    matched_name = rows[0]["name"]
+                else:
+                    in_stock = any((r["stock_qty"] or 0) > 0 for r in rows)
+                    matched_name = rows[0]["name"]
+                # Snapshot rico de cada produto matched — usado pelos guards
+                # de preço/receita pra cruzar texto da resposta com a verdade
+                # do catálogo. Mantém só campos essenciais (memória curta).
+                matched_products: list[dict] = []
+                for r in rows or []:
+                    try:
+                        matched_products.append({
+                            "name":  r["name"],
+                            "price": float(r["price"]) if r["price"] is not None else None,
+                            "stock_qty": r["stock_qty"],
+                            "prescription_required": bool(r["prescription_required"]),
+                        })
+                    except Exception:
+                        continue
+                cart.setdefault("_search_results_this_turn", []).append({
+                    "query":            nome,
+                    "found":            bool(rows),
+                    "in_stock":         in_stock,
+                    "matched_name":     matched_name,
+                    "matched_products": matched_products,
+                })
 
             if not rows:
                 return f"Produto '{nome}' não encontrado no catálogo."
