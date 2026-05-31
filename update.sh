@@ -225,6 +225,24 @@ success "Build concluído"
 # ── 3. Subir containers + rodar migrations pendentes ──────────────────────────
 step "3/5  Aplicando atualização"
 
+# Garante que PgBouncer está rodando ANTES de api/worker — eles têm
+# depends_on=pgbouncer e o DATABASE_URL aponta pra `pgbouncer:5432`. Sem o
+# bouncer no ar, o api/worker derruba com "Temporary failure in name resolution".
+# Idempotente: se já está rodando, docker compose não faz nada.
+info "Garantindo PgBouncer..."
+docker compose up -d --no-deps pgbouncer
+
+PGB_TRIES=0
+while [[ $PGB_TRIES -lt 15 ]]; do
+    if docker compose ps --format "{{.Name}}\t{{.Status}}" 2>/dev/null \
+        | grep -E "pgbouncer.*(healthy|Up)" >/dev/null; then
+        break
+    fi
+    sleep 2
+    ((PGB_TRIES++))
+done
+success "PgBouncer pronto"
+
 info "Subindo novos containers..."
 docker compose up -d --no-deps api worker admin
 

@@ -6,7 +6,12 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 
     # Database
+    # `database_url` é o caminho usado pelo app em runtime (via PgBouncer em
+    # transaction mode). `database_url_direct` aponta pro Postgres direto
+    # (porta 5432) e é usado por scripts que precisam de DDL/transações longas
+    # ou recursos não-suportados em transaction pooling (migrations, etc).
     database_url: str
+    database_url_direct: str = ""
 
     # Redis
     redis_url: str = "redis://localhost:6379/0"

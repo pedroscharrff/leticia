@@ -4,8 +4,10 @@ version: "3.9"
 x-api-env: &api-env
   # App vai via PgBouncer (transaction mode, ~25 conexões reais multiplexadas
   # entre todos os workers). Postgres direto (`postgres:5432`) continua
-  # acessível na rede interna pra migrations/admin/`psql` manual.
+  # acessível via DATABASE_URL_DIRECT — usado por scripts/run_migrations.py
+  # (DDL não pode passar por transaction pooling) e por qualquer task admin.
   DATABASE_URL:                postgresql://farmacia:${DB_PASSWORD}@pgbouncer:5432/saas_farmacia
+  DATABASE_URL_DIRECT:         postgresql://farmacia:${DB_PASSWORD}@postgres:5432/saas_farmacia
   REDIS_URL:                   redis://redis:6379/0
   RABBITMQ_URL:                amqp://farmacia:${RABBITMQ_PASS}@rabbitmq:5672/
   ANTHROPIC_API_KEY:           ${ANTHROPIC_API_KEY}

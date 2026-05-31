@@ -16,7 +16,19 @@ MIGRATIONS_DIR = Path(__file__).parent.parent / "api" / "db" / "migrations"
 
 
 async def run():
-    conn = await asyncpg.connect(settings.database_url)
+    # Migrations PRECISAM ir direto no Postgres (porta 5432), nunca via
+    # PgBouncer transaction mode — DDL e advisory locks de sessão não
+    # funcionam em transaction pooling.
+    db_url = settings.database_url_direct or settings.database_url
+    if "pgbouncer" in db_url:
+        print(
+            "ERRO: DATABASE_URL aponta para PgBouncer. Defina DATABASE_URL_DIRECT "
+            "apontando para postgres:5432.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+    print(f"  conn  {db_url.split('@')[-1]}")
+    conn = await asyncpg.connect(db_url)
 
     await conn.execute("""
         CREATE TABLE IF NOT EXISTS public._migrations (
