@@ -144,6 +144,22 @@ class RecoveryStatsOut(BaseModel):
 
 @recovery_router.get("/stats", response_model=RecoveryStatsOut)
 async def recovery_stats(user: TenantUser) -> RecoveryStatsOut:
+    import asyncpg
+
+    async def _safe_count(conn, sql: str, label: str) -> int:
+        # Schema drift (migrations 023/025) pode deixar colunas faltando em
+        # tenants antigos; em vez de devolver 500 ao portal, contamos 0 e
+        # logamos para a equipe rodar as migrations.
+        try:
+            v = await conn.fetchval(sql)
+            return int(v or 0)
+        except (asyncpg.UndefinedColumnError,
+                asyncpg.UndefinedTableError) as e:
+            log.warning("recovery.stats.schema_drift",
+                        tenant_id=str(user.tenant_id),
+                        query=label, error=str(e))
+            return 0
+
     async with get_db_conn() as conn:
         schema_row = await conn.fetchrow(
             "SELECT schema_name FROM public.tenants WHERE id = $1",
@@ -155,39 +171,52 @@ async def recovery_stats(user: TenantUser) -> RecoveryStatsOut:
 
         await conn.execute(f"SET search_path = {schema}, public")
 
+        # Self-heal: garante as colunas que as migrations 023/025 deveriam ter
+        # adicionado. Idempotente; cobre tenants onde a migration foi
+        # silenciosamente engolida pelo EXCEPTION WHEN OTHERS.
+        try:
+            await conn.execute(f"""
+                ALTER TABLE {schema}.cart
+                    ADD COLUMN IF NOT EXISTS sent_recovery_at  TIMESTAMPTZ,
+                    ADD COLUMN IF NOT EXISTS recovery_attempts INTEGER NOT NULL DEFAULT 0
+            """)
+        except asyncpg.UndefinedTableError:
+            log.warning("recovery.stats.no_cart_table", schema=schema)
+        try:
+            await conn.execute(f"""
+                ALTER TABLE {schema}.customers
+                    ADD COLUMN IF NOT EXISTS continuous_meds JSONB DEFAULT '[]'
+            """)
+        except asyncpg.UndefinedTableError:
+            log.warning("recovery.stats.no_customers_table", schema=schema)
+
         # Carrinhos abandonados (itens > 0 + última atualização > 4h e sem nudge ainda)
         # jsonb_typeof guard evita "cannot get array length of a scalar" quando items é
         # um escalar ou objeto em vez de array.
-        carts_pending = await conn.fetchval(
-            """
+        carts_pending = await _safe_count(conn, """
             SELECT COUNT(*) FROM cart
              WHERE jsonb_typeof(COALESCE(items, '[]'::jsonb)) = 'array'
                AND jsonb_array_length(COALESCE(items, '[]'::jsonb)) > 0
                AND updated_at < NOW() - INTERVAL '4 hours'
                AND (sent_recovery_at IS NULL
                     OR sent_recovery_at < NOW() - INTERVAL '24 hours')
-            """
-        )
-        carts_recovered = await conn.fetchval(
-            """
+        """, "carts_pending")
+
+        carts_recovered = await _safe_count(conn, """
             SELECT COUNT(*) FROM cart
              WHERE sent_recovery_at IS NOT NULL
                AND sent_recovery_at >= NOW() - INTERVAL '7 days'
-            """
-        )
+        """, "carts_recovered")
 
-        refill_clients = await conn.fetchval(
-            """
+        refill_clients = await _safe_count(conn, """
             SELECT COUNT(*) FROM customers
              WHERE continuous_meds IS NOT NULL
                AND jsonb_typeof(continuous_meds) = 'array'
                AND jsonb_array_length(continuous_meds) > 0
-            """
-        )
+        """, "refill_clients")
 
         # Nudges enviados nos últimos 30 dias: contagem de last_nudge_at >= 30d
-        refills_nudged = await conn.fetchval(
-            """
+        refills_nudged = await _safe_count(conn, """
             SELECT COUNT(*) FROM customers c,
                  LATERAL jsonb_array_elements(
                      CASE WHEN jsonb_typeof(COALESCE(c.continuous_meds, '[]'::jsonb)) = 'array'
@@ -197,12 +226,11 @@ async def recovery_stats(user: TenantUser) -> RecoveryStatsOut:
                  ) m
              WHERE (m->>'last_nudge_at') IS NOT NULL
                AND (m->>'last_nudge_at')::timestamptz >= NOW() - INTERVAL '30 days'
-            """
-        )
+        """, "refills_nudged")
 
     return RecoveryStatsOut(
-        carts_pending_recovery=int(carts_pending or 0),
-        carts_recovered_last_7d=int(carts_recovered or 0),
-        refill_clients_total=int(refill_clients or 0),
-        refills_nudged_last_30d=int(refills_nudged or 0),
+        carts_pending_recovery=carts_pending,
+        carts_recovered_last_7d=carts_recovered,
+        refill_clients_total=refill_clients,
+        refills_nudged_last_30d=refills_nudged,
     )

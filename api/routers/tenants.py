@@ -42,10 +42,14 @@ async def create_tenant(body: TenantCreate, _admin: AdminUser) -> TenantResponse
             """,
             body.name, api_key, body.callback_url, body.plan, schema_name,
         )
-        await conn.execute("SELECT create_tenant_schema($1)", schema_name)
-        # Aplica fixes/extensões pós-criação (CHECK constraints atualizados etc.)
+        # Bootstrap completo via aggregator (migration 048): cobre base +
+        # todas as extensões (agent_traces, sales_attempts, memory_ext,
+        # relations_ext, recovery_ext, source_fix). Antes daqui só
+        # `create_tenant_schema` + `source_fix` eram chamados, e tenants
+        # criados pelo admin nasciam com drift (faltavam colunas de memória,
+        # relations, recovery e a tabela agent_traces).
         await conn.execute(
-            "SELECT public.create_tenant_schema_source_fix($1)", schema_name
+            "SELECT public.create_tenant_schema_full($1)", schema_name
         )
 
     log.info("tenant.created", tenant=str(row["id"]), schema=schema_name)

@@ -71,15 +71,11 @@ async def provision(name: str, callback_url: str, plan: str, database_url: str) 
         )
         tenant_id = str(row["id"])
 
-        # Create isolated schema
-        await conn.execute("SELECT create_tenant_schema($1)", schema_name)
-
-        # Migration 010: ensure cart has sales_attempts column for this fresh schema
-        await conn.execute("SELECT public.add_sales_attempts_to_cart($1)", schema_name)
-
-        # Migration 038: CHECK constraint atualizado em products/customers
-        # (libera sources 'xlsx' e 'google_sheets').
-        await conn.execute("SELECT public.create_tenant_schema_source_fix($1)", schema_name)
+        # Bootstrap completo via aggregator (migration 048): cobre base +
+        # todas as extensões pós-criação. Substitui a sequência manual
+        # anterior que faltava memory_ext, relations_ext, recovery_ext e
+        # agent_traces — causando schema drift em tenants criados pela CLI.
+        await conn.execute("SELECT public.create_tenant_schema_full($1)", schema_name)
 
         # Default sales config row (required customer fields, retry policy)
         await conn.execute(

@@ -80,31 +80,14 @@ async def signup(body: SignupRequest) -> SignupResponse:
                 tenant_id, body.owner_email, pw_hash, body.owner_name,
             )
 
-            # Create schema + tables
-            await conn.execute("SELECT create_tenant_schema($1)", schema_name)
-            # Garante agent_traces (não está em create_tenant_schema; adicionada pela migration 020)
+            # Bootstrap completo do schema do tenant. O aggregator
+            # `create_tenant_schema_full` (migration 048) chama o template base
+            # + todas as extensões pós-criação (agent_traces, sales_attempts,
+            # memory_ext, relations_ext, recovery_ext, source_fix) na ordem
+            # certa — adicionar uma extensão nova só requer atualizar o
+            # aggregator, não cada call site.
             await conn.execute(
-                "SELECT public.add_agent_traces_to_schema($1)", schema_name
-            )
-            # Garante sales_attempts em cart (idem — migration 010)
-            await conn.execute(
-                "SELECT public.add_sales_attempts_to_cart($1)", schema_name
-            )
-            # Garante colunas de memória de cliente (migration 023)
-            await conn.execute(
-                "SELECT public.create_tenant_schema_memory_ext($1)", schema_name
-            )
-            # Garante product_relations (migration 024)
-            await conn.execute(
-                "SELECT public.create_tenant_schema_relations_ext($1)", schema_name
-            )
-            # Garante colunas de recuperação no cart (migration 025)
-            await conn.execute(
-                "SELECT public.create_tenant_schema_recovery_ext($1)", schema_name
-            )
-            # Garante CHECK constraint atualizado em products/customers (migration 038)
-            await conn.execute(
-                "SELECT public.create_tenant_schema_source_fix($1)", schema_name
+                "SELECT public.create_tenant_schema_full($1)", schema_name
             )
             # Seed default sales_config para o novo tenant
             await conn.execute(

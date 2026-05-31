@@ -151,7 +151,10 @@ docker compose logs -f worker  # logs do worker
 ### Nova migration (ver SPEC 07)
 - [ ] Arquivo `api/db/migrations/<NNN>_descricao.sql` (NNN sequencial)
 - [ ] Idempotente (`IF NOT EXISTS`, `ON CONFLICT`)
-- [ ] Se afeta schema per-tenant: atualizar `create_tenant_schema()` + criar função `add_<feat>_to_schema()` + loop em tenants existentes
+- [ ] Se afeta schema per-tenant:
+    - criar função `public.create_tenant_schema_<feat>_ext(p_schema)` (ou `add_<feat>_to_schema`) idempotente
+    - **adicionar a chamada em `public.create_tenant_schema_full` (migration 048)** — é o único ponto que call sites (`onboarding.py`, `tenants.py`, `scripts/create_tenant.py`) usam, então esquecer aqui = drift em tenants novos
+    - loop em tenants existentes dentro da própria migration (com `RAISE WARNING ... SQLERRM`, nunca `RAISE NOTICE` mudo — vê regressão histórica em 023/025)
 - [ ] Testar em ambiente local antes de PR
 
 ### Novo canal (ver SPEC 05)
