@@ -337,8 +337,33 @@ def _extract_order_close_signal(final_state: dict | None) -> dict | None:
     return last_order
 
 
+def _normalize_cart_items_pt(items: list) -> list[dict]:
+    """Converte itens do cart (chaves EN do agente) para PT (que o resumo espera).
+
+    O cart interno do agente usa `name`/`qty`/`price` (consistente com tools de
+    inventory/balcao). O `order_summary.build_summary_text` espera `nome`/
+    `quantidade`/`preco`. Aceita também chaves PT, pra ser idempotente caso
+    algum caller no futuro já mande no formato certo.
+    """
+    out: list[dict] = []
+    for it in items or []:
+        if not isinstance(it, dict):
+            continue
+        nome = it.get("nome") or it.get("name") or it.get("produto") or ""
+        qtd  = it.get("quantidade") or it.get("qty") or 1
+        preco = it.get("preco") or it.get("price") or 0
+        if not str(nome).strip():
+            continue
+        out.append({
+            "nome":       str(nome).strip(),
+            "quantidade": qtd,
+            "preco":      preco,
+        })
+    return out
+
+
 def _cart_for_summary(final_state: dict | None) -> dict | None:
-    """Retorna o cart certo pro resumo do pedido.
+    """Retorna o cart certo pro resumo do pedido, já normalizado em PT.
 
     Se `cart.last_order` existe (pedido acabou de fechar e o cart já está
     esvaziado), monta um dict equivalente com os itens originais — só assim
@@ -351,7 +376,7 @@ def _cart_for_summary(final_state: dict | None) -> dict | None:
     last = cart.get("last_order")
     if isinstance(last, dict) and last.get("items"):
         return {
-            "items":    last.get("items") or [],
+            "items":    _normalize_cart_items_pt(last.get("items") or []),
             "subtotal": last.get("subtotal") or 0,
             # Campos extras que o template do resumo pode usar no futuro
             "discount": last.get("discount") or 0,
@@ -359,7 +384,11 @@ def _cart_for_summary(final_state: dict | None) -> dict | None:
             "payment":  last.get("payment")  or "",
             "order_id": last.get("id")       or "",
         }
-    return cart
+    # Pré-atendimento: cart bruto, normaliza items pra PT
+    return {
+        "items":    _normalize_cart_items_pt(cart.get("items") or []),
+        "subtotal": cart.get("subtotal") or 0,
+    }
 
 
 # ── Main task ─────────────────────────────────────────────────────────────────
