@@ -46,11 +46,18 @@ export async function getRecoveryStats(): Promise<RecoveryStats> {
 
 export type CartStatus = "pending" | "in_progress" | "recovered";
 
+export interface CartItemPreview {
+  nome:       string;
+  quantidade: number;
+  preco:      number;
+}
+
 export interface CartRow {
   session_key:        string;
   phone:              string | null;
   customer_name:      string | null;
   items_count:        number;
+  items_preview:      CartItemPreview[];
   subtotal:           number;
   updated_at:         string;
   sent_recovery_at:   string | null;

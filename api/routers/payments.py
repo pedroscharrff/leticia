@@ -246,6 +246,7 @@ class CartRowOut(BaseModel):
     phone:              str | None
     customer_name:      str | None
     items_count:        int
+    items_preview:      list[dict]   # primeiros 5 itens normalizados {nome, quantidade, preco}
     subtotal:           float
     updated_at:         datetime
     sent_recovery_at:   datetime | None
@@ -278,11 +279,15 @@ async def list_carts(user: TenantUser) -> list[CartRowOut]:
         await conn.execute(f"SET search_path = {schema}, public")
 
         try:
+            # session_key padrão = phone (só dígitos), mas em alguns canais
+            # antigos vinha como "<algo>:<phone>:<sufixo>". JOIN tenta os dois
+            # formatos via LATERAL pra evitar duplicação de linhas. Também
+            # devolve o jsonb `items` para o frontend renderizar a lista.
             rows = await conn.fetch(
                 """
                 SELECT c.session_key,
-                       SPLIT_PART(c.session_key, ':', 2) AS phone_guess,
-                       cu.name AS customer_name,
+                       c.items AS items_raw,
+                       cu.name  AS customer_name,
                        cu.phone AS customer_phone,
                        public.safe_jsonb_array_length(c.items) AS items_count,
                        COALESCE(c.subtotal, 0) AS subtotal,
@@ -298,8 +303,13 @@ async def list_carts(user: TenantUser) -> list[CartRowOut]:
                          ELSE 'pending'
                        END AS status
                   FROM cart c
-                  LEFT JOIN customers cu
-                    ON cu.phone = SPLIT_PART(c.session_key, ':', 2)
+                  LEFT JOIN LATERAL (
+                       SELECT name, phone
+                         FROM customers
+                        WHERE phone = c.session_key
+                           OR phone = NULLIF(SPLIT_PART(c.session_key, ':', 2), '')
+                        LIMIT 1
+                  ) cu ON TRUE
                  WHERE public.safe_jsonb_array_length(c.items) > 0
                  ORDER BY c.updated_at DESC
                  LIMIT 100
@@ -310,20 +320,60 @@ async def list_carts(user: TenantUser) -> list[CartRowOut]:
                         tenant_id=str(user.tenant_id), error=str(e))
             return []
 
-    return [
-        CartRowOut(
+    import json as _json
+    out: list[CartRowOut] = []
+    for r in rows:
+        # session_key normalmente é o próprio phone (só dígitos) — fallback
+        # final do display caso o customer ainda não esteja cadastrado.
+        phone_display = r["customer_phone"]
+        if not phone_display:
+            sk = (r["session_key"] or "")
+            if sk.isdigit():
+                phone_display = sk
+            elif ":" in sk:
+                parts = sk.split(":")
+                phone_display = next((p for p in parts[1:] if p.isdigit()), None)
+
+        # Normaliza items: aceita array, string-of-json (double-encoded
+        # legado) e None. Devolve só primeiros 5 com campos do template
+        # do vendedor (nome/quantidade/preco). Ver [[cart-lifecycle]].
+        raw = r["items_raw"]
+        items_list: list = []
+        if isinstance(raw, list):
+            items_list = raw
+        elif isinstance(raw, str):
+            try:
+                parsed = _json.loads(raw)
+                if isinstance(parsed, list):
+                    items_list = parsed
+            except _json.JSONDecodeError:
+                items_list = []
+
+        preview: list[dict] = []
+        for it in items_list[:5]:
+            if not isinstance(it, dict):
+                continue
+            # Vendedor usa chaves PT (nome/quantidade/preco). Aceita também
+            # variantes EN (name/quantity/price) que aparecem em traces antigos.
+            preview.append({
+                "nome":       (it.get("nome") or it.get("name") or "").strip() or "—",
+                "quantidade": int(it.get("quantidade") or it.get("qty") or it.get("quantity") or 1),
+                "preco":      float(it.get("preco") or it.get("price") or 0),
+            })
+
+        out.append(CartRowOut(
             session_key=r["session_key"],
-            phone=r["customer_phone"] or r["phone_guess"] or None,
+            phone=phone_display,
             customer_name=r["customer_name"],
             items_count=int(r["items_count"] or 0),
+            items_preview=preview,
             subtotal=float(r["subtotal"] or 0),
             updated_at=r["updated_at"],
             sent_recovery_at=r["sent_recovery_at"],
             recovery_attempts=int(r["recovery_attempts"] or 0),
             status=r["status"],
-        )
-        for r in rows
-    ]
+        ))
+    return out
 
 
 # ── Disparo manual em lote ──────────────────────────────────────────────────

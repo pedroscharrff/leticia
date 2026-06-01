@@ -20,7 +20,7 @@ from datetime import datetime, timezone
 
 import structlog
 
-from db.postgres import get_db_conn
+from db.postgres import get_db_conn, init_pool
 from services.outbound import send_proactive_message
 from services.persona import load_persona
 from workers.jobs.abandoned_cart import _build_message
@@ -117,13 +117,18 @@ async def _load_cart_and_customer(
     session_key se o customer não estiver cadastrado."""
     async with get_db_conn() as conn:
         await conn.execute(f"SET search_path = {schema}, public")
+        # JOIN cobre os 2 formatos de session_key (só dígitos ou "x:phone:y").
         row = await conn.fetchrow(
             """
             SELECT c.items, c.subtotal,
                    cu.phone AS customer_phone, cu.name AS customer_name
               FROM cart c
-              LEFT JOIN customers cu
-                ON cu.phone = SPLIT_PART(c.session_key, ':', 2)
+              LEFT JOIN LATERAL (
+                   SELECT name, phone FROM customers
+                    WHERE phone = c.session_key
+                       OR phone = NULLIF(SPLIT_PART(c.session_key, ':', 2), '')
+                    LIMIT 1
+              ) cu ON TRUE
              WHERE c.session_key = $1
             """,
             session_key,
@@ -138,10 +143,14 @@ async def _load_cart_and_customer(
     else:
         items = list(items_raw or [])
 
+    # Telefone vem do customer cadastrado, ou do próprio session_key.
     phone = row["customer_phone"]
     if not phone:
-        parts = (session_key or "").split(":")
-        phone = parts[1] if len(parts) > 1 and parts[1] else None
+        sk = (session_key or "")
+        if sk.isdigit():
+            phone = sk
+        elif ":" in sk:
+            phone = next((p for p in sk.split(":")[1:] if p.isdigit()), None)
 
     return items, float(row["subtotal"] or 0), phone, row["customer_name"]
 
@@ -161,6 +170,13 @@ async def _mark_cart_sent(schema: str, session_key: str) -> None:
 
 
 async def _process(batch_id: str) -> dict:
+    # Celery task roda via asyncio.run() → loop NOVO a cada task. O pool
+    # asyncpg vive vinculado ao loop em que foi criado, então precisamos
+    # garantir que está pronto neste loop antes do primeiro fetch. Sem isso
+    # a primeira query falha com "DB pool not initialized". init_pool é
+    # idempotente para o loop corrente. Ver [[pgbouncer-setup]].
+    await init_pool()
+
     batch = await _load_batch(batch_id)
     if not batch:
         log.warning("recovery_batch.not_found", batch_id=batch_id)
@@ -234,8 +250,13 @@ def process_recovery_batch_sync(batch_id: str) -> dict:
         return asyncio.run(_process(batch_id))
     except Exception as exc:  # noqa: BLE001
         log.error("recovery_batch.crashed", batch_id=batch_id, exc=str(exc))
+        # Tentativa best-effort de marcar como failed — precisa de loop novo
+        # E init_pool nesse loop também, senão o UPDATE perde silenciosamente.
+        async def _mark_failed():
+            await init_pool()
+            await _finish(batch_id, "failed", error=str(exc)[:1000])
         try:
-            asyncio.run(_finish(batch_id, "failed", error=str(exc)[:1000]))
+            asyncio.run(_mark_failed())
         except Exception:
             pass
         return {"error": str(exc), "batch_id": batch_id}

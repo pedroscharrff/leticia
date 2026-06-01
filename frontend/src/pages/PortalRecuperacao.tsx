@@ -287,7 +287,7 @@ export function PortalRecuperacao() {
                     </th>
                     <th style={{ padding: "8px 6px" }}>Cliente</th>
                     <th style={{ padding: "8px 6px" }}>Telefone</th>
-                    <th style={{ padding: "8px 6px", textAlign: "right" }}>Itens</th>
+                    <th style={{ padding: "8px 6px" }}>Itens no carrinho</th>
                     <th style={{ padding: "8px 6px", textAlign: "right" }}>Subtotal</th>
                     <th style={{ padding: "8px 6px" }}>Última atividade</th>
                     <th style={{ padding: "8px 6px" }}>Status</th>
@@ -315,7 +315,27 @@ export function PortalRecuperacao() {
                         <td style={{ padding: "8px 6px", fontFamily: "monospace" }}>
                           {c.phone || <span style={{ color: "#6b7280" }}>—</span>}
                         </td>
-                        <td style={{ padding: "8px 6px", textAlign: "right" }}>{c.items_count}</td>
+                        <td style={{ padding: "8px 6px", maxWidth: 280 }}>
+                          {c.items_preview.length === 0 ? (
+                            <span style={{ color: "#6b7280" }}>
+                              {c.items_count} {c.items_count === 1 ? "item" : "itens"}
+                            </span>
+                          ) : (
+                            <div>
+                              {c.items_preview.map((it, i) => (
+                                <div key={i} style={{ fontSize: 12, lineHeight: 1.4 }}>
+                                  <span style={{ color: "#9ca3af" }}>{it.quantidade}×</span>{" "}
+                                  {it.nome}
+                                </div>
+                              ))}
+                              {c.items_count > c.items_preview.length && (
+                                <div style={{ fontSize: 11, color: "#6b7280", marginTop: 2 }}>
+                                  + {c.items_count - c.items_preview.length} item(ns)
+                                </div>
+                              )}
+                            </div>
+                          )}
+                        </td>
                         <td style={{ padding: "8px 6px", textAlign: "right" }}>{fmtBRL(c.subtotal)}</td>
                         <td style={{ padding: "8px 6px" }}>{fmtWhen(c.updated_at)}</td>
                         <td style={{ padding: "8px 6px" }}>
