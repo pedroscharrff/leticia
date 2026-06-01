@@ -74,9 +74,9 @@ Característica: skip de LLM via fast-path em `orchestrator._is_pure_greeting` (
 
 ### `farmaceutico` — Orientação clínica
 Plano: basic.
-Tools: `consultar_bula`, `consultar_bula_secao`.
+Tools: `consultar_bula`, `consultar_bula_secao`. **Em modo ERP** (capability `inventory.track_stock` ON) também recebe `buscar_produto` para conferir o catálogo ANTES de citar nome comercial — bloco extra `_STOCK_CHECK_BLOCK` é anexado ao `_SYSTEM` nesse modo. Em pré-atendimento, comportamento histórico (sem catálogo) é preservado.
 Quando: sintoma, dúvida farmacêutica, posologia, interações.
-Característica: **handoff obrigatório para vendedor** quando cliente sinaliza finalização (`pode finalizar`, `pode mandar`...). Skill não pode "confirmar pedido" — não tem tool para isso.
+Característica: **handoff obrigatório para vendedor** quando cliente sinaliza finalização (`pode finalizar`, `pode mandar`...). Skill não pode "confirmar pedido" — não tem tool para isso. Bônus do `buscar_produto`: popula `cart._search_results_this_turn`, então `availability_guard` (SPEC 10) passa a cobrir alucinação de produto em recomendação clínica também.
 
 ### `vendedor` — Vendas
 Plano: pro.

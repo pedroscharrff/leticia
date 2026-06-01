@@ -87,6 +87,8 @@ async def safety_guard(state) -> state:
 
 Detecta produto **citado na resposta** que NÃO está em `search_results`. Cruza nomes com fuzzy matching (já consultado neste turno via `buscar_produto`).
 
+Cobre tanto `vendedor` quanto `farmaceutico` em modo ERP — ambos têm `buscar_produto` e populam `cart._search_results_this_turn`. Em pré-atendimento o umbrella já curto-circuita antes.
+
 Quando dispara: regenerou resposta inteira com "Não encontrei esse produto especificamente — me dá um momento que peço pro atendente confirmar".
 
 ### `price_guard`

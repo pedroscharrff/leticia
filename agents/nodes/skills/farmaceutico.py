@@ -6,9 +6,14 @@ reações adversas e orientações gerais sobre medicamentos.
 """
 from __future__ import annotations
 
+import structlog
+
 from agents.state import AgentState
 from agents.nodes.skills._base import run_skill
 from agents.tools.bulario import make_consultar_bula_tool, make_consultar_bula_secao_tool
+from agents.tools.inventory import make_inventory_tool
+
+log = structlog.get_logger()
 
 _SYSTEM = """\
 [ESPECIALIDADE ATUAL: orientação farmacêutica]
@@ -140,12 +145,71 @@ DIRETRIZES
 """
 
 
+# Bloco anexado ao _SYSTEM APENAS quando a capability `inventory.track_stock`
+# está ON (modo ERP/PDV — estoque autoritativo). Em pré-atendimento (Sheets/CSV
+# ou sem catálogo) o agente não tem fonte da verdade pra consultar, então o
+# bloco não entra e o comportamento permanece o histórico. Cf. SPEC 02 §vendedor
+# e a decisão de produto em [[reference_three_operating_modes]].
+_STOCK_CHECK_BLOCK = """\
+
+═══════════════════════════════════════════════════════════════════════
+CONFERIR ESTOQUE ANTES DE RECOMENDAR PRODUTO (modo ERP ativo)
+═══════════════════════════════════════════════════════════════════════
+Esta farmácia tem estoque autoritativo. Você NÃO pode sugerir um produto
+pelo nome comercial sem antes confirmar que ele existe no catálogo —
+sugerir algo que não temos frustra o cliente e quebra a venda no balcão.
+
+REGRA: sempre que for recomendar um medicamento para um sintoma
+(ex.: "dor de cabeça", "azia", "alergia"), antes de citar QUALQUER nome
+comercial chame `buscar_produto(nome)` para cada candidato que pretende
+oferecer. Só mencione o produto se a tool retornar match. Se o candidato
+não veio, tente outro princípio ativo / nome comercial da mesma classe
+antes de oferecer.
+
+Como aplicar sem virar lista mecânica:
+• Continue fazendo a triagem (alergia, idade, há quanto tempo, etc.) ANTES
+  de decidir o que oferecer — a busca vem APÓS você ter um candidato em mente.
+• Pode chamar `buscar_produto` 1-3 vezes no mesmo turno se precisar testar
+  alternativas antes de responder.
+• Se nada da classe esperada apareceu no catálogo, NÃO invente — responda
+  algo como "vou conferir uma opção pra você com o atendente" e faça
+  handoff pro vendedor com o sintoma no contexto.
+
+`buscar_produto(nome)` retorna lista com nome, apresentação e preço dos
+itens disponíveis. Use o nome EXATO que a tool retornou na sua resposta —
+não modifique embalagem/dosagem que não veio no resultado."""
+
+
 async def farmaceutico_node(state: AgentState, llm_factory) -> AgentState:
-    """Skill farmacêutico — dúvidas sobre medicamentos, com acesso à bula ANVISA."""
+    """Skill farmacêutico — dúvidas sobre medicamentos, com acesso à bula ANVISA.
+
+    Quando o tenant está em modo ERP (`inventory.track_stock` ON), também
+    recebe `buscar_produto` para conferir o catálogo ANTES de recomendar
+    qualquer medicamento por nome. Em pré-atendimento (capability OFF) o
+    comportamento histórico é mantido — sem consulta a catálogo.
+    """
+    tenant_id   = state.get("tenant_id")
+    schema_name = state.get("schema_name")
+    cart        = state.get("cart") or {}
+
+    tools = [make_consultar_bula_tool(), make_consultar_bula_secao_tool()]
+    base_system = _SYSTEM
+
+    track_stock = False
+    try:
+        from services import capabilities as cap_svc
+        track_stock = await cap_svc.is_enabled(tenant_id, "inventory.track_stock")
+    except Exception as exc:  # noqa: BLE001
+        log.warning("skill.farmaceutico.cap_check_failed", exc=str(exc))
+
+    if track_stock and schema_name:
+        tools.append(make_inventory_tool(schema_name, tenant_id, cart=cart))
+        base_system = _SYSTEM + _STOCK_CHECK_BLOCK
+
     return await run_skill(
         state=state,
         llm_factory=llm_factory,
         skill_name="farmaceutico",
-        base_system=_SYSTEM,
-        tools=[make_consultar_bula_tool(), make_consultar_bula_secao_tool()],
+        base_system=base_system,
+        tools=tools,
     )
