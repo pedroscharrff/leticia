@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import json
 from datetime import datetime, timezone, timedelta, time
+from zoneinfo import ZoneInfo
 
 import structlog
 
@@ -81,11 +82,13 @@ async def _process_tenant(tenant_id: str, schema_name: str) -> dict:
     quiet_start  = _parse_hhmm(cfg.get("quiet_start"), time(21, 0))
     quiet_end    = _parse_hhmm(cfg.get("quiet_end"),   time(8,  0))
 
-    # NOW em horário do servidor (UTC). Para verificar silêncio, idealmente
-    # converteríamos para America/Sao_Paulo. Fazemos isso de forma simples:
-    # se o tenant tem persona.business_hours, podemos usar futuramente.
-    # Por ora: usa hora local do server.
-    now = datetime.now()
+    # Quiet hours são configurados em horário local do tenant (Brasil).
+    # Container roda em UTC — sem conversão, "21h–08h" virava "18h–05h"
+    # de Brasília, silenciando na hora errada. Default America/Sao_Paulo
+    # cobre 100% dos tenants atuais; quando houver tenant fora do BR, esta
+    # zona vira config de tenant.
+    _BR_TZ = ZoneInfo("America/Sao_Paulo")
+    now = datetime.now(tz=_BR_TZ)
     if _is_quiet_hour(now, quiet_start, quiet_end):
         stats["skipped_quiet"] = 1
         return stats
@@ -108,7 +111,13 @@ async def _process_tenant(tenant_id: str, schema_name: str) -> dict:
                   FROM cart c
                   LEFT JOIN customers cu ON cu.phone = SPLIT_PART(c.session_key, ':', 2)
                  WHERE c.updated_at < $1
-                   AND jsonb_array_length(COALESCE(c.items, '[]'::jsonb)) > 0
+                   -- CASE guard contra row com `items` escalar (planner pode
+                   -- reordenar AND e estourar jsonb_array_length). Ver
+                   -- [[jsonb-array-typeof-guard]].
+                   AND (CASE WHEN jsonb_typeof(COALESCE(c.items, '[]'::jsonb)) = 'array'
+                             THEN jsonb_array_length(COALESCE(c.items, '[]'::jsonb))
+                             ELSE 0
+                        END) > 0
                    AND c.recovery_attempts < $2
                    AND (c.sent_recovery_at IS NULL OR c.sent_recovery_at < $1)
                  ORDER BY c.updated_at DESC

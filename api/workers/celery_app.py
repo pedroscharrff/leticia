@@ -76,6 +76,20 @@ def nudge_continuous_refill_task(self) -> dict:
         log.warning("celery.refill_failed", exc=str(exc))
         return {"error": str(exc)}
 
+
+# Disparo manual de recuperação em lote (chamado pelo endpoint
+# POST /portal/recovery/trigger). NÃO está no beat — é on-demand.
+@celery_app.task(name="jobs.process_recovery_batch", bind=True, max_retries=0)
+def process_recovery_batch_task(self, batch_id: str) -> dict:
+    from workers.jobs.recovery_batch import process_recovery_batch_sync
+    try:
+        return process_recovery_batch_sync(batch_id)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("celery.recovery_batch_failed",
+                    batch_id=batch_id, exc=str(exc))
+        return {"error": str(exc)}
+
+
 # ── Prometheus metrics ────────────────────────────────────────────────────────
 
 CONV_TOTAL = Counter(

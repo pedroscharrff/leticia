@@ -243,3 +243,401 @@ async def recovery_stats(user: TenantUser) -> RecoveryStatsOut:
         refill_clients_total=refill_clients,
         refills_nudged_last_30d=refills_nudged,
     )
+
+
+# ── Listagem de carrinhos (em andamento + já notificados) ───────────────────
+
+class CartRowOut(BaseModel):
+    session_key:        str
+    phone:              str | None
+    customer_name:      str | None
+    items_count:        int
+    subtotal:           float
+    updated_at:         datetime
+    sent_recovery_at:   datetime | None
+    recovery_attempts:  int
+    # Heurística simples de "status" para o portal:
+    #   'recovered'  → sent_recovery_at preenchido nos últimos 7d
+    #   'pending'    → tem itens, sem nudge OU nudge antigo
+    #   'in_progress'→ atualizado nas últimas 4h (cliente ainda ativo)
+    status:             str
+
+
+@recovery_router.get("/carts", response_model=list[CartRowOut])
+async def list_carts(user: TenantUser) -> list[CartRowOut]:
+    """Lista até 100 carrinhos com pelo menos 1 item, ordenado por atividade.
+
+    Inclui carrinhos em andamento (cliente ativo nas últimas horas) e os já
+    notificados. O frontend usa o campo `status` para diferenciar.
+    """
+    import asyncpg
+
+    async with get_db_conn() as conn:
+        schema_row = await conn.fetchrow(
+            "SELECT schema_name FROM public.tenants WHERE id = $1",
+            user.tenant_id,
+        )
+        if not schema_row:
+            raise HTTPException(status_code=404, detail="Farmácia não encontrada.")
+        schema = schema_row["schema_name"]
+
+        await conn.execute(f"SET search_path = {schema}, public")
+
+        try:
+            rows = await conn.fetch(
+                """
+                SELECT c.session_key,
+                       SPLIT_PART(c.session_key, ':', 2) AS phone_guess,
+                       cu.name AS customer_name,
+                       cu.phone AS customer_phone,
+                       (CASE WHEN jsonb_typeof(COALESCE(c.items, '[]'::jsonb)) = 'array'
+                             THEN jsonb_array_length(COALESCE(c.items, '[]'::jsonb))
+                             ELSE 0
+                        END) AS items_count,
+                       COALESCE(c.subtotal, 0) AS subtotal,
+                       c.updated_at,
+                       c.sent_recovery_at,
+                       COALESCE(c.recovery_attempts, 0) AS recovery_attempts,
+                       CASE
+                         WHEN c.sent_recovery_at IS NOT NULL
+                              AND c.sent_recovery_at >= NOW() - INTERVAL '7 days'
+                           THEN 'recovered'
+                         WHEN c.updated_at >= NOW() - INTERVAL '4 hours'
+                           THEN 'in_progress'
+                         ELSE 'pending'
+                       END AS status
+                  FROM cart c
+                  LEFT JOIN customers cu
+                    ON cu.phone = SPLIT_PART(c.session_key, ':', 2)
+                 WHERE (CASE WHEN jsonb_typeof(COALESCE(c.items, '[]'::jsonb)) = 'array'
+                             THEN jsonb_array_length(COALESCE(c.items, '[]'::jsonb))
+                             ELSE 0
+                        END) > 0
+                 ORDER BY c.updated_at DESC
+                 LIMIT 100
+                """
+            )
+        except asyncpg.PostgresError as e:
+            log.warning("recovery.list.query_failed",
+                        tenant_id=str(user.tenant_id), error=str(e))
+            return []
+
+    return [
+        CartRowOut(
+            session_key=r["session_key"],
+            phone=r["customer_phone"] or r["phone_guess"] or None,
+            customer_name=r["customer_name"],
+            items_count=int(r["items_count"] or 0),
+            subtotal=float(r["subtotal"] or 0),
+            updated_at=r["updated_at"],
+            sent_recovery_at=r["sent_recovery_at"],
+            recovery_attempts=int(r["recovery_attempts"] or 0),
+            status=r["status"],
+        )
+        for r in rows
+    ]
+
+
+# ── Disparo manual em lote ──────────────────────────────────────────────────
+
+class TriggerAllOut(BaseModel):
+    checked:        int   # carrinhos elegíveis encontrados
+    sent:           int   # disparos OK
+    skipped_no_phone: int # session_key sem telefone parseável
+    errors:         int   # falhas de envio
+
+
+# Disparo manual é assíncrono: o endpoint enfileira um Celery task e
+# devolve 202 com o batch_id. O frontend polla /batches/{id} pra mostrar
+# progresso. Permite cancelar e desfazer (reverter marcador de envio).
+
+class TriggerIn(BaseModel):
+    # Lista opcional de session_keys. Vazio/None → todos os carrinhos com itens.
+    session_keys: list[str] | None = None
+
+
+class TriggerOut(BaseModel):
+    batch_id: str
+    total:    int
+
+
+class BatchOut(BaseModel):
+    id:              str
+    status:          str
+    total:           int
+    sent:            int
+    failed:          int
+    skipped:         int
+    actor_email:     str | None
+    created_at:      datetime
+    started_at:      datetime | None
+    finished_at:     datetime | None
+    cancel_requested: bool
+    error:           str | None
+
+
+def _row_to_batch(r) -> BatchOut:
+    return BatchOut(
+        id=str(r["id"]), status=r["status"],
+        total=int(r["total"]), sent=int(r["sent"]),
+        failed=int(r["failed"]), skipped=int(r["skipped"]),
+        actor_email=r["actor_email"],
+        created_at=r["created_at"], started_at=r["started_at"],
+        finished_at=r["finished_at"],
+        cancel_requested=bool(r["cancel_requested"]),
+        error=r["error"],
+    )
+
+
+@recovery_router.post("/trigger", response_model=TriggerOut, status_code=202)
+async def trigger_recovery(payload: TriggerIn, user: TenantUser) -> TriggerOut:
+    """Enfileira um batch de envio. Não bloqueia: o Celery worker processa
+    em background com rate-limit, e o frontend mostra progresso.
+
+    Se `session_keys` vier vazio, seleciona TODOS os carrinhos do tenant que
+    têm pelo menos 1 item (independente de status).
+    """
+    user.assert_role("manager")
+
+    import asyncpg
+    import json as _json
+
+    async with get_db_conn() as conn:
+        schema_row = await conn.fetchrow(
+            "SELECT schema_name FROM public.tenants WHERE id = $1",
+            user.tenant_id,
+        )
+        if not schema_row:
+            raise HTTPException(status_code=404, detail="Farmácia não encontrada.")
+        schema = schema_row["schema_name"]
+
+        # Recusa se já houver batch em andamento — evita duplicar envio.
+        active = await conn.fetchrow(
+            """
+            SELECT id FROM public.recovery_batches
+             WHERE tenant_id = $1 AND status IN ('queued','running')
+             LIMIT 1
+            """,
+            user.tenant_id,
+        )
+        if active:
+            raise HTTPException(
+                status_code=409,
+                detail="Já existe um disparo em andamento. Aguarde ou cancele antes de iniciar outro.",
+            )
+
+        # Resolve session_keys: filtragem feita no DB pra garantir que só
+        # carrinhos com itens entrem (defesa contra payload manual sujo).
+        await conn.execute(f"SET search_path = {schema}, public")
+        try:
+            if payload.session_keys:
+                rows = await conn.fetch(
+                    """
+                    SELECT session_key FROM cart
+                     WHERE session_key = ANY($1::text[])
+                       AND (CASE WHEN jsonb_typeof(COALESCE(items, '[]'::jsonb)) = 'array'
+                                 THEN jsonb_array_length(COALESCE(items, '[]'::jsonb))
+                                 ELSE 0
+                            END) > 0
+                    """,
+                    payload.session_keys,
+                )
+            else:
+                rows = await conn.fetch(
+                    """
+                    SELECT session_key FROM cart
+                     WHERE (CASE WHEN jsonb_typeof(COALESCE(items, '[]'::jsonb)) = 'array'
+                                 THEN jsonb_array_length(COALESCE(items, '[]'::jsonb))
+                                 ELSE 0
+                            END) > 0
+                     ORDER BY updated_at DESC
+                    """
+                )
+        except asyncpg.PostgresError as e:
+            log.warning("recovery.trigger.query_failed",
+                        tenant_id=str(user.tenant_id), error=str(e))
+            raise HTTPException(
+                status_code=500,
+                detail="Não foi possível buscar carrinhos.",
+            )
+
+        keys = [r["session_key"] for r in rows]
+        if not keys:
+            raise HTTPException(
+                status_code=400,
+                detail="Nenhum carrinho elegível para disparo.",
+            )
+
+        # Cria o batch (volta pro search_path padrão pra escrever em public).
+        await conn.execute("SET search_path = public")
+        batch_row = await conn.fetchrow(
+            """
+            INSERT INTO public.recovery_batches
+                   (tenant_id, schema_name, actor_email, total, session_keys)
+            VALUES ($1, $2, $3, $4, $5::jsonb)
+            RETURNING id
+            """,
+            user.tenant_id, schema, user.email, len(keys),
+            _json.dumps(keys),
+        )
+        batch_id = str(batch_row["id"])
+
+    # Enfileira o task (lazy import pra não criar ciclo no startup do API).
+    from workers.celery_app import process_recovery_batch_task
+    process_recovery_batch_task.delay(batch_id)
+
+    await log_event(
+        action="recovery.trigger_enqueued", actor_id=user.email,
+        actor_type="user", tenant_id=user.tenant_id,
+        target="cart_recovery",
+        meta={"batch_id": batch_id, "total": len(keys),
+              "scope": "selected" if payload.session_keys else "all"},
+    )
+    return TriggerOut(batch_id=batch_id, total=len(keys))
+
+
+@recovery_router.get("/batches", response_model=list[BatchOut])
+async def list_batches(user: TenantUser) -> list[BatchOut]:
+    """Últimos 20 batches do tenant — para mostrar histórico recente no portal."""
+    async with get_db_conn() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT id, status, total, sent, failed, skipped, actor_email,
+                   created_at, started_at, finished_at, cancel_requested, error
+              FROM public.recovery_batches
+             WHERE tenant_id = $1
+             ORDER BY created_at DESC
+             LIMIT 20
+            """,
+            user.tenant_id,
+        )
+    return [_row_to_batch(r) for r in rows]
+
+
+@recovery_router.get("/batches/{batch_id}", response_model=BatchOut)
+async def get_batch(batch_id: str, user: TenantUser) -> BatchOut:
+    async with get_db_conn() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT id, status, total, sent, failed, skipped, actor_email,
+                   created_at, started_at, finished_at, cancel_requested, error
+              FROM public.recovery_batches
+             WHERE id = $1 AND tenant_id = $2
+            """,
+            batch_id, user.tenant_id,
+        )
+    if not row:
+        raise HTTPException(status_code=404, detail="Batch não encontrado.")
+    return _row_to_batch(row)
+
+
+@recovery_router.post("/batches/{batch_id}/cancel", response_model=BatchOut)
+async def cancel_batch(batch_id: str, user: TenantUser) -> BatchOut:
+    """Marca `cancel_requested = TRUE`. O worker checa antes do próximo envio
+    e encerra o batch. Mensagens já entregues NÃO são desfeitas — o undo é
+    quem reverte o marcador no carrinho.
+    """
+    user.assert_role("manager")
+    async with get_db_conn() as conn:
+        row = await conn.fetchrow(
+            """
+            UPDATE public.recovery_batches
+               SET cancel_requested = TRUE
+             WHERE id = $1 AND tenant_id = $2 AND status IN ('queued','running')
+            RETURNING id, status, total, sent, failed, skipped, actor_email,
+                      created_at, started_at, finished_at, cancel_requested, error
+            """,
+            batch_id, user.tenant_id,
+        )
+    if not row:
+        raise HTTPException(
+            status_code=409,
+            detail="Batch não está em execução (já terminou ou não existe).",
+        )
+    await log_event(
+        action="recovery.batch_cancel_requested", actor_id=user.email,
+        actor_type="user", tenant_id=user.tenant_id,
+        target="cart_recovery", meta={"batch_id": batch_id},
+    )
+    return _row_to_batch(row)
+
+
+@recovery_router.post("/batches/{batch_id}/undo", response_model=BatchOut)
+async def undo_batch(batch_id: str, user: TenantUser) -> BatchOut:
+    """Reverte o marcador `sent_recovery_at`/`recovery_attempts` nos
+    carrinhos que receberam mensagem neste batch — pra que voltem a ser
+    elegíveis pelo job automático.
+
+    NÃO desentrega mensagens já enviadas (impossível). Só limpa o estado
+    interno. Usar quando o operador disparou em lote por engano ou quer
+    permitir nova tentativa controlada.
+    """
+    user.assert_role("manager")
+    import json as _json
+    import asyncpg
+
+    async with get_db_conn() as conn:
+        batch = await conn.fetchrow(
+            """
+            SELECT id, schema_name, status, sent, sent_session_keys
+              FROM public.recovery_batches
+             WHERE id = $1 AND tenant_id = $2
+            """,
+            batch_id, user.tenant_id,
+        )
+        if not batch:
+            raise HTTPException(status_code=404, detail="Batch não encontrado.")
+        if batch["status"] not in ("completed", "cancelled"):
+            raise HTTPException(
+                status_code=409,
+                detail="Só é possível desfazer um disparo que já terminou.",
+            )
+
+        raw = batch["sent_session_keys"]
+        if isinstance(raw, str):
+            try: sent_keys = _json.loads(raw)
+            except _json.JSONDecodeError: sent_keys = []
+        else:
+            sent_keys = list(raw or [])
+
+        if sent_keys:
+            schema = batch["schema_name"]
+            await conn.execute(f"SET search_path = {schema}, public")
+            try:
+                await conn.execute(
+                    """
+                    UPDATE cart
+                       SET sent_recovery_at  = NULL,
+                           recovery_attempts = GREATEST(COALESCE(recovery_attempts, 0) - 1, 0)
+                     WHERE session_key = ANY($1::text[])
+                    """,
+                    sent_keys,
+                )
+            except asyncpg.PostgresError as e:
+                log.warning("recovery.undo.update_failed",
+                            tenant_id=str(user.tenant_id),
+                            batch_id=batch_id, error=str(e))
+                raise HTTPException(
+                    status_code=500,
+                    detail="Falha ao reverter marcador nos carrinhos.",
+                )
+
+        await conn.execute("SET search_path = public")
+        row = await conn.fetchrow(
+            """
+            UPDATE public.recovery_batches
+               SET status = 'undone', finished_at = COALESCE(finished_at, NOW())
+             WHERE id = $1
+            RETURNING id, status, total, sent, failed, skipped, actor_email,
+                      created_at, started_at, finished_at, cancel_requested, error
+            """,
+            batch_id,
+        )
+
+    await log_event(
+        action="recovery.batch_undone", actor_id=user.email,
+        actor_type="user", tenant_id=user.tenant_id,
+        target="cart_recovery",
+        meta={"batch_id": batch_id, "reverted_carts": len(sent_keys)},
+    )
+    return _row_to_batch(row)
