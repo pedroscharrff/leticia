@@ -159,6 +159,31 @@ export async function undoBatch(id: string): Promise<RecoveryBatch> {
   return res.data;
 }
 
+// ── Régua da recuperação (delay + tentativas + horário silencioso) ─────────
+
+export interface RecoveryConfig {
+  delay_minutes:   number;   // 1..1440
+  max_attempts:    number;   // 1..5
+  quiet_start:     string;   // "HH:MM"
+  quiet_end:       string;   // "HH:MM"
+  default_minutes: number;
+}
+
+export async function getRecoveryConfig(): Promise<RecoveryConfig> {
+  const res = await api.get<RecoveryConfig>("/portal/recovery/config");
+  return res.data;
+}
+
+export async function updateRecoveryConfig(cfg: {
+  delay_minutes: number;
+  max_attempts:  number;
+  quiet_start:   string;
+  quiet_end:     string;
+}): Promise<RecoveryConfig> {
+  const res = await api.put<RecoveryConfig>("/portal/recovery/config", cfg);
+  return res.data;
+}
+
 // ── Expiração automática do carrinho após mensagem de recuperação ──────────
 
 export interface ExpireConfig {

@@ -136,7 +136,17 @@ async def _process_tenant(tenant_id: str, schema_name: str) -> dict:
         return stats
 
     cfg = await cap_svc.get_config(tenant_id, "sales.abandoned_cart")
-    delay_hours      = int(cfg.get("delay_hours", 4))
+    # delay_minutes é canônico (migration 054). Fallback pra delay_hours*60
+    # mantém compat com tenants que ainda têm só o campo legado.
+    try:
+        delay_minutes = int(cfg.get("delay_minutes") or 0)
+    except (TypeError, ValueError):
+        delay_minutes = 0
+    if delay_minutes <= 0:
+        try:
+            delay_minutes = int(cfg.get("delay_hours", 4) or 4) * 60
+        except (TypeError, ValueError):
+            delay_minutes = 240
     max_attempts     = int(cfg.get("max_attempts", 1))
     quiet_start      = _parse_hhmm(cfg.get("quiet_start"), time(21, 0))
     quiet_end        = _parse_hhmm(cfg.get("quiet_end"),   time(8,  0))
@@ -159,7 +169,7 @@ async def _process_tenant(tenant_id: str, schema_name: str) -> dict:
     except Exception as exc:  # noqa: BLE001
         log.warning("recover.persona_load_failed", tenant=tenant_id, exc=str(exc))
 
-    cutoff = datetime.now(timezone.utc) - timedelta(hours=delay_hours)
+    cutoff = datetime.now(timezone.utc) - timedelta(minutes=delay_minutes)
 
     try:
         async with get_db_conn() as conn:

@@ -22,8 +22,10 @@ import {
   getTemplate, updateTemplate, previewTemplate,
   getExpireConfig, updateExpireConfig,
   getExpireTemplate, updateExpireTemplate, previewExpireTemplate,
+  getRecoveryConfig, updateRecoveryConfig,
   type RecoveryStats, type CartRow,
   type RecoveryBatch, type RecoveryTemplate, type ExpireConfig,
+  type RecoveryConfig,
 } from "../api/payments";
 
 const STATUS_LABEL: Record<CartRow["status"], { text: string; color: string }> = {
@@ -221,10 +223,9 @@ export function PortalRecuperacao() {
           Carrinhos esquecidos e medicamentos contínuos que estão acabando viram
           mensagens proativas — sem você precisar lembrar de cada cliente.
           <br />
-          💡 Para ligar/desligar e ajustar prazos (delay, horário silencioso,
-          dias antes da reposição), use o cartão <strong>"Recuperação de
-          Carrinho Abandonado"</strong> e <strong>"Lembrete de Recompra"</strong>
-          {" "}em <em>Vendas › Recursos do seu Robô</em>.
+          💡 Os tempos da recuperação (espera, expiração, horário silencioso) e
+          os textos das mensagens são configurados aqui mesmo. Para ligar/desligar
+          a função, vá em <em>Vendas › Recursos do seu Robô</em>.
         </p>
       </header>
 
@@ -254,6 +255,9 @@ export function PortalRecuperacao() {
           {activeBatch && <ActiveBatchPanel batch={activeBatch}
                                             onCancel={handleCancel}
                                             onDismiss={handleDismiss} />}
+
+          {/* Régua de quando disparar a recuperação */}
+          <RecoveryConfigCard />
 
           {/* Card de edição do template */}
           <TemplateCard />
@@ -466,8 +470,8 @@ export function PortalRecuperacao() {
           <section className="cliente-card">
             <h3 style={{ marginTop: 0 }}>Como funciona</h3>
             <ul style={{ margin: 0, paddingLeft: 20, lineHeight: 1.7 }}>
-              <li>O sistema verifica carrinhos a cada hora e clientes em contínuo 1x por dia.</li>
-              <li>Mensagens respeitam o <strong>horário silencioso</strong> (padrão: 21h–08h em Brasília) e o <strong>máximo de tentativas</strong> por carrinho.</li>
+              <li>O sistema verifica carrinhos a cada hora (envio do nudge) e a cada 2 minutos (expiração) — e clientes em contínuo 1x por dia.</li>
+              <li>Mensagens respeitam o <strong>horário silencioso</strong> e o <strong>máximo de tentativas</strong> configurados acima.</li>
               <li>Nenhum cliente recebe duas mensagens automáticas para o mesmo motivo no mesmo ciclo — o sistema marca o envio em <code>sent_recovery_at</code> e <code>last_nudge_at</code>.</li>
               <li>O <strong>disparo manual</strong> ignora esses controles — use só quando quiser uma campanha pontual.</li>
               <li><strong>Desfazer</strong> reverte o marcador de envio nos carrinhos para que o robô possa notificá-los de novo. <em>Não</em> apaga a mensagem que já chegou no WhatsApp.</li>
@@ -709,6 +713,144 @@ function TemplateCard() {
   );
 }
 
+
+function RecoveryConfigCard() {
+  const [cfg, setCfg]       = useState<RecoveryConfig | null>(null);
+  const [draft, setDraft]   = useState<{ delay_minutes: number; max_attempts: number;
+                                          quiet_start: string; quiet_end: string } | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [error, setError]   = useState("");
+  const [savedOk, setSavedOk] = useState(false);
+
+  useEffect(() => {
+    getRecoveryConfig()
+      .then(c => {
+        setCfg(c);
+        setDraft({ delay_minutes: c.delay_minutes, max_attempts: c.max_attempts,
+                   quiet_start: c.quiet_start, quiet_end: c.quiet_end });
+      })
+      .catch(e => setError(e?.response?.data?.detail || "Falha ao carregar."));
+  }, []);
+
+  if (!cfg || !draft) {
+    return (
+      <section className="cliente-card" style={{ marginBottom: 24 }}>
+        <Spinner size={18} />
+      </section>
+    );
+  }
+
+  const dirty = draft.delay_minutes !== cfg.delay_minutes
+             || draft.max_attempts  !== cfg.max_attempts
+             || draft.quiet_start   !== cfg.quiet_start
+             || draft.quiet_end     !== cfg.quiet_end;
+
+  async function save() {
+    if (!draft) return;
+    if (draft.delay_minutes < 1 || draft.delay_minutes > 1440) {
+      setError("Tempo de espera deve estar entre 1 e 1440 minutos."); return;
+    }
+    if (draft.max_attempts < 1 || draft.max_attempts > 5) {
+      setError("Tentativas devem estar entre 1 e 5."); return;
+    }
+    setSaving(true); setError(""); setSavedOk(false);
+    try {
+      const c = await updateRecoveryConfig(draft);
+      setCfg(c);
+      setDraft({ delay_minutes: c.delay_minutes, max_attempts: c.max_attempts,
+                 quiet_start: c.quiet_start, quiet_end: c.quiet_end });
+      setSavedOk(true);
+      setTimeout(() => setSavedOk(false), 2500);
+    } catch (e: any) {
+      setError(e?.response?.data?.detail || "Falha ao salvar.");
+    } finally { setSaving(false); }
+  }
+
+  // Mostra equivalente em horas/dias se valor for grande, pra UX
+  const delayHint = draft.delay_minutes >= 1440
+    ? `${(draft.delay_minutes / 1440).toFixed(1)} dia(s)`
+    : draft.delay_minutes >= 60
+      ? `${(draft.delay_minutes / 60).toFixed(draft.delay_minutes % 60 ? 1 : 0)} hora(s)`
+      : `${draft.delay_minutes} min`;
+
+  return (
+    <section className="cliente-card" style={{ marginBottom: 24 }}>
+      <div style={{ marginBottom: 12 }}>
+        <h3 style={{ margin: 0 }}>⏰ Quando disparar a recuperação</h3>
+        <p style={{ margin: "4px 0 0", fontSize: 13, color: "#9ca3af",
+                    lineHeight: 1.5 }}>
+          Régua de quando o robô considera um carrinho abandonado e dispara a
+          mensagem automática.
+        </p>
+      </div>
+
+      <div style={{ display: "grid",
+                    gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
+                    gap: 16 }}>
+        <Field label="Tempo de espera (minutos)"
+               hint={`= ${delayHint} de inatividade antes do nudge`}>
+          <input type="number" min={1} max={1440}
+                 value={draft.delay_minutes}
+                 onChange={(e) => setDraft({ ...draft,
+                   delay_minutes: Math.max(1, Math.min(1440,
+                     parseInt(e.target.value || "1", 10) || 1)) })}
+                 style={inputStyle} />
+        </Field>
+
+        <Field label="Máximo de tentativas"
+               hint="Quantas mensagens proativas por cliente">
+          <input type="number" min={1} max={5}
+                 value={draft.max_attempts}
+                 onChange={(e) => setDraft({ ...draft,
+                   max_attempts: Math.max(1, Math.min(5,
+                     parseInt(e.target.value || "1", 10) || 1)) })}
+                 style={inputStyle} />
+        </Field>
+
+        <Field label="Início do horário silencioso"
+               hint="Não dispara após esta hora (Brasília)">
+          <input type="time" value={draft.quiet_start}
+                 onChange={(e) => setDraft({ ...draft, quiet_start: e.target.value })}
+                 style={inputStyle} />
+        </Field>
+
+        <Field label="Fim do horário silencioso"
+               hint="Volta a disparar a partir desta hora">
+          <input type="time" value={draft.quiet_end}
+                 onChange={(e) => setDraft({ ...draft, quiet_end: e.target.value })}
+                 style={inputStyle} />
+        </Field>
+      </div>
+
+      <div style={{ display: "flex", alignItems: "center", gap: 12,
+                    marginTop: 12, flexWrap: "wrap" }}>
+        <button className="btn btn-primary" onClick={save}
+                disabled={saving || !dirty}>
+          {saving ? "Salvando…" : "Salvar"}
+        </button>
+        {savedOk && <span style={{ color: "#22c55e", fontSize: 12 }}>✓ Salvo</span>}
+        {error && <span style={{ color: "#ef4444", fontSize: 12 }}>{error}</span>}
+      </div>
+    </section>
+  );
+}
+
+const inputStyle: React.CSSProperties = {
+  width: "100%", padding: "6px 10px", fontSize: 14,
+  background: "#0f0f0f", border: "1px solid #2a2a2a",
+  color: "#e5e5e5", borderRadius: 6,
+};
+
+function Field({ label, hint, children }:
+    { label: string; hint?: string; children: React.ReactNode }) {
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+      <label style={{ fontSize: 12, color: "#9ca3af" }}>{label}</label>
+      {children}
+      {hint && <span style={{ fontSize: 11, color: "#6b7280" }}>{hint}</span>}
+    </div>
+  );
+}
 
 function ExpireConfigCard() {
   const [cfg, setCfg]       = useState<ExpireConfig | null>(null);

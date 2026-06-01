@@ -631,6 +631,135 @@ async def preview_template(
     return TemplatePreviewOut(rendered=rendered, used_sample=False)
 
 
+# ── Régua da recuperação (delay + tentativas + horário silencioso) ─────────
+# Antes ficava só editável pelo card genérico de capability em Vendas ›
+# Recursos. Trouxemos pra cá pra centralizar toda a régua de recuperação
+# na mesma página. delay_minutes é o canônico desde a migration 054
+# (substitui delay_hours; fallback preservado no job).
+
+DEFAULT_RECOVERY_DELAY_MINUTES = 240    # = 4h (compat com delay_hours antigo)
+DEFAULT_RECOVERY_MAX_ATTEMPTS  = 1
+DEFAULT_RECOVERY_QUIET_START   = "21:00"
+DEFAULT_RECOVERY_QUIET_END     = "08:00"
+
+
+def _coerce_hhmm(value, fallback: str) -> str:
+    """Normaliza "HH:MM" — aceita também "H:MM" e ints (== hora cheia)."""
+    if value is None or value == "":
+        return fallback
+    s = str(value).strip()
+    if ":" not in s:
+        try:
+            h = int(s)
+            if 0 <= h <= 23:
+                return f"{h:02d}:00"
+        except ValueError:
+            return fallback
+        return fallback
+    try:
+        hh, mm = s.split(":", 1)
+        h, m = int(hh), int(mm)
+        if 0 <= h <= 23 and 0 <= m <= 59:
+            return f"{h:02d}:{m:02d}"
+    except ValueError:
+        pass
+    return fallback
+
+
+class RecoveryConfigOut(BaseModel):
+    delay_minutes:   int       # 1..1440
+    max_attempts:    int       # 1..5
+    quiet_start:     str       # "HH:MM"
+    quiet_end:       str       # "HH:MM"
+    default_minutes: int
+
+
+class RecoveryConfigIn(BaseModel):
+    delay_minutes: int
+    max_attempts:  int
+    quiet_start:   str
+    quiet_end:     str
+
+
+@recovery_router.get("/config", response_model=RecoveryConfigOut)
+async def get_recovery_config(user: TenantUser) -> RecoveryConfigOut:
+    from services import capabilities as cap_svc
+    cfg = await cap_svc.get_config(user.tenant_id, "sales.abandoned_cart")
+
+    # Lê delay_minutes; fallback delay_hours*60; fallback default.
+    try:
+        delay = int(cfg.get("delay_minutes") or 0)
+    except (TypeError, ValueError):
+        delay = 0
+    if delay <= 0:
+        try:
+            delay = int(cfg.get("delay_hours") or 0) * 60
+        except (TypeError, ValueError):
+            delay = 0
+    if delay <= 0:
+        delay = DEFAULT_RECOVERY_DELAY_MINUTES
+
+    try:
+        attempts = int(cfg.get("max_attempts") or DEFAULT_RECOVERY_MAX_ATTEMPTS)
+    except (TypeError, ValueError):
+        attempts = DEFAULT_RECOVERY_MAX_ATTEMPTS
+
+    return RecoveryConfigOut(
+        delay_minutes=delay,
+        max_attempts=attempts,
+        quiet_start=_coerce_hhmm(cfg.get("quiet_start"), DEFAULT_RECOVERY_QUIET_START),
+        quiet_end=_coerce_hhmm(cfg.get("quiet_end"),   DEFAULT_RECOVERY_QUIET_END),
+        default_minutes=DEFAULT_RECOVERY_DELAY_MINUTES,
+    )
+
+
+@recovery_router.put("/config", response_model=RecoveryConfigOut)
+async def update_recovery_config(payload: RecoveryConfigIn,
+                                 user: TenantUser) -> RecoveryConfigOut:
+    user.assert_role("manager")
+    if payload.delay_minutes < 1 or payload.delay_minutes > 1440:
+        raise HTTPException(status_code=422,
+            detail="delay_minutes deve estar entre 1 e 1440 (1 min a 24h).")
+    if payload.max_attempts < 1 or payload.max_attempts > 5:
+        raise HTTPException(status_code=422,
+            detail="max_attempts deve estar entre 1 e 5.")
+
+    qs = _coerce_hhmm(payload.quiet_start, DEFAULT_RECOVERY_QUIET_START)
+    qe = _coerce_hhmm(payload.quiet_end,   DEFAULT_RECOVERY_QUIET_END)
+
+    from services import capabilities as cap_svc
+    current = await cap_svc.list_for_tenant(user.tenant_id)
+    cap = next((c for c in current if c["key"] == "sales.abandoned_cart"), None)
+    if not cap:
+        raise HTTPException(status_code=404, detail="Capacidade não encontrada.")
+
+    new_config = dict(cap.get("config") or {})
+    new_config["delay_minutes"] = int(payload.delay_minutes)
+    new_config["max_attempts"]  = int(payload.max_attempts)
+    new_config["quiet_start"]   = qs
+    new_config["quiet_end"]     = qe
+    # Mantém delay_hours alinhado pra tenants que olham o campo antigo
+    # em algum dashboard externo. Arredonda pra cima.
+    new_config["delay_hours"] = max(1, (int(payload.delay_minutes) + 59) // 60)
+
+    await cap_svc.set_enabled(
+        tenant_id=str(user.tenant_id),
+        key="sales.abandoned_cart",
+        enabled=bool(cap.get("enabled")),
+        config=new_config,
+        user_id=user.email,
+    )
+    await log_event(
+        action="recovery.config_updated", actor_id=user.email,
+        actor_type="user", tenant_id=user.tenant_id,
+        target="sales.abandoned_cart",
+        meta={"delay_minutes": int(payload.delay_minutes),
+              "max_attempts":  int(payload.max_attempts),
+              "quiet_start":   qs, "quiet_end": qe},
+    )
+    return await get_recovery_config(user)
+
+
 # ── Expiração de carrinho após mensagem de recuperação ─────────────────────
 # Tempo (`expire_minutes`) e template final (`expire_message_template`) ficam
 # na MESMA config da capability `sales.abandoned_cart`. Endpoints separados
