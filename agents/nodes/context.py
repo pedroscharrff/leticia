@@ -248,6 +248,11 @@ async def save_context(state: AgentState) -> AgentState:
             )
 
             # Persiste carrinho (importante: vendedor mutou em memória, agora salvamos)
+            # ⚠️ NÃO chamar json.dumps no items — o codec em db/postgres.py já
+            # serializa parâmetros jsonb. Double-encoding gravava o array
+            # como string JSON ("[{...}]"), quebrando jsonb_typeof/array_length
+            # nas queries de Recuperação. Ver [[jsonb-double-encoding]] e
+            # migration 050 que desfez o estrago em dados antigos.
             cart = state.get("cart") or {"items": [], "subtotal": 0.0}
             await conn.execute(
                 """
@@ -262,7 +267,7 @@ async def save_context(state: AgentState) -> AgentState:
                     updated_at     = NOW()
                 """,
                 session_id,
-                json.dumps(cart.get("items", [])),
+                cart.get("items", []) or [],
                 float(cart.get("subtotal", 0) or 0),
                 state.get("stock_mode") or "catalogo",
                 int(cart.get("sales_attempts", 0) or 0),

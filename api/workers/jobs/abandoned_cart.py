@@ -111,13 +111,9 @@ async def _process_tenant(tenant_id: str, schema_name: str) -> dict:
                   FROM cart c
                   LEFT JOIN customers cu ON cu.phone = SPLIT_PART(c.session_key, ':', 2)
                  WHERE c.updated_at < $1
-                   -- CASE guard contra row com `items` escalar (planner pode
-                   -- reordenar AND e estourar jsonb_array_length). Ver
-                   -- [[jsonb-array-typeof-guard]].
-                   AND (CASE WHEN jsonb_typeof(COALESCE(c.items, '[]'::jsonb)) = 'array'
-                             THEN jsonb_array_length(COALESCE(c.items, '[]'::jsonb))
-                             ELSE 0
-                        END) > 0
+                   -- Helper trata array, string (double-encoded) e escalar.
+                   -- Ver [[jsonb-array-typeof-guard]] + [[jsonb-double-encoding]].
+                   AND public.safe_jsonb_array_length(c.items) > 0
                    AND c.recovery_attempts < $2
                    AND (c.sent_recovery_at IS NULL OR c.sent_recovery_at < $1)
                  ORDER BY c.updated_at DESC

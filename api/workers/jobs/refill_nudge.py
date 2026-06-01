@@ -78,13 +78,9 @@ async def _process_tenant(tenant_id: str, schema_name: str) -> dict:
                 SELECT phone, name, continuous_meds
                   FROM customers
                  WHERE continuous_meds IS NOT NULL
-                   -- CASE guard: planner pode reordenar AND e estourar
-                   -- jsonb_array_length quando algum row tem continuous_meds
-                   -- escalar. Ver [[jsonb-array-typeof-guard]].
-                   AND (CASE WHEN jsonb_typeof(continuous_meds) = 'array'
-                             THEN jsonb_array_length(continuous_meds)
-                             ELSE 0
-                        END) > 0
+                   -- Helper trata array, string (double-encoded) e escalar.
+                   -- Ver [[jsonb-array-typeof-guard]] + [[jsonb-double-encoding]].
+                   AND public.safe_jsonb_array_length(continuous_meds) > 0
                 """
             )
     except Exception as exc:  # noqa: BLE001
@@ -146,10 +142,11 @@ async def _process_tenant(tenant_id: str, schema_name: str) -> dict:
             try:
                 async with get_db_conn() as conn:
                     await conn.execute(f"SET search_path = {schema_name}, public")
+                    # Codec do asyncpg já serializa jsonb. Ver [[jsonb-double-encoding]].
                     await conn.execute(
                         "UPDATE customers SET continuous_meds = $2::jsonb, "
                         "updated_at = NOW() WHERE phone = $1",
-                        phone, json.dumps(updated_meds),
+                        phone, updated_meds,
                     )
             except Exception as exc:  # noqa: BLE001
                 log.warning("refill.mark_failed",

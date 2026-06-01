@@ -201,10 +201,7 @@ async def recovery_stats(user: TenantUser) -> RecoveryStatsOut:
         # InvalidParameterValueError quando `items` é um escalar/objeto.
         carts_pending = await _safe_count(conn, """
             SELECT COUNT(*) FROM cart
-             WHERE (CASE WHEN jsonb_typeof(COALESCE(items, '[]'::jsonb)) = 'array'
-                         THEN jsonb_array_length(COALESCE(items, '[]'::jsonb))
-                         ELSE 0
-                    END) > 0
+             WHERE public.safe_jsonb_array_length(items) > 0
                AND updated_at < NOW() - INTERVAL '4 hours'
                AND (sent_recovery_at IS NULL
                     OR sent_recovery_at < NOW() - INTERVAL '24 hours')
@@ -218,10 +215,7 @@ async def recovery_stats(user: TenantUser) -> RecoveryStatsOut:
 
         refill_clients = await _safe_count(conn, """
             SELECT COUNT(*) FROM customers
-             WHERE (CASE WHEN jsonb_typeof(COALESCE(continuous_meds, '[]'::jsonb)) = 'array'
-                         THEN jsonb_array_length(COALESCE(continuous_meds, '[]'::jsonb))
-                         ELSE 0
-                    END) > 0
+             WHERE public.safe_jsonb_array_length(continuous_meds) > 0
         """, "refill_clients")
 
         # Nudges enviados nos últimos 30 dias: contagem de last_nudge_at >= 30d
@@ -290,10 +284,7 @@ async def list_carts(user: TenantUser) -> list[CartRowOut]:
                        SPLIT_PART(c.session_key, ':', 2) AS phone_guess,
                        cu.name AS customer_name,
                        cu.phone AS customer_phone,
-                       (CASE WHEN jsonb_typeof(COALESCE(c.items, '[]'::jsonb)) = 'array'
-                             THEN jsonb_array_length(COALESCE(c.items, '[]'::jsonb))
-                             ELSE 0
-                        END) AS items_count,
+                       public.safe_jsonb_array_length(c.items) AS items_count,
                        COALESCE(c.subtotal, 0) AS subtotal,
                        c.updated_at,
                        c.sent_recovery_at,
@@ -309,10 +300,7 @@ async def list_carts(user: TenantUser) -> list[CartRowOut]:
                   FROM cart c
                   LEFT JOIN customers cu
                     ON cu.phone = SPLIT_PART(c.session_key, ':', 2)
-                 WHERE (CASE WHEN jsonb_typeof(COALESCE(c.items, '[]'::jsonb)) = 'array'
-                             THEN jsonb_array_length(COALESCE(c.items, '[]'::jsonb))
-                             ELSE 0
-                        END) > 0
+                 WHERE public.safe_jsonb_array_length(c.items) > 0
                  ORDER BY c.updated_at DESC
                  LIMIT 100
                 """
@@ -477,8 +465,10 @@ async def trigger_recovery(payload: TriggerIn, user: TenantUser) -> TriggerOut:
             VALUES ($1, $2, $3, $4, $5::jsonb)
             RETURNING id
             """,
+            # Codec do asyncpg (db/postgres.py) já serializa jsonb — passar a
+            # lista crua. Ver [[jsonb-double-encoding]].
             user.tenant_id, schema, user.email, len(keys),
-            _json.dumps(keys),
+            keys,
         )
         batch_id = str(batch_row["id"])
 

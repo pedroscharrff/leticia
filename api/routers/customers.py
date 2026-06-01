@@ -485,12 +485,14 @@ async def update_customer_memory(
         params.append([a.strip().lower() for a in payload.allergies if a.strip()])
         i += 1
     if payload.continuous_meds is not None:
+        # Codec do asyncpg já serializa jsonb — passar lista crua.
+        # Ver [[jsonb-double-encoding]].
         updates.append(f"continuous_meds = ${i}::jsonb")
-        params.append(_json.dumps([m.model_dump() for m in payload.continuous_meds]))
+        params.append([m.model_dump() for m in payload.continuous_meds])
         i += 1
     if payload.preferences is not None:
         updates.append(f"preferences = ${i}::jsonb")
-        params.append(_json.dumps(payload.preferences))
+        params.append(payload.preferences)
         i += 1
     if payload.segment is not None:
         updates.append(f"segment = ${i}")
