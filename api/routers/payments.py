@@ -255,6 +255,8 @@ class CartRowOut(BaseModel):
     #   'recovered'  → sent_recovery_at preenchido nos últimos 7d
     #   'pending'    → tem itens, sem nudge OU nudge antigo
     #   'in_progress'→ atualizado nas últimas 4h (cliente ainda ativo)
+    #   'expired'    → registro sintético vindo de orders.status='expired'
+    #                  (cart já foi deletado pelo job de expiração)
     status:             str
 
 
@@ -283,35 +285,60 @@ async def list_carts(user: TenantUser) -> list[CartRowOut]:
             # antigos vinha como "<algo>:<phone>:<sufixo>". JOIN tenta os dois
             # formatos via LATERAL pra evitar duplicação de linhas. Também
             # devolve o jsonb `items` para o frontend renderizar a lista.
+            #
+            # UNION com orders.status='expired' dos últimos 7d para que
+            # carrinhos expirados pelo job continuem aparecendo na página
+            # de Recuperação como linhas sintéticas (session_key prefixado
+            # com `expired:` para não colidir com PKs reais e sinalizar ao
+            # frontend que a linha é read-only).
             rows = await conn.fetch(
                 """
-                SELECT c.session_key,
-                       c.items AS items_raw,
-                       cu.name  AS customer_name,
-                       cu.phone AS customer_phone,
-                       public.safe_jsonb_array_length(c.items) AS items_count,
-                       COALESCE(c.subtotal, 0) AS subtotal,
-                       c.updated_at,
-                       c.sent_recovery_at,
-                       COALESCE(c.recovery_attempts, 0) AS recovery_attempts,
-                       CASE
-                         WHEN c.sent_recovery_at IS NOT NULL
-                              AND c.sent_recovery_at >= NOW() - INTERVAL '7 days'
-                           THEN 'recovered'
-                         WHEN c.updated_at >= NOW() - INTERVAL '4 hours'
-                           THEN 'in_progress'
-                         ELSE 'pending'
-                       END AS status
-                  FROM cart c
-                  LEFT JOIN LATERAL (
-                       SELECT name, phone
-                         FROM customers
-                        WHERE phone = c.session_key
-                           OR phone = NULLIF(SPLIT_PART(c.session_key, ':', 2), '')
-                        LIMIT 1
-                  ) cu ON TRUE
-                 WHERE public.safe_jsonb_array_length(c.items) > 0
-                 ORDER BY c.updated_at DESC
+                SELECT * FROM (
+                    SELECT c.session_key                                  AS session_key,
+                           c.items                                        AS items_raw,
+                           cu.name                                        AS customer_name,
+                           cu.phone                                       AS customer_phone,
+                           public.safe_jsonb_array_length(c.items)        AS items_count,
+                           COALESCE(c.subtotal, 0)::float8                AS subtotal,
+                           c.updated_at                                   AS updated_at,
+                           c.sent_recovery_at                             AS sent_recovery_at,
+                           COALESCE(c.recovery_attempts, 0)               AS recovery_attempts,
+                           CASE
+                             WHEN c.sent_recovery_at IS NOT NULL
+                                  AND c.sent_recovery_at >= NOW() - INTERVAL '7 days'
+                               THEN 'recovered'
+                             WHEN c.updated_at >= NOW() - INTERVAL '4 hours'
+                               THEN 'in_progress'
+                             ELSE 'pending'
+                           END                                            AS status
+                      FROM cart c
+                      LEFT JOIN LATERAL (
+                           SELECT name, phone
+                             FROM customers
+                            WHERE phone = c.session_key
+                               OR phone = NULLIF(SPLIT_PART(c.session_key, ':', 2), '')
+                            LIMIT 1
+                      ) cu ON TRUE
+                     WHERE public.safe_jsonb_array_length(c.items) > 0
+
+                    UNION ALL
+
+                    SELECT ('expired:' || o.id::text)                    AS session_key,
+                           o.items                                        AS items_raw,
+                           cu.name                                        AS customer_name,
+                           cu.phone                                       AS customer_phone,
+                           public.safe_jsonb_array_length(o.items)        AS items_count,
+                           COALESCE(o.subtotal, 0)::float8                AS subtotal,
+                           o.created_at                                   AS updated_at,
+                           o.created_at                                   AS sent_recovery_at,
+                           0                                              AS recovery_attempts,
+                           'expired'                                      AS status
+                      FROM orders o
+                      LEFT JOIN customers cu ON cu.id = o.customer_id
+                     WHERE o.status = 'expired'
+                       AND o.created_at >= NOW() - INTERVAL '7 days'
+                ) AS combined
+                 ORDER BY updated_at DESC
                  LIMIT 100
                 """
             )
@@ -600,6 +627,204 @@ async def preview_template(
         persona, items, row["customer_name"],
         template=tpl,
         subtotal=float(row["subtotal"] or 0),
+    )
+    return TemplatePreviewOut(rendered=rendered, used_sample=False)
+
+
+# ── Expiração de carrinho após mensagem de recuperação ─────────────────────
+# Tempo (`expire_minutes`) e template final (`expire_message_template`) ficam
+# na MESMA config da capability `sales.abandoned_cart`. Endpoints separados
+# do template de recuperação só por UX — mesma fonte de verdade.
+# Job que consome: workers/jobs/expire_carts.py.
+
+
+DEFAULT_EXPIRE_MINUTES = 60
+
+
+async def _get_expire_defaults() -> tuple[int, str]:
+    """Retorna (default_minutes, default_template) do catálogo."""
+    from workers.jobs.expire_carts import DEFAULT_EXPIRE_TEMPLATE
+    _, default_cfg, _ = await _get_abandoned_cart_defaults()
+    try:
+        d_min = int(default_cfg.get("expire_minutes", DEFAULT_EXPIRE_MINUTES))
+    except (TypeError, ValueError):
+        d_min = DEFAULT_EXPIRE_MINUTES
+    d_tpl = str(default_cfg.get("expire_message_template") or DEFAULT_EXPIRE_TEMPLATE)
+    return d_min, d_tpl
+
+
+class ExpireConfigOut(BaseModel):
+    expire_minutes:  int   # 0 = desativado, 1..240
+    default_minutes: int
+    min_minutes:     int = 0
+    max_minutes:     int = 240
+
+
+class ExpireConfigIn(BaseModel):
+    expire_minutes: int
+
+
+@recovery_router.get("/expire-config", response_model=ExpireConfigOut)
+async def get_expire_config(user: TenantUser) -> ExpireConfigOut:
+    from services import capabilities as cap_svc
+    cfg = await cap_svc.get_config(user.tenant_id, "sales.abandoned_cart")
+    d_min, _ = await _get_expire_defaults()
+    try:
+        cur = int(cfg.get("expire_minutes", d_min))
+    except (TypeError, ValueError):
+        cur = d_min
+    return ExpireConfigOut(expire_minutes=cur, default_minutes=d_min)
+
+
+@recovery_router.put("/expire-config", response_model=ExpireConfigOut)
+async def update_expire_config(payload: ExpireConfigIn,
+                               user: TenantUser) -> ExpireConfigOut:
+    user.assert_role("manager")
+    if payload.expire_minutes < 0 or payload.expire_minutes > 240:
+        raise HTTPException(
+            status_code=422,
+            detail="expire_minutes deve estar entre 0 e 240 (0 = desativado).",
+        )
+
+    from services import capabilities as cap_svc
+    current = await cap_svc.list_for_tenant(user.tenant_id)
+    cap = next((c for c in current if c["key"] == "sales.abandoned_cart"), None)
+    if not cap:
+        raise HTTPException(status_code=404, detail="Capacidade não encontrada.")
+
+    new_config = dict(cap.get("config") or {})
+    new_config["expire_minutes"] = int(payload.expire_minutes)
+
+    await cap_svc.set_enabled(
+        tenant_id=str(user.tenant_id),
+        key="sales.abandoned_cart",
+        enabled=bool(cap.get("enabled")),
+        config=new_config,
+        user_id=user.email,
+    )
+    await log_event(
+        action="recovery.expire_config_updated", actor_id=user.email,
+        actor_type="user", tenant_id=user.tenant_id,
+        target="sales.abandoned_cart",
+        meta={"expire_minutes": int(payload.expire_minutes)},
+    )
+    return await get_expire_config(user)
+
+
+@recovery_router.get("/expire-template", response_model=TemplateOut)
+async def get_expire_template(user: TenantUser) -> TemplateOut:
+    from services import capabilities as cap_svc
+    cfg = await cap_svc.get_config(user.tenant_id, "sales.abandoned_cart")
+    _, default_tpl = await _get_expire_defaults()
+    tenant_tpl = cfg.get("expire_message_template")
+    is_default = (tenant_tpl is None) or (str(tenant_tpl).strip() == default_tpl.strip())
+    return TemplateOut(
+        template=str(tenant_tpl or default_tpl),
+        is_default=is_default,
+        default=default_tpl,
+        placeholders=[{"key": k, "desc": d} for k, d in PLACEHOLDERS],
+    )
+
+
+@recovery_router.put("/expire-template", response_model=TemplateOut)
+async def update_expire_template(payload: TemplateIn,
+                                 user: TenantUser) -> TemplateOut:
+    user.assert_role("manager")
+    new_tpl = (payload.template or "").strip()
+    try:
+        _render_sample(new_tpl)
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=f"Template inválido: {e}")
+
+    from services import capabilities as cap_svc
+    current = await cap_svc.list_for_tenant(user.tenant_id)
+    cap = next((c for c in current if c["key"] == "sales.abandoned_cart"), None)
+    if not cap:
+        raise HTTPException(status_code=404, detail="Capacidade não encontrada.")
+
+    new_config = dict(cap.get("config") or {})
+    if new_tpl:
+        new_config["expire_message_template"] = new_tpl
+    else:
+        new_config.pop("expire_message_template", None)
+
+    await cap_svc.set_enabled(
+        tenant_id=str(user.tenant_id),
+        key="sales.abandoned_cart",
+        enabled=bool(cap.get("enabled")),
+        config=new_config,
+        user_id=user.email,
+    )
+    await log_event(
+        action="recovery.expire_template_updated", actor_id=user.email,
+        actor_type="user", tenant_id=user.tenant_id,
+        target="sales.abandoned_cart",
+        meta={"length": len(new_tpl), "reset_to_default": not bool(new_tpl)},
+    )
+    return await get_expire_template(user)
+
+
+@recovery_router.post("/expire-template/preview", response_model=TemplatePreviewOut)
+async def preview_expire_template(payload: TemplatePreviewIn,
+                                  user: TenantUser) -> TemplatePreviewOut:
+    """Espelha /template/preview, mas usando o template de expiração."""
+    import json as _json
+    from workers.jobs.abandoned_cart import _build_message
+    from services import capabilities as cap_svc
+
+    if payload.template is not None:
+        tpl = payload.template
+    else:
+        cfg = await cap_svc.get_config(user.tenant_id, "sales.abandoned_cart")
+        tpl = cfg.get("expire_message_template")
+        if not tpl:
+            _, tpl = await _get_expire_defaults()
+
+    if not payload.session_key:
+        return TemplatePreviewOut(rendered=_render_sample(tpl), used_sample=True)
+
+    async with get_db_conn() as conn:
+        schema_row = await conn.fetchrow(
+            "SELECT schema_name FROM public.tenants WHERE id = $1",
+            user.tenant_id,
+        )
+        if not schema_row:
+            raise HTTPException(status_code=404, detail="Farmácia não encontrada.")
+        await conn.execute(f"SET search_path = {schema_row['schema_name']}, public")
+        row = await conn.fetchrow(
+            """
+            SELECT c.items, c.subtotal,
+                   cu.name AS customer_name
+              FROM cart c
+              LEFT JOIN LATERAL (
+                   SELECT name FROM customers
+                    WHERE phone = c.session_key
+                       OR phone = NULLIF(SPLIT_PART(c.session_key, ':', 2), '')
+                    LIMIT 1
+              ) cu ON TRUE
+             WHERE c.session_key = $1
+            """,
+            payload.session_key,
+        )
+    if not row:
+        raise HTTPException(status_code=404, detail="Carrinho não encontrado.")
+
+    raw = row["items"]
+    if isinstance(raw, str):
+        try: items = _json.loads(raw)
+        except _json.JSONDecodeError: items = []
+    else:
+        items = list(raw or [])
+
+    persona = {}
+    try:
+        persona = await load_persona(user.tenant_id)
+    except Exception:
+        pass
+
+    rendered = _build_message(
+        persona, items, row["customer_name"],
+        template=tpl, subtotal=float(row["subtotal"] or 0),
     )
     return TemplatePreviewOut(rendered=rendered, used_sample=False)
 

@@ -44,6 +44,12 @@ celery_app.conf.update(
             "task":     "jobs.recover_abandoned_carts",
             "schedule": 60 * 60,           # 1 hora
         },
+        "expire_abandoned_carts": {
+            # 2 min: granularidade fina pra honrar expire_minutes a partir de 1.
+            # Job é leve (varre só carts com sent_recovery_at preenchido).
+            "task":     "jobs.expire_abandoned_carts",
+            "schedule": 60 * 2,
+        },
         "nudge_continuous_refill": {
             # 24h: roda 1x por dia. O job interno respeita time_of_day da
             # config (futuro) — por ora, executa sempre quando o beat acorda.
@@ -64,6 +70,17 @@ def recover_abandoned_carts_task(self) -> dict:
         return recover_abandoned_carts_sync()
     except Exception as exc:  # noqa: BLE001
         log.warning("celery.recover_failed", exc=str(exc))
+        return {"error": str(exc)}
+
+
+@celery_app.task(name="jobs.expire_abandoned_carts", bind=True, max_retries=0)
+def expire_abandoned_carts_task(self) -> dict:
+    """Encerra tickets cujo carrinho não teve retorno após a recuperação."""
+    from workers.jobs.expire_carts import expire_abandoned_carts_sync
+    try:
+        return expire_abandoned_carts_sync()
+    except Exception as exc:  # noqa: BLE001
+        log.warning("celery.expire_failed", exc=str(exc))
         return {"error": str(exc)}
 
 

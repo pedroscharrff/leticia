@@ -20,14 +20,17 @@ import {
   getRecoveryStats, listCarts,
   triggerRecovery, getBatch, listBatches, cancelBatch, undoBatch, dismissBatch,
   getTemplate, updateTemplate, previewTemplate,
+  getExpireConfig, updateExpireConfig,
+  getExpireTemplate, updateExpireTemplate, previewExpireTemplate,
   type RecoveryStats, type CartRow,
-  type RecoveryBatch, type RecoveryTemplate,
+  type RecoveryBatch, type RecoveryTemplate, type ExpireConfig,
 } from "../api/payments";
 
 const STATUS_LABEL: Record<CartRow["status"], { text: string; color: string }> = {
   in_progress: { text: "Em andamento",      color: "#0ea5e9" },
   pending:     { text: "Aguardando nudge",  color: "#f59e0b" },
   recovered:   { text: "Mensagem enviada",  color: "#22c55e" },
+  expired:     { text: "Expirado",          color: "#6b7280" },
 };
 
 const BATCH_STATUS_LABEL: Record<RecoveryBatch["status"], { text: string; color: string }> = {
@@ -135,7 +138,7 @@ export function PortalRecuperacao() {
       return;
     }
     const keys = scope === "selected" ? Array.from(selected) : undefined;
-    const count = scope === "selected" ? keys!.length : (carts?.length || 0);
+    const count = scope === "selected" ? keys!.length : selectableCarts.length;
     if (!count) {
       setError(scope === "selected"
         ? "Selecione ao menos um carrinho."
@@ -202,7 +205,11 @@ export function PortalRecuperacao() {
     }
   }
 
-  const visibleKeys = (carts || []).map(c => c.session_key);
+  // Carrinhos expirados são linhas sintéticas (vêm de orders.status='expired')
+  // — não podem ser re-enviados, então ficam fora da seleção e da contagem
+  // do botão "Disparar para todos".
+  const selectableCarts = (carts || []).filter(c => c.status !== "expired");
+  const visibleKeys = selectableCarts.map(c => c.session_key);
   const allVisibleSelected = visibleKeys.length > 0
     && visibleKeys.every(k => selected.has(k));
 
@@ -251,6 +258,10 @@ export function PortalRecuperacao() {
           {/* Card de edição do template */}
           <TemplateCard />
 
+          {/* Configuração de expiração automática (encerra ticket + apaga cart) */}
+          <ExpireConfigCard />
+          <ExpireTemplateCard />
+
           {/* Card de disparo manual */}
           <section className="cliente-card" style={{ marginBottom: 24 }}>
             <div style={{ display: "flex", justifyContent: "space-between",
@@ -275,9 +286,9 @@ export function PortalRecuperacao() {
                 <button
                   className="btn btn-primary"
                   onClick={() => handleTrigger("all")}
-                  disabled={busy || !!activeBatch || !carts || carts.length === 0}
+                  disabled={busy || !!activeBatch || selectableCarts.length === 0}
                 >
-                  Disparar para todos ({(carts || []).length})
+                  Disparar para todos ({selectableCarts.length})
                 </button>
               </div>
             </div>
@@ -318,16 +329,20 @@ export function PortalRecuperacao() {
                   {carts.map((c) => {
                     const s = STATUS_LABEL[c.status];
                     const isSel = selected.has(c.session_key);
+                    const isExpired = c.status === "expired";
                     return (
                       <tr key={c.session_key}
-                          onClick={() => toggleOne(c.session_key)}
+                          onClick={() => { if (!isExpired) toggleOne(c.session_key); }}
                           style={{ borderBottom: "1px solid #1f1f1f",
-                                   cursor: "pointer",
+                                   cursor: isExpired ? "default" : "pointer",
+                                   opacity: isExpired ? 0.6 : 1,
                                    background: isSel ? "rgba(14,165,233,0.06)" : undefined }}>
                         <td style={{ padding: "8px 6px" }}>
                           <input type="checkbox" checked={isSel} readOnly
+                                 disabled={isExpired}
+                                 title={isExpired ? "Carrinho já expirado — não pode ser reenviado" : undefined}
                                  onClick={(e) => e.stopPropagation()}
-                                 onChange={() => toggleOne(c.session_key)} />
+                                 onChange={() => { if (!isExpired) toggleOne(c.session_key); }} />
                         </td>
                         <td style={{ padding: "8px 6px" }}>
                           {c.customer_name || <span style={{ color: "#6b7280" }}>—</span>}
@@ -694,6 +709,260 @@ function TemplateCard() {
   );
 }
 
+
+function ExpireConfigCard() {
+  const [cfg, setCfg]       = useState<ExpireConfig | null>(null);
+  const [draft, setDraft]   = useState<number>(60);
+  const [saving, setSaving] = useState(false);
+  const [error, setError]   = useState("");
+  const [savedOk, setSavedOk] = useState(false);
+
+  useEffect(() => {
+    getExpireConfig()
+      .then(c => { setCfg(c); setDraft(c.expire_minutes); })
+      .catch(e => setError(e?.response?.data?.detail || "Falha ao carregar."));
+  }, []);
+
+  async function save() {
+    if (draft < 0 || draft > 240) {
+      setError("Valor deve estar entre 0 e 240 minutos.");
+      return;
+    }
+    setSaving(true); setError(""); setSavedOk(false);
+    try {
+      const c = await updateExpireConfig(draft);
+      setCfg(c); setDraft(c.expire_minutes); setSavedOk(true);
+      setTimeout(() => setSavedOk(false), 2500);
+    } catch (e: any) {
+      setError(e?.response?.data?.detail || "Falha ao salvar.");
+    } finally { setSaving(false); }
+  }
+
+  if (!cfg) {
+    return (
+      <section className="cliente-card" style={{ marginBottom: 24 }}>
+        <Spinner size={18} />
+      </section>
+    );
+  }
+
+  const disabled = draft === 0;
+  const dirty    = draft !== cfg.expire_minutes;
+
+  return (
+    <section className="cliente-card" style={{ marginBottom: 24 }}>
+      <div style={{ display: "flex", justifyContent: "space-between",
+                    alignItems: "flex-start", gap: 12, flexWrap: "wrap" }}>
+        <div style={{ flex: "1 1 320px" }}>
+          <h3 style={{ margin: 0 }}>⏱️ Expirar carrinho automaticamente</h3>
+          <p style={{ margin: "4px 0 0", fontSize: 13, color: "#9ca3af",
+                      lineHeight: 1.5 }}>
+            Depois de enviar a mensagem de recuperação, se o cliente não responder
+            dentro do tempo abaixo, o ticket é <strong>encerrado</strong>, o
+            carrinho é <strong>arquivado como expirado</strong> em Pedidos, e a
+            mensagem final personalizada é enviada.
+            <br />
+            <em>0 = desativado</em> (carrinho fica em aberto indefinidamente).
+          </p>
+        </div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 6,
+                      minWidth: 220 }}>
+          <label style={{ fontSize: 12, color: "#9ca3af" }}>
+            Tempo até expirar (minutos)
+          </label>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <input
+              type="number"
+              min={0}
+              max={240}
+              value={draft}
+              onChange={(e) => setDraft(Math.max(0, Math.min(240,
+                parseInt(e.target.value || "0", 10) || 0)))}
+              style={{ width: 100, padding: "6px 10px", fontSize: 14,
+                       background: "#0f0f0f", border: "1px solid #2a2a2a",
+                       color: "#e5e5e5", borderRadius: 6 }}
+            />
+            <span style={{ color: disabled ? "#ef4444" : "#9ca3af",
+                           fontSize: 12 }}>
+              {disabled ? "desativado" : `entre 1 e 240`}
+            </span>
+          </div>
+          <button className="btn btn-primary"
+                  onClick={save} disabled={saving || !dirty}
+                  style={{ marginTop: 4 }}>
+            {saving ? "Salvando…" : "Salvar"}
+          </button>
+          {savedOk && <span style={{ color: "#22c55e", fontSize: 12 }}>✓ Salvo</span>}
+          {error && <span style={{ color: "#ef4444", fontSize: 12 }}>{error}</span>}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function ExpireTemplateCard() {
+  const [tpl, setTpl]           = useState<RecoveryTemplate | null>(null);
+  const [draft, setDraft]       = useState("");
+  const [preview, setPreview]   = useState("");
+  const [previewSample, setPreviewSample] = useState(true);
+  const [loading, setLoading]   = useState(false);
+  const [saving, setSaving]     = useState(false);
+  const [error, setError]       = useState("");
+  const [open, setOpen]         = useState(false);
+
+  async function load() {
+    try {
+      const t = await getExpireTemplate();
+      setTpl(t); setDraft(t.template);
+      const p = await previewExpireTemplate(t.template);
+      setPreview(p.rendered);
+      setPreviewSample(p.used_sample);
+    } catch (e: any) {
+      setError(e?.response?.data?.detail || "Falha ao carregar template.");
+    }
+  }
+
+  useEffect(() => { if (open && !tpl) load(); }, [open]);
+
+  async function doPreview() {
+    setLoading(true); setError("");
+    try {
+      const p = await previewExpireTemplate(draft);
+      setPreview(p.rendered);
+      setPreviewSample(p.used_sample);
+    } catch (e: any) {
+      setError(e?.response?.data?.detail || "Falha no preview.");
+    } finally { setLoading(false); }
+  }
+
+  async function save() {
+    setSaving(true); setError("");
+    try {
+      const t = await updateExpireTemplate(draft);
+      setTpl(t); setDraft(t.template);
+    } catch (e: any) {
+      setError(e?.response?.data?.detail || "Falha ao salvar.");
+    } finally { setSaving(false); }
+  }
+
+  async function restoreDefault() {
+    if (!tpl) return;
+    if (!window.confirm("Restaurar o texto padrão? Sua versão personalizada será perdida.")) return;
+    setSaving(true); setError("");
+    try {
+      const t = await updateExpireTemplate("");
+      setTpl(t); setDraft(t.template);
+      const p = await previewExpireTemplate(t.template);
+      setPreview(p.rendered);
+    } catch (e: any) {
+      setError(e?.response?.data?.detail || "Falha ao restaurar.");
+    } finally { setSaving(false); }
+  }
+
+  const dirty = tpl != null && draft.trim() !== tpl.template.trim();
+
+  if (!open) {
+    return (
+      <section className="cliente-card" style={{ marginBottom: 24 }}>
+        <div style={{ display: "flex", justifyContent: "space-between",
+                      alignItems: "center", gap: 12 }}>
+          <div>
+            <h3 style={{ margin: 0 }}>✏️ Mensagem enviada na expiração</h3>
+            <p style={{ margin: "4px 0 0", fontSize: 13, color: "#9ca3af" }}>
+              Texto final disparado quando o carrinho expira sem retorno.
+            </p>
+          </div>
+          <button className="btn" onClick={() => setOpen(true)}>Editar mensagem</button>
+        </div>
+      </section>
+    );
+  }
+
+  return (
+    <section className="cliente-card" style={{ marginBottom: 24 }}>
+      <div style={{ display: "flex", justifyContent: "space-between",
+                    alignItems: "center", gap: 12, marginBottom: 8 }}>
+        <h3 style={{ margin: 0 }}>✏️ Mensagem enviada na expiração</h3>
+        <button className="btn btn-sm" onClick={() => setOpen(false)}>Fechar</button>
+      </div>
+      {error && (
+        <div className="form-error" style={{ marginBottom: 12 }}>
+          {error}
+          <button onClick={() => setError("")} style={{ float: "right",
+            background: "none", border: "none", color: "inherit", cursor: "pointer" }}>×</button>
+        </div>
+      )}
+      {!tpl ? (
+        <div className="portal-loading"><Spinner size={20} /></div>
+      ) : (
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr",
+                      gap: 16, alignItems: "start" }}>
+          <div>
+            <label style={{ fontSize: 12, color: "#9ca3af",
+                            display: "block", marginBottom: 6 }}>
+              Texto da mensagem {tpl.is_default && <em>(usando padrão)</em>}
+            </label>
+            <textarea
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              rows={8}
+              style={{ width: "100%", fontFamily: "monospace", fontSize: 13,
+                       padding: 10, background: "#0f0f0f",
+                       border: "1px solid #2a2a2a", color: "#e5e5e5",
+                       borderRadius: 6, resize: "vertical" }}
+            />
+            <div style={{ fontSize: 11, color: "#6b7280", marginTop: 6,
+                          lineHeight: 1.6 }}>
+              <strong>Placeholders disponíveis</strong> (clique para inserir):
+              <div style={{ marginTop: 4, display: "flex",
+                            gap: 4, flexWrap: "wrap" }}>
+                {tpl.placeholders.map(p => (
+                  <button key={p.key}
+                          onClick={() => setDraft(d => d + "{" + p.key + "}")}
+                          title={p.desc}
+                          style={{ padding: "2px 8px", fontSize: 11,
+                                   background: "#1f2937", border: "1px solid #374151",
+                                   borderRadius: 10, color: "#9ca3af",
+                                   cursor: "pointer", fontFamily: "monospace" }}>
+                    {"{"}{p.key}{"}"}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div style={{ display: "flex", gap: 8, marginTop: 12, flexWrap: "wrap" }}>
+              <button className="btn" onClick={doPreview} disabled={loading}>
+                {loading ? "Renderizando…" : "Atualizar preview"}
+              </button>
+              <button className="btn btn-primary" onClick={save}
+                      disabled={saving || !dirty}>
+                {saving ? "Salvando…" : "Salvar"}
+              </button>
+              <button className="btn btn-sm"
+                      onClick={restoreDefault}
+                      disabled={saving || tpl.is_default}
+                      title="Volta ao texto padrão e remove sua personalização.">
+                Restaurar padrão
+              </button>
+            </div>
+          </div>
+
+          <div>
+            <label style={{ fontSize: 12, color: "#9ca3af",
+                            display: "block", marginBottom: 6 }}>
+              Preview {previewSample && <em>(usando dados de exemplo)</em>}
+            </label>
+            <div style={{ padding: 14, background: "#0b1620",
+                          border: "1px solid #1e3a5f", borderRadius: 8,
+                          whiteSpace: "pre-wrap", fontSize: 13, lineHeight: 1.5,
+                          minHeight: 180, color: "#e5e5e5" }}>
+              {preview || <span style={{ color: "#6b7280" }}>Clique em "Atualizar preview" para ver.</span>}
+            </div>
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
 
 function Agg({ label, value, hint }: { label: string; value: string; hint?: string }) {
   return (

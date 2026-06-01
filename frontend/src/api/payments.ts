@@ -44,7 +44,7 @@ export async function getRecoveryStats(): Promise<RecoveryStats> {
   return res.data;
 }
 
-export type CartStatus = "pending" | "in_progress" | "recovered";
+export type CartStatus = "pending" | "in_progress" | "recovered" | "expired";
 
 export interface CartItemPreview {
   nome:       string;
@@ -156,5 +156,47 @@ export async function previewTemplate(
 
 export async function undoBatch(id: string): Promise<RecoveryBatch> {
   const res = await api.post<RecoveryBatch>(`/portal/recovery/batches/${id}/undo`);
+  return res.data;
+}
+
+// ── Expiração automática do carrinho após mensagem de recuperação ──────────
+
+export interface ExpireConfig {
+  expire_minutes:  number;   // 0 = desativado
+  default_minutes: number;
+  min_minutes:     number;
+  max_minutes:     number;
+}
+
+export async function getExpireConfig(): Promise<ExpireConfig> {
+  const res = await api.get<ExpireConfig>("/portal/recovery/expire-config");
+  return res.data;
+}
+
+export async function updateExpireConfig(expire_minutes: number): Promise<ExpireConfig> {
+  const res = await api.put<ExpireConfig>("/portal/recovery/expire-config",
+    { expire_minutes });
+  return res.data;
+}
+
+export async function getExpireTemplate(): Promise<RecoveryTemplate> {
+  const res = await api.get<RecoveryTemplate>("/portal/recovery/expire-template");
+  return res.data;
+}
+
+export async function updateExpireTemplate(template: string): Promise<RecoveryTemplate> {
+  const res = await api.put<RecoveryTemplate>("/portal/recovery/expire-template",
+    { template });
+  return res.data;
+}
+
+export async function previewExpireTemplate(
+  template?: string,
+  session_key?: string,
+): Promise<{ rendered: string; used_sample: boolean }> {
+  const res = await api.post<{ rendered: string; used_sample: boolean }>(
+    "/portal/recovery/expire-template/preview",
+    { template, session_key },
+  );
   return res.data;
 }
