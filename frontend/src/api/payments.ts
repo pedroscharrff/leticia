@@ -116,6 +116,12 @@ export async function cancelBatch(id: string): Promise<RecoveryBatch> {
   return res.data;
 }
 
+/** Força encerramento de batch travado em queued/running (worker crashado). */
+export async function dismissBatch(id: string): Promise<RecoveryBatch> {
+  const res = await api.post<RecoveryBatch>(`/portal/recovery/batches/${id}/dismiss`);
+  return res.data;
+}
+
 export async function undoBatch(id: string): Promise<RecoveryBatch> {
   const res = await api.post<RecoveryBatch>(`/portal/recovery/batches/${id}/undo`);
   return res.data;

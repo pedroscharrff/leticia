@@ -602,6 +602,46 @@ async def cancel_batch(batch_id: str, user: TenantUser) -> BatchOut:
     return _row_to_batch(row)
 
 
+@recovery_router.post("/batches/{batch_id}/dismiss", response_model=BatchOut)
+async def dismiss_batch(batch_id: str, user: TenantUser) -> BatchOut:
+    """Força encerramento de um batch travado em `queued`/`running`.
+
+    Diferente de cancel (que SINALIZA pro worker via cancel_requested), dismiss
+    marca direto como `failed` no DB. Usar quando o worker morreu antes de
+    processar (crash sem mark-failed, deploy interrompido, etc.) e o batch
+    está bloqueando novos disparos.
+
+    NÃO desfaz envios já marcados em sent_session_keys — pra reverter o
+    marcador no cart, usar `/undo` depois.
+    """
+    user.assert_role("manager")
+    async with get_db_conn() as conn:
+        row = await conn.fetchrow(
+            """
+            UPDATE public.recovery_batches
+               SET status      = 'failed',
+                   finished_at = NOW(),
+                   error       = COALESCE(error,
+                                          'Descartado manualmente — worker pode estar travado.')
+             WHERE id = $1 AND tenant_id = $2 AND status IN ('queued','running')
+            RETURNING id, status, total, sent, failed, skipped, actor_email,
+                      created_at, started_at, finished_at, cancel_requested, error
+            """,
+            batch_id, user.tenant_id,
+        )
+    if not row:
+        raise HTTPException(
+            status_code=409,
+            detail="Batch não está em execução (já terminou ou não existe).",
+        )
+    await log_event(
+        action="recovery.batch_dismissed", actor_id=user.email,
+        actor_type="user", tenant_id=user.tenant_id,
+        target="cart_recovery", meta={"batch_id": batch_id},
+    )
+    return _row_to_batch(row)
+
+
 @recovery_router.post("/batches/{batch_id}/undo", response_model=BatchOut)
 async def undo_batch(batch_id: str, user: TenantUser) -> BatchOut:
     """Reverte o marcador `sent_recovery_at`/`recovery_attempts` nos

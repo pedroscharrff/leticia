@@ -18,7 +18,7 @@ import { PortalLayout } from "../components/PortalLayout";
 import { Spinner } from "../components/Spinner";
 import {
   getRecoveryStats, listCarts,
-  triggerRecovery, getBatch, listBatches, cancelBatch, undoBatch,
+  triggerRecovery, getBatch, listBatches, cancelBatch, undoBatch, dismissBatch,
   type RecoveryStats, type CartRow,
   type RecoveryBatch,
 } from "../api/payments";
@@ -174,6 +174,20 @@ export function PortalRecuperacao() {
     }
   }
 
+  async function handleDismiss() {
+    if (!activeBatch) return;
+    if (!window.confirm(
+      "Descartar este disparo? Use apenas quando o worker travou e o batch "
+      + "não está mais progredindo. Será marcado como falhou no histórico."
+    )) return;
+    try {
+      await dismissBatch(activeBatch.id);
+      await refresh();
+    } catch (e: any) {
+      setError(e?.response?.data?.detail || "Falha ao descartar.");
+    }
+  }
+
   async function handleUndo(batchId: string) {
     if (!window.confirm(
       "Desfazer este disparo? Isso libera os carrinhos para serem notificados de novo pelo robô — "
@@ -229,7 +243,9 @@ export function PortalRecuperacao() {
           </div>
 
           {/* Painel do batch ativo (com barra de progresso + cancelar) */}
-          {activeBatch && <ActiveBatchPanel batch={activeBatch} onCancel={handleCancel} />}
+          {activeBatch && <ActiveBatchPanel batch={activeBatch}
+                                            onCancel={handleCancel}
+                                            onDismiss={handleDismiss} />}
 
           {/* Card de disparo manual */}
           <section className="cliente-card" style={{ marginBottom: 24 }}>
@@ -449,10 +465,17 @@ export function PortalRecuperacao() {
   );
 }
 
-function ActiveBatchPanel({ batch, onCancel }: { batch: RecoveryBatch; onCancel: () => void }) {
+function ActiveBatchPanel({ batch, onCancel, onDismiss }:
+    { batch: RecoveryBatch; onCancel: () => void; onDismiss: () => void }) {
   const processed = batch.sent + batch.failed + batch.skipped;
   const pct = batch.total ? Math.round((processed / batch.total) * 100) : 0;
   const statusLabel = BATCH_STATUS_LABEL[batch.status];
+
+  // Heurística "travado": queued/running há >2 min sem nenhum progresso.
+  // Worker que crashou antes do init_pool dá esse sintoma — UI oferece
+  // o Descartar pra desbloquear novos disparos sem precisar de SQL.
+  const ageS = (Date.now() - new Date(batch.created_at).getTime()) / 1000;
+  const isStuck = processed === 0 && ageS > 120;
 
   return (
     <section className="cliente-card" style={{ marginBottom: 24,
@@ -466,12 +489,27 @@ function ActiveBatchPanel({ batch, onCancel }: { batch: RecoveryBatch; onCancel:
             ({statusLabel.text} · {batch.actor_email || "—"})
           </span>
         </div>
-        {!batch.cancel_requested ? (
-          <button className="btn btn-sm" onClick={onCancel}>Cancelar</button>
-        ) : (
-          <span style={{ fontSize: 12, color: "#f59e0b" }}>Cancelamento solicitado…</span>
-        )}
+        <div style={{ display: "flex", gap: 8 }}>
+          {!batch.cancel_requested ? (
+            <button className="btn btn-sm" onClick={onCancel}>Cancelar</button>
+          ) : (
+            <span style={{ fontSize: 12, color: "#f59e0b" }}>Cancelamento solicitado…</span>
+          )}
+          {isStuck && (
+            <button className="btn btn-sm"
+                    onClick={onDismiss}
+                    style={{ borderColor: "#ef4444", color: "#ef4444" }}
+                    title="Worker pode estar travado. Marca como falhou para liberar novos disparos.">
+              Descartar
+            </button>
+          )}
+        </div>
       </div>
+      {isStuck && (
+        <div style={{ fontSize: 12, color: "#f59e0b", marginBottom: 8 }}>
+          ⚠️ Sem progresso há mais de 2 minutos — provavelmente o worker travou. Você pode descartar e tentar de novo.
+        </div>
+      )}
       <div style={{ height: 8, background: "#1f1f1f", borderRadius: 4, overflow: "hidden" }}>
         <div style={{ height: "100%", width: `${pct}%`,
                       background: "#0ea5e9", transition: "width .4s" }} />
