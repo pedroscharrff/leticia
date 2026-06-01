@@ -122,6 +122,38 @@ export async function dismissBatch(id: string): Promise<RecoveryBatch> {
   return res.data;
 }
 
+// ── Template editável da mensagem ───────────────────────────────────────────
+
+export interface TemplatePlaceholder { key: string; desc: string; }
+
+export interface RecoveryTemplate {
+  template:     string;
+  is_default:   boolean;
+  default:      string;
+  placeholders: TemplatePlaceholder[];
+}
+
+export async function getTemplate(): Promise<RecoveryTemplate> {
+  const res = await api.get<RecoveryTemplate>("/portal/recovery/template");
+  return res.data;
+}
+
+export async function updateTemplate(template: string): Promise<RecoveryTemplate> {
+  const res = await api.put<RecoveryTemplate>("/portal/recovery/template", { template });
+  return res.data;
+}
+
+export async function previewTemplate(
+  template?: string,
+  session_key?: string,
+): Promise<{ rendered: string; used_sample: boolean }> {
+  const res = await api.post<{ rendered: string; used_sample: boolean }>(
+    "/portal/recovery/template/preview",
+    { template, session_key },
+  );
+  return res.data;
+}
+
 export async function undoBatch(id: string): Promise<RecoveryBatch> {
   const res = await api.post<RecoveryBatch>(`/portal/recovery/batches/${id}/undo`);
   return res.data;

@@ -21,6 +21,7 @@ from datetime import datetime, timezone
 import structlog
 
 from db.postgres import get_db_conn, init_pool
+from services import capabilities as cap_svc
 from services.outbound import send_proactive_message
 from services.persona import load_persona
 from workers.jobs.abandoned_cart import _build_message
@@ -205,6 +206,16 @@ async def _process(batch_id: str) -> dict:
         log.warning("recovery_batch.persona_failed",
                     batch_id=batch_id, tenant=tenant_id, exc=str(exc))
 
+    # Mesmo template usado pelo job automático — vem da config da capability
+    # sales.abandoned_cart, editável pelo portal. Falha em ler vira default.
+    message_template: str | None = None
+    try:
+        cfg = await cap_svc.get_config(tenant_id, "sales.abandoned_cart")
+        message_template = cfg.get("message_template")
+    except Exception as exc:  # noqa: BLE001
+        log.warning("recovery_batch.template_load_failed",
+                    batch_id=batch_id, tenant=tenant_id, exc=str(exc))
+
     cancelled = False
     for idx, session_key in enumerate(session_keys):
         # Re-check cancel periodicamente
@@ -218,7 +229,11 @@ async def _process(batch_id: str) -> dict:
             await _bump_skipped(batch_id)
             continue
 
-        body = _build_message(persona, items, name)
+        body = _build_message(
+            persona, items, name,
+            template=message_template,
+            subtotal=subtotal,
+        )
         ok = await send_proactive_message(
             tenant_id, phone, body,
             kind="cart_recovery_manual",

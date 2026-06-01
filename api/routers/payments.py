@@ -376,6 +376,234 @@ async def list_carts(user: TenantUser) -> list[CartRowOut]:
     return out
 
 
+# ── Template da mensagem de recuperação ─────────────────────────────────────
+# Operador edita o texto que sai no disparo (manual e automático). Salvo na
+# config da capability `sales.abandoned_cart`. Endpoints aqui em vez de no
+# router genérico de capabilities pra dar UI dedicada na própria página de
+# Recuperação (placeholder list + preview com carrinho real).
+
+PLACEHOLDERS = [
+    ("saudacao",     "\"Oi Maria!\" se houver nome, senão \"Oi!\""),
+    ("nome_cliente", "Nome do cliente, ou vazio"),
+    ("agent_name",   "Nome do agente configurado na persona"),
+    ("itens",        "Até 3 nomes de produtos, ex: \"Dipirona, Tylenol\""),
+    ("qtde_itens",   "Número total de itens no carrinho"),
+    ("mais_itens",   "\" e mais N item(ns)\" quando passar de 3, senão vazio"),
+    ("subtotal",     "Subtotal formatado, ex: \"R$ 89,90\""),
+]
+
+
+class TemplateOut(BaseModel):
+    template:      str
+    is_default:    bool       # True se o tenant nunca customizou (usa default do catálogo)
+    default:       str        # Default do catálogo — exposto pra UI ter "Restaurar"
+    placeholders:  list[dict]
+
+
+class TemplateIn(BaseModel):
+    template: str
+
+
+class TemplatePreviewIn(BaseModel):
+    template:     str | None = None  # None → usa o salvo
+    session_key:  str | None = None  # quando dado, renderiza com cart real desse cliente
+
+
+class TemplatePreviewOut(BaseModel):
+    rendered:     str
+    used_sample:  bool        # True se não havia session_key e caímos no sample
+
+
+async def _get_abandoned_cart_defaults() -> tuple[str, dict, dict]:
+    """Retorna (default_template, default_config, current_catalog_row).
+
+    Default vem do `capability_catalog.default_config.message_template`.
+    """
+    async with get_db_conn() as conn:
+        row = await conn.fetchrow(
+            "SELECT default_config FROM public.capability_catalog WHERE key = 'sales.abandoned_cart'"
+        )
+    default_cfg = {}
+    if row and row["default_config"]:
+        v = row["default_config"]
+        if isinstance(v, dict):
+            default_cfg = v
+        elif isinstance(v, str):
+            try:
+                import json as _json
+                parsed = _json.loads(v)
+                default_cfg = parsed if isinstance(parsed, dict) else {}
+            except Exception:
+                default_cfg = {}
+    # Fallback final caso a migration 051 ainda não tenha rodado
+    from workers.jobs.abandoned_cart import DEFAULT_MESSAGE_TEMPLATE
+    return (
+        str(default_cfg.get("message_template") or DEFAULT_MESSAGE_TEMPLATE),
+        default_cfg,
+        dict(row) if row else {},
+    )
+
+
+@recovery_router.get("/template", response_model=TemplateOut)
+async def get_template(user: TenantUser) -> TemplateOut:
+    from services import capabilities as cap_svc
+    tenant_cfg = await cap_svc.get_config(user.tenant_id, "sales.abandoned_cart")
+    default_tpl, _, _ = await _get_abandoned_cart_defaults()
+
+    tenant_tpl = tenant_cfg.get("message_template")
+    # is_default = tenant não sobrescreveu OU sobrescreveu com o mesmo valor
+    is_default = (tenant_tpl is None) or (str(tenant_tpl).strip() == default_tpl.strip())
+
+    return TemplateOut(
+        template=str(tenant_tpl or default_tpl),
+        is_default=is_default,
+        default=default_tpl,
+        placeholders=[{"key": k, "desc": d} for k, d in PLACEHOLDERS],
+    )
+
+
+@recovery_router.put("/template", response_model=TemplateOut)
+async def update_template(payload: TemplateIn, user: TenantUser) -> TemplateOut:
+    """Salva o template novo na config da capability. Aceita string vazia para
+    'voltar ao default' (limpa o override do tenant)."""
+    user.assert_role("manager")
+    from services import capabilities as cap_svc
+
+    new_tpl = (payload.template or "").strip()
+    # Sanity: tenta renderizar com sample pra não salvar template quebrado.
+    try:
+        _render_sample(new_tpl)
+    except Exception as e:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Template inválido: {e}",
+        )
+
+    # Lê estado atual e atualiza só o message_template, preservando demais
+    # campos (delay_hours, max_attempts, quiet_*).
+    current = await cap_svc.list_for_tenant(user.tenant_id)
+    cap = next((c for c in current if c["key"] == "sales.abandoned_cart"), None)
+    if not cap:
+        raise HTTPException(status_code=404, detail="Capacidade não encontrada.")
+
+    new_config = dict(cap.get("config") or {})
+    if new_tpl:
+        new_config["message_template"] = new_tpl
+    else:
+        # String vazia → remove override, herda default do catálogo
+        new_config.pop("message_template", None)
+
+    await cap_svc.set_enabled(
+        tenant_id=str(user.tenant_id),
+        key="sales.abandoned_cart",
+        enabled=bool(cap.get("enabled")),
+        config=new_config,
+        user_id=user.email,
+    )
+
+    await log_event(
+        action="recovery.template_updated", actor_id=user.email,
+        actor_type="user", tenant_id=user.tenant_id,
+        target="sales.abandoned_cart",
+        meta={"length": len(new_tpl), "reset_to_default": not bool(new_tpl)},
+    )
+
+    return await get_template(user)  # devolve estado renovado
+
+
+def _render_sample(template: str | None) -> str:
+    """Render usando um sample fixo — usado pelo validador e pela preview
+    sem session_key."""
+    from workers.jobs.abandoned_cart import _build_message
+    sample_persona = {"agent_name": "Ana"}
+    sample_items = [
+        {"nome": "Dipirona 500mg", "quantidade": 2, "preco": 7.50},
+        {"nome": "Tylenol",        "quantidade": 1, "preco": 18.90},
+    ]
+    return _build_message(
+        sample_persona, sample_items, "Maria",
+        template=template, subtotal=33.90,
+    )
+
+
+@recovery_router.post("/template/preview", response_model=TemplatePreviewOut)
+async def preview_template(
+    payload: TemplatePreviewIn, user: TenantUser,
+) -> TemplatePreviewOut:
+    """Renderiza preview da mensagem.
+
+    Se `session_key` for fornecido, busca o cart real desse cliente — assim o
+    operador vê exatamente como a mensagem vai sair pra UMA pessoa específica.
+    Senão, usa sample (Maria + Dipirona + Tylenol).
+    """
+    import json as _json
+    from workers.jobs.abandoned_cart import _build_message
+    from services.persona import load_persona
+    from services import capabilities as cap_svc
+
+    # Template: param > salvo > default
+    if payload.template is not None:
+        tpl = payload.template
+    else:
+        cfg = await cap_svc.get_config(user.tenant_id, "sales.abandoned_cart")
+        tpl = cfg.get("message_template")
+        if not tpl:
+            tpl, _, _ = await _get_abandoned_cart_defaults()
+
+    if not payload.session_key:
+        return TemplatePreviewOut(
+            rendered=_render_sample(tpl),
+            used_sample=True,
+        )
+
+    # Render com cart real
+    async with get_db_conn() as conn:
+        schema_row = await conn.fetchrow(
+            "SELECT schema_name FROM public.tenants WHERE id = $1",
+            user.tenant_id,
+        )
+        if not schema_row:
+            raise HTTPException(status_code=404, detail="Farmácia não encontrada.")
+        await conn.execute(f"SET search_path = {schema_row['schema_name']}, public")
+        row = await conn.fetchrow(
+            """
+            SELECT c.items, c.subtotal,
+                   cu.name AS customer_name
+              FROM cart c
+              LEFT JOIN LATERAL (
+                   SELECT name FROM customers
+                    WHERE phone = c.session_key
+                       OR phone = NULLIF(SPLIT_PART(c.session_key, ':', 2), '')
+                    LIMIT 1
+              ) cu ON TRUE
+             WHERE c.session_key = $1
+            """,
+            payload.session_key,
+        )
+    if not row:
+        raise HTTPException(status_code=404, detail="Carrinho não encontrado.")
+
+    raw = row["items"]
+    if isinstance(raw, str):
+        try: items = _json.loads(raw)
+        except _json.JSONDecodeError: items = []
+    else:
+        items = list(raw or [])
+
+    persona = {}
+    try:
+        persona = await load_persona(user.tenant_id)
+    except Exception:
+        pass
+
+    rendered = _build_message(
+        persona, items, row["customer_name"],
+        template=tpl,
+        subtotal=float(row["subtotal"] or 0),
+    )
+    return TemplatePreviewOut(rendered=rendered, used_sample=False)
+
+
 # ── Disparo manual em lote ──────────────────────────────────────────────────
 
 class TriggerAllOut(BaseModel):

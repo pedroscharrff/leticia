@@ -19,8 +19,9 @@ import { Spinner } from "../components/Spinner";
 import {
   getRecoveryStats, listCarts,
   triggerRecovery, getBatch, listBatches, cancelBatch, undoBatch, dismissBatch,
+  getTemplate, updateTemplate, previewTemplate,
   type RecoveryStats, type CartRow,
-  type RecoveryBatch,
+  type RecoveryBatch, type RecoveryTemplate,
 } from "../api/payments";
 
 const STATUS_LABEL: Record<CartRow["status"], { text: string; color: string }> = {
@@ -246,6 +247,9 @@ export function PortalRecuperacao() {
           {activeBatch && <ActiveBatchPanel batch={activeBatch}
                                             onCancel={handleCancel}
                                             onDismiss={handleDismiss} />}
+
+          {/* Card de edição do template */}
+          <TemplateCard />
 
           {/* Card de disparo manual */}
           <section className="cliente-card" style={{ marginBottom: 24 }}>
@@ -521,6 +525,175 @@ function ActiveBatchPanel({ batch, onCancel, onDismiss }:
     </section>
   );
 }
+
+function TemplateCard() {
+  const [tpl, setTpl]           = useState<RecoveryTemplate | null>(null);
+  const [draft, setDraft]       = useState("");
+  const [preview, setPreview]   = useState("");
+  const [previewSample, setPreviewSample] = useState(true);
+  const [loading, setLoading]   = useState(false);
+  const [saving, setSaving]     = useState(false);
+  const [error, setError]       = useState("");
+  const [open, setOpen]         = useState(false);
+
+  async function load() {
+    try {
+      const t = await getTemplate();
+      setTpl(t); setDraft(t.template);
+      const p = await previewTemplate(t.template);
+      setPreview(p.rendered);
+      setPreviewSample(p.used_sample);
+    } catch (e: any) {
+      setError(e?.response?.data?.detail || "Falha ao carregar template.");
+    }
+  }
+
+  useEffect(() => { if (open && !tpl) load(); }, [open]);
+
+  async function doPreview() {
+    setLoading(true); setError("");
+    try {
+      const p = await previewTemplate(draft);
+      setPreview(p.rendered);
+      setPreviewSample(p.used_sample);
+    } catch (e: any) {
+      setError(e?.response?.data?.detail || "Falha no preview.");
+    } finally { setLoading(false); }
+  }
+
+  async function save() {
+    setSaving(true); setError("");
+    try {
+      const t = await updateTemplate(draft);
+      setTpl(t); setDraft(t.template);
+    } catch (e: any) {
+      setError(e?.response?.data?.detail || "Falha ao salvar.");
+    } finally { setSaving(false); }
+  }
+
+  async function restoreDefault() {
+    if (!tpl) return;
+    if (!window.confirm("Restaurar o texto padrão? Sua versão personalizada será perdida.")) return;
+    setSaving(true); setError("");
+    try {
+      const t = await updateTemplate("");
+      setTpl(t); setDraft(t.template);
+      const p = await previewTemplate(t.template);
+      setPreview(p.rendered);
+    } catch (e: any) {
+      setError(e?.response?.data?.detail || "Falha ao restaurar.");
+    } finally { setSaving(false); }
+  }
+
+  const dirty = tpl != null && draft.trim() !== tpl.template.trim();
+
+  if (!open) {
+    return (
+      <section className="cliente-card" style={{ marginBottom: 24 }}>
+        <div style={{ display: "flex", justifyContent: "space-between",
+                      alignItems: "center", gap: 12 }}>
+          <div>
+            <h3 style={{ margin: 0 }}>✏️ Mensagem enviada na recuperação</h3>
+            <p style={{ margin: "4px 0 0", fontSize: 13, color: "#9ca3af" }}>
+              Personalize o texto que sai quando o robô (automático ou manual) avisa o cliente sobre o carrinho.
+            </p>
+          </div>
+          <button className="btn" onClick={() => setOpen(true)}>Editar mensagem</button>
+        </div>
+      </section>
+    );
+  }
+
+  return (
+    <section className="cliente-card" style={{ marginBottom: 24 }}>
+      <div style={{ display: "flex", justifyContent: "space-between",
+                    alignItems: "center", gap: 12, marginBottom: 8 }}>
+        <h3 style={{ margin: 0 }}>✏️ Mensagem enviada na recuperação</h3>
+        <button className="btn btn-sm" onClick={() => setOpen(false)}>Fechar</button>
+      </div>
+      {error && (
+        <div className="form-error" style={{ marginBottom: 12 }}>
+          {error}
+          <button onClick={() => setError("")} style={{ float: "right",
+            background: "none", border: "none", color: "inherit", cursor: "pointer" }}>×</button>
+        </div>
+      )}
+      {!tpl ? (
+        <div className="portal-loading"><Spinner size={20} /></div>
+      ) : (
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr",
+                      gap: 16, alignItems: "start" }}>
+          <div>
+            <label style={{ fontSize: 12, color: "#9ca3af",
+                            display: "block", marginBottom: 6 }}>
+              Texto da mensagem {tpl.is_default && <em>(usando padrão)</em>}
+            </label>
+            <textarea
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              rows={8}
+              style={{ width: "100%", fontFamily: "monospace", fontSize: 13,
+                       padding: 10, background: "#0f0f0f",
+                       border: "1px solid #2a2a2a", color: "#e5e5e5",
+                       borderRadius: 6, resize: "vertical" }}
+            />
+            <div style={{ fontSize: 11, color: "#6b7280", marginTop: 6,
+                          lineHeight: 1.6 }}>
+              <strong>Placeholders disponíveis</strong> (clique para inserir):
+              <div style={{ marginTop: 4, display: "flex",
+                            gap: 4, flexWrap: "wrap" }}>
+                {tpl.placeholders.map(p => (
+                  <button key={p.key}
+                          onClick={() => setDraft(d => d + "{" + p.key + "}")}
+                          title={p.desc}
+                          style={{ padding: "2px 8px", fontSize: 11,
+                                   background: "#1f2937", border: "1px solid #374151",
+                                   borderRadius: 10, color: "#9ca3af",
+                                   cursor: "pointer", fontFamily: "monospace" }}>
+                    {"{"}{p.key}{"}"}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div style={{ display: "flex", gap: 8, marginTop: 12, flexWrap: "wrap" }}>
+              <button className="btn" onClick={doPreview} disabled={loading}>
+                {loading ? "Renderizando…" : "Atualizar preview"}
+              </button>
+              <button className="btn btn-primary" onClick={save}
+                      disabled={saving || !dirty}>
+                {saving ? "Salvando…" : "Salvar"}
+              </button>
+              <button className="btn btn-sm"
+                      onClick={restoreDefault}
+                      disabled={saving || tpl.is_default}
+                      title="Volta ao texto padrão e remove sua personalização.">
+                Restaurar padrão
+              </button>
+            </div>
+          </div>
+
+          <div>
+            <label style={{ fontSize: 12, color: "#9ca3af",
+                            display: "block", marginBottom: 6 }}>
+              Preview {previewSample && <em>(usando dados de exemplo: Maria, Dipirona + Tylenol)</em>}
+            </label>
+            <div style={{ padding: 14, background: "#0b1620",
+                          border: "1px solid #1e3a5f", borderRadius: 8,
+                          whiteSpace: "pre-wrap", fontSize: 13, lineHeight: 1.5,
+                          minHeight: 180, color: "#e5e5e5" }}>
+              {preview || <span style={{ color: "#6b7280" }}>Clique em "Atualizar preview" para ver.</span>}
+            </div>
+            <p style={{ fontSize: 11, color: "#6b7280", marginTop: 8 }}>
+              Formatação WhatsApp: <code>*texto*</code> = negrito, <code>_texto_</code> = itálico,
+              <code> ~texto~</code> = riscado, <code>```texto```</code> = monoespaçado.
+            </p>
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
 
 function Agg({ label, value, hint }: { label: string; value: string; hint?: string }) {
   return (

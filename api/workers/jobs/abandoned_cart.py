@@ -49,23 +49,82 @@ def _is_quiet_hour(now: datetime, quiet_start: time, quiet_end: time) -> bool:
     return n >= quiet_start or n < quiet_end
 
 
-def _build_message(persona: dict, cart_items: list, customer_name: str | None) -> str:
-    """Mensagem amigável de recuperação."""
-    agent_name = persona.get("agent_name") or "Atendente"
-    saudacao = f"Oi {customer_name}!" if customer_name else "Oi!"
-    item_descr = ""
-    if cart_items:
-        names = [str(i.get("name", "")) for i in cart_items if i.get("name")]
-        if names:
-            preview = ", ".join(names[:3])
-            if len(names) > 3:
-                preview += f" e mais {len(names) - 3} item(ns)"
-            item_descr = f" Vi que você deixou *{preview}* no carrinho mais cedo."
+# Template default — usado se a capability `sales.abandoned_cart` não trouxer
+# `message_template` em config (ex: tenant criado antes da migration 051).
+# Mesmo texto que estava hardcoded antes.
+DEFAULT_MESSAGE_TEMPLATE = (
+    "{saudacao} Aqui é o(a) {agent_name}. 👋 "
+    "Vi que você deixou *{itens}*{mais_itens} no carrinho mais cedo. "
+    "Quer que eu finalize o pedido pra você, ou prefere ajustar algo?"
+)
 
-    return (
-        f"{saudacao} Aqui é o(a) {agent_name}. 👋{item_descr} "
-        "Quer que eu finalize o pedido pra você, ou prefere ajustar algo no carrinho?"
+
+class _SafeDict(dict):
+    """dict que devolve "" para chaves ausentes — evita KeyError no format()."""
+    def __missing__(self, key: str) -> str:
+        return ""
+
+
+def _normalize_item_names(cart_items: list) -> list[str]:
+    """Aceita itens com chave PT (nome) ou EN (name); ignora vazios."""
+    out: list[str] = []
+    for i in cart_items or []:
+        if not isinstance(i, dict):
+            continue
+        nome = (i.get("nome") or i.get("name") or "").strip()
+        if nome:
+            out.append(nome)
+    return out
+
+
+def _fmt_brl(v: float) -> str:
+    try:
+        return f"R$ {float(v):.2f}".replace(".", ",")
+    except (TypeError, ValueError):
+        return "R$ 0,00"
+
+
+def _build_message(
+    persona: dict,
+    cart_items: list,
+    customer_name: str | None,
+    *,
+    template: str | None = None,
+    subtotal: float | None = None,
+) -> str:
+    """Renderiza a mensagem de recuperação a partir de um template.
+
+    Template vem do config da capability `sales.abandoned_cart` (editável
+    no portal — ver `routers/payments.py /portal/recovery/template`).
+    Se `template` for vazio ou None, usa `DEFAULT_MESSAGE_TEMPLATE`.
+
+    Placeholders ausentes viram string vazia (não levanta).
+    """
+    tpl = (template or "").strip() or DEFAULT_MESSAGE_TEMPLATE
+
+    agent_name = (persona.get("agent_name") or "Atendente").strip()
+    nome_cli = (customer_name or "").strip()
+    saudacao = f"Oi {nome_cli}!" if nome_cli else "Oi!"
+
+    names = _normalize_item_names(cart_items)
+    itens_preview = ", ".join(names[:3])
+    mais = f" e mais {len(names) - 3} item(ns)" if len(names) > 3 else ""
+
+    ctx = _SafeDict(
+        saudacao=saudacao,
+        nome_cliente=nome_cli,
+        agent_name=agent_name,
+        itens=itens_preview,
+        qtde_itens=len(names),
+        mais_itens=mais,
+        subtotal=_fmt_brl(subtotal) if subtotal is not None else "",
     )
+    try:
+        return tpl.format_map(ctx).strip()
+    except Exception:
+        # Template malformado (ex: { sem fechar) — cai no default em vez de
+        # quebrar o disparo inteiro.
+        return DEFAULT_MESSAGE_TEMPLATE.format_map(ctx).strip()
 
 
 async def _process_tenant(tenant_id: str, schema_name: str) -> dict:
@@ -77,10 +136,11 @@ async def _process_tenant(tenant_id: str, schema_name: str) -> dict:
         return stats
 
     cfg = await cap_svc.get_config(tenant_id, "sales.abandoned_cart")
-    delay_hours  = int(cfg.get("delay_hours", 4))
-    max_attempts = int(cfg.get("max_attempts", 1))
-    quiet_start  = _parse_hhmm(cfg.get("quiet_start"), time(21, 0))
-    quiet_end    = _parse_hhmm(cfg.get("quiet_end"),   time(8,  0))
+    delay_hours      = int(cfg.get("delay_hours", 4))
+    max_attempts     = int(cfg.get("max_attempts", 1))
+    quiet_start      = _parse_hhmm(cfg.get("quiet_start"), time(21, 0))
+    quiet_end        = _parse_hhmm(cfg.get("quiet_end"),   time(8,  0))
+    message_template = cfg.get("message_template")  # None → usa default
 
     # Quiet hours são configurados em horário local do tenant (Brasil).
     # Container roda em UTC — sem conversão, "21h–08h" virava "18h–05h"
@@ -139,7 +199,11 @@ async def _process_tenant(tenant_id: str, schema_name: str) -> dict:
         else:
             items = list(items_raw or [])
 
-        body = _build_message(persona, items, r["name"])
+        body = _build_message(
+            persona, items, r["name"],
+            template=message_template,
+            subtotal=float(r["subtotal"] or 0),
+        )
         ok = await send_proactive_message(
             tenant_id, phone, body,
             kind="cart_recovery",
