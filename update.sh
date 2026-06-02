@@ -217,8 +217,12 @@ fi
 # ── 2. Build apenas das imagens da aplicação ──────────────────────────────────
 step "2/5  Fazendo build das imagens"
 
-info "Rebuilding: api, worker, admin (infra não muda)"
-docker compose build --pull api worker admin
+info "Rebuilding: api, worker, beat, admin (infra não muda)"
+# beat compartilha imagem com o worker (mesmo Dockerfile), mas precisa entrar
+# explicitamente no build pra garantir que o cache fica coerente entre os dois
+# (Compose builda por service). E precisa REINICIAR sempre que o
+# `beat_schedule` em workers/celery_app.py mudar — o scheduler só lê na boot.
+docker compose build --pull api worker beat admin
 
 success "Build concluído"
 
@@ -244,7 +248,7 @@ done
 success "PgBouncer pronto"
 
 info "Subindo novos containers..."
-docker compose up -d --no-deps api worker admin
+docker compose up -d --no-deps api worker beat admin
 
 info "Recarregando nginx (atualiza IP dos novos containers)..."
 docker compose exec -T nginx nginx -s reload 2>/dev/null \
@@ -307,4 +311,5 @@ echo
 echo -e "${GREEN}${BOLD}Atualização concluída!${NC}"
 echo -e "  Logs em tempo real:  ${CYAN}docker compose logs -f api${NC}"
 echo -e "  Workers:             ${CYAN}docker compose logs -f worker${NC}"
+echo -e "  Beat (scheduler):    ${CYAN}docker compose logs -f beat${NC}"
 echo

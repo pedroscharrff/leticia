@@ -31,7 +31,7 @@ from datetime import datetime, timezone
 
 import structlog
 
-from db.postgres import get_db_conn
+from db.postgres import get_db_conn, init_pool
 from services import capabilities as cap_svc
 from services.outbound import send_proactive_message
 from services.persona import load_persona
@@ -284,6 +284,13 @@ async def _process_tenant(tenant_id: str, schema_name: str) -> dict:
 
 
 async def _run_for_all_tenants() -> dict:
+    # Celery roda via asyncio.run() → loop novo a cada task. O pool asyncpg
+    # vive vinculado ao loop em que foi criado; sem init aqui a primeira
+    # query falha com "cannot perform operation: another operation is in
+    # progress" (pool órfão de outro loop). init_pool é idempotente para o
+    # loop corrente. Ver [[pgbouncer-setup]].
+    await init_pool()
+
     async with get_db_conn() as conn:
         tenants = await conn.fetch(
             "SELECT id::text, schema_name FROM public.tenants "

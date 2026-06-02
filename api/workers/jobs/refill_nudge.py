@@ -17,7 +17,7 @@ from datetime import datetime, date, timedelta, timezone
 
 import structlog
 
-from db.postgres import get_db_conn
+from db.postgres import get_db_conn, init_pool
 from services import capabilities as cap_svc
 from services.outbound import send_proactive_message
 from services.persona import load_persona
@@ -157,6 +157,10 @@ async def _process_tenant(tenant_id: str, schema_name: str) -> dict:
 
 
 async def _run_for_all_tenants() -> dict:
+    # Celery cria loop novo por task; pool asyncpg precisa nascer NESTE loop.
+    # Ver [[pgbouncer-setup]].
+    await init_pool()
+
     async with get_db_conn() as conn:
         tenants = await conn.fetch(
             "SELECT id::text, schema_name FROM public.tenants "
