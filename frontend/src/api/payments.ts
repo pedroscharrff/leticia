@@ -225,3 +225,55 @@ export async function previewExpireTemplate(
   );
   return res.data;
 }
+
+// ── Resumo de pedido enviado após handoff (sales.order_summary_after_handoff)
+// Página dedicada PortalResumoPedido. UI edita os 5 campos juntos (header/
+// item/show_total/total_label/footer), por isso um único endpoint /config.
+
+export interface OrderSummaryPlaceholder { key: string; desc: string; }
+
+export interface OrderSummaryConfig {
+  header_text:   string;
+  item_template: string;
+  show_total:    boolean;
+  total_label:   string;
+  footer_text:   string;
+  is_default:    boolean;
+  defaults:      Omit<OrderSummaryConfig, "is_default" | "defaults" | "placeholders" | "enabled">;
+  placeholders:  OrderSummaryPlaceholder[];
+  enabled:       boolean;
+}
+
+export interface OrderSummaryConfigPatch {
+  header_text?:   string | null;
+  item_template?: string | null;
+  show_total?:    boolean | null;
+  total_label?:   string | null;
+  footer_text?:   string | null;
+}
+
+export interface OrderSummaryPreview {
+  rendered:    string;
+  used_sample: boolean;
+}
+
+export async function getOrderSummaryConfig(): Promise<OrderSummaryConfig> {
+  const res = await api.get<OrderSummaryConfig>("/portal/order-summary/config");
+  return res.data;
+}
+
+export async function updateOrderSummaryConfig(
+  patch: OrderSummaryConfigPatch,
+): Promise<OrderSummaryConfig> {
+  const res = await api.put<OrderSummaryConfig>("/portal/order-summary/config", patch);
+  return res.data;
+}
+
+export async function previewOrderSummary(
+  patch: OrderSummaryConfigPatch & { session_key?: string; no_prices?: boolean },
+): Promise<OrderSummaryPreview> {
+  const res = await api.post<OrderSummaryPreview>(
+    "/portal/order-summary/preview", patch,
+  );
+  return res.data;
+}

@@ -80,11 +80,29 @@ def _coerce_items(cart: dict | None) -> list[dict]:
     return clean
 
 
+def _all_prices_zero(items: list[dict]) -> bool:
+    """True quando nenhum item tem preço — caso típico de pré-atendimento,
+    onde `anotar_pedido_balcao` registra só nome/qty (preço fica no balcão).
+    """
+    for it in items:
+        try:
+            if float(it.get("preco") or 0) > 0:
+                return False
+        except (TypeError, ValueError):
+            continue
+    return True
+
+
 def build_summary_text(cart: dict | None, config: dict | None) -> str | None:
     """Monta o texto do resumo a partir do carrinho + template.
 
     Retorna None quando não há itens — o caller deve então não enviar nada.
     Função PURA: sem I/O, fácil de testar.
+
+    Quando TODOS os preços vêm zerados (pré-atendimento: tool de balcão
+    não tem catálogo), troca automaticamente o item_template por um sem
+    `{preco_*}` e suprime a linha do Total — mostrar "R$ 0,00" ficaria
+    pior do que omitir. O operador não precisa configurar nada extra.
     """
     items = _coerce_items(cart)
     if not items:
@@ -92,6 +110,30 @@ def build_summary_text(cart: dict | None, config: dict | None) -> str | None:
 
     cfg = {**_DEFAULTS, **(config or {})}
     item_tpl = cfg.get("item_template") or _DEFAULTS["item_template"]
+
+    no_prices = _all_prices_zero(items)
+    if no_prices:
+        # Esconde qualquer placeholder de preço sem precisar reescrever a
+        # config do tenant. Substitui por "" antes do .format_map.
+        item_tpl = (
+            item_tpl
+            .replace("— {preco_total}", "")
+            .replace("- {preco_total}", "")
+            .replace("({preco_total})", "")
+            .replace(" {preco_total}", "")
+            .replace("{preco_total}", "")
+            .replace("— {preco_unit}", "")
+            .replace("- {preco_unit}", "")
+            .replace("({preco_unit})", "")
+            .replace(" {preco_unit}", "")
+            .replace("{preco_unit}", "")
+            .replace("— {preco}", "")
+            .replace("- {preco}", "")
+            .replace("({preco})", "")
+            .replace(" {preco}", "")
+            .replace("{preco}", "")
+            .rstrip(" -—")
+        )
 
     lines: list[str] = []
     header = (cfg.get("header_text") or "").strip()
@@ -122,7 +164,9 @@ def build_summary_text(cart: dict | None, config: dict | None) -> str | None:
             line = f"• {qtd}x {nome}"
         lines.append(line)
 
-    if cfg.get("show_total"):
+    # Sem preço em nenhum item → omite o Total mesmo com show_total=true.
+    # "Total: R$ 0,00" é pior do que nada nesse contexto.
+    if cfg.get("show_total") and not no_prices:
         # Usa o subtotal do carrinho se presente; senão o total calculado.
         subtotal = cart.get("subtotal") if isinstance(cart, dict) else None
         total_val = subtotal if isinstance(subtotal, (int, float)) and subtotal else computed_total

@@ -70,7 +70,9 @@ def make_buscar_produto_tool(schema_name: str, tenant_id: str, cart: dict):
 
 | Tool | Args | Side effect | Retorna |
 |---|---|---|---|
-| `anotar_pedido_balcao(itens, observacoes)` | itens = `[{"name", "qty"}]`, observacoes livre | escreve em `orders` com status `aguardando_balcao`; muta `cart.just_finalized=True`, `cart.last_order={...}` | `"PEDIDO_ANOTADO:OK"` (marker para o worker triggar handoff) |
+| `anotar_pedido_balcao(itens, observacoes)` | itens = `[{"name", "qty"}]`, observacoes livre | escreve em `orders` com status `aguardando_balcao`; muta `cart.items` (price=0), `cart.subtotal=0`, `cart.just_finalized=True`, `cart.last_order={id, items, ...}` | `"PEDIDO_ANOTADO:OK"` (marker para o worker triggar handoff) |
+
+A mutação completa de `cart.items` e `cart.last_order` é o que permite `send_order_summary` (capability `sales.order_summary_after_handoff`) montar o resumo do pedido em pré-atendimento. Sem ela, o snapshot ficaria vazio. O template do resumo detecta `all(preco == 0)` e omite automaticamente `{preco_*}` e a linha do Total.
 
 ### `bulario.py` — Base ANVISA (compartilhada)
 

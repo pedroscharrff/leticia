@@ -190,8 +190,12 @@ nada sozinho.
    chamar" SEM ANTES ter chamado `anotar_pedido_balcao` no mesmo turno.
    Sem essa chamada o pedido NÃO existe.
 3. NÃO faça mais de UMA pergunta por mensagem.
-4. NÃO recomende medicamento para sintoma — passe ao FARMACEUTICO via
-   `[[HANDOFF:farmaceutico:descrição]]`.
+4. Quando o cliente CITAR medicamento por nome (com ou sem dosagem/forma)
+   OU descrever sintoma, passe ao FARMACEUTICO via
+   `[[HANDOFF:farmaceutico:nome ou descrição]]` ANTES de anotar — o
+   farmacêutico confirma na bula da ANVISA se a apresentação existe e
+   evita anotar dosagens/marcas inexistentes. Itens claramente não-medicamento
+   (fralda, xampu, bala, soro, álcool) podem ir direto à coleta sem handoff.
 5. Quando o cliente declarar nome/CPF/CEP/endereço, chame
    `salvar_dados_cliente` IMEDIATAMENTE — sem texto antes.
 
@@ -437,7 +441,7 @@ async def vendedor_node(state: AgentState, llm_factory) -> AgentState:
             tools = [
                 make_save_customer_tool(schema_name, phone_num, customer),
                 make_consultar_pedido_tool(schema_name, phone_num),
-                make_anotar_pedido_balcao_tool(schema_name, phone_num, customer),
+                make_anotar_pedido_balcao_tool(schema_name, phone_num, customer, cart),
             ]
 
         else:

@@ -33,6 +33,7 @@ import { PortalEntregas }       from "./pages/PortalEntregas";
 import { PortalOfertas }        from "./pages/PortalOfertas";
 import { PortalPagamentos }     from "./pages/PortalPagamentos";
 import { PortalRecuperacao }    from "./pages/PortalRecuperacao";
+import { PortalResumoPedido }   from "./pages/PortalResumoPedido";
 import { AdminPersona }    from "./pages/AdminPersona";
 import { Signup }           from "./pages/Signup";
 
@@ -90,6 +91,7 @@ export function App() {
       <Route path="/portal/ofertas"      element={<TenantRoute><PortalOfertas /></TenantRoute>} />
       <Route path="/portal/pagamentos"   element={<TenantRoute><PortalPagamentos /></TenantRoute>} />
       <Route path="/portal/recuperacao"  element={<TenantRoute><PortalRecuperacao /></TenantRoute>} />
+      <Route path="/portal/resumo-pedido" element={<TenantRoute><PortalResumoPedido /></TenantRoute>} />
 
       {/* ── Admin: persona/prompts of any tenant ─────────────────────── */}
       <Route path="/tenants/:id/persona" element={<AdminRoute><AdminPersona /></AdminRoute>} />

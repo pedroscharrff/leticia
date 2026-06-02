@@ -49,12 +49,17 @@ async def _anotar_pedido_balcao(
     schema_name: str,
     phone: str,
     customer: dict,
+    cart: dict,
     itens: list[dict],
     observacoes: str | None,
 ) -> str:
     """
     Persiste o pedido sem validação de estoque/preço e retorna uma mensagem
     de confirmação para o LLM repassar ao cliente.
+
+    Muta `cart` in-place (mesma ref do AgentState) para que o worker, ao
+    despachar o handoff, consiga montar o resumo via `send_order_summary`
+    — espelha o que `finalize_order_tool` faz no modo ERP.
     """
     if not itens:
         return (
@@ -140,6 +145,28 @@ async def _anotar_pedido_balcao(
             "Pode tentar novamente ou chamar o atendente diretamente?"
         )
 
+    # Popula o cart in-place para o worker conseguir montar o resumo após o
+    # handoff (send_order_summary lê de cart.last_order > cart.items).
+    # Sem preço em pré-atendimento — o template trata o caso preco=0.
+    try:
+        cart["items"] = [
+            {"name": i["name"], "qty": i["qty"], "price": 0.0}
+            for i in items_clean
+        ]
+        cart["subtotal"] = 0.0
+        cart["just_finalized"] = True
+        cart["last_order"] = {
+            "id":       order_id,
+            "items":    list(cart["items"]),
+            "subtotal": 0.0,
+            "discount": 0.0,
+            "total":    0.0,
+            "payment":  "balcao",
+            "notes":    full_notes,
+        }
+    except Exception as _exc:  # noqa: BLE001
+        log.warning("balcao.cart_mutation_failed", exc=str(_exc))
+
     # Mensagem de confirmação para o LLM incluir na resposta ao cliente
     items_list = "\n".join(f"• {i['qty']}x {i['name']}" for i in items_clean)
     return (
@@ -155,17 +182,22 @@ def make_anotar_pedido_balcao_tool(
     schema_name: str,
     phone: str,
     customer: dict,
+    cart: dict,
 ) -> StructuredTool:
     """
     Retorna a tool pronta para ser vinculada ao LLM do vendedor.
 
     O prefixo 'PEDIDO_ANOTADO:OK' no resultado é usado pelo vendedor_node
     para detectar que a tool rodou com sucesso e sinalizar escalate=True.
+
+    `cart` é mutado in-place (mesma ref do AgentState) — sem isso o resumo
+    do pedido no handoff sai vazio porque o cart fica sempre limpo em
+    pré-atendimento.
     """
 
     async def _run(itens: list[dict], observacoes: str | None = None) -> str:
         return await _anotar_pedido_balcao(
-            schema_name, phone, customer, itens, observacoes
+            schema_name, phone, customer, cart, itens, observacoes
         )
 
     return StructuredTool.from_function(

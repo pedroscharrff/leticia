@@ -77,6 +77,7 @@ Plano: basic.
 Tools: `consultar_bula`, `consultar_bula_secao`. **Em modo ERP** (capability `inventory.track_stock` ON) também recebe `buscar_produto` para conferir o catálogo ANTES de citar nome comercial — bloco extra `_STOCK_CHECK_BLOCK` é anexado ao `_SYSTEM` nesse modo. Em pré-atendimento, comportamento histórico (sem catálogo) é preservado.
 Quando: sintoma, dúvida farmacêutica, posologia, interações.
 Característica: **handoff obrigatório para vendedor** quando cliente sinaliza finalização (`pode finalizar`, `pode mandar`...). Skill não pode "confirmar pedido" — não tem tool para isso. Bônus do `buscar_produto`: popula `cart._search_results_this_turn`, então `availability_guard` (SPEC 10) passa a cobrir alucinação de produto em recomendação clínica também.
+Característica (pré-atendimento): também recebe **handoff de validação** do vendedor quando o cliente cita medicamento por nome (com ou sem dosagem). Roteiro fixo do bloco "RECEBENDO HANDOFF DE VALIDAÇÃO DO VENDEDOR" no `_SYSTEM`: chama `consultar_bula(nome base)`, e (a) confirma com `[[HANDOFF:vendedor:nome exato, pode anotar]]`, (b) oferece as apresentações reais ao cliente, ou (c) oferece alternativa por princípio ativo. Evita anotar dosagens/marcas inventadas sem inflar o prompt do vendedor.
 
 ### `vendedor` — Vendas
 Plano: pro.
@@ -84,6 +85,8 @@ Tools (modo normal): `buscar_produto`, `adicionar_ao_carrinho`, `remover_do_carr
 Tools (modo pré-atendimento): `salvar_dados_cliente`, `consultar_pedido`, `anotar_pedido_balcao`.
 Quando: cliente quer comprar, preço, montar carrinho.
 Característica: **bifurca em modo normal vs pré-atendimento** baseado em capability `sales.stock_check`. Tem force-call no pré-atendimento (se LLM "fechou" sem chamar `anotar_pedido_balcao`, força a chamada).
+Característica (pré-atendimento): a regra 4 do `_SYSTEM_PRE_ATENDIMENTO` exige `[[HANDOFF:farmaceutico:nome]]` quando o cliente cita medicamento por nome — farmacêutico valida na bula antes de anotar. Itens claramente não-medicamento (fralda/xampu/álcool/etc.) seguem direto pra coleta. Isso evita inchar o prompt do vendedor com lógica de validação.
+Característica: `anotar_pedido_balcao` **popula o cart in-place** (`items`, `subtotal=0`, `last_order`, `just_finalized=True`) — assim o `send_order_summary` do worker, disparado pelo `escalate=True`, consegue montar o resumo do pedido (capability `sales.order_summary_after_handoff`, mig 044). Sem essa mutação, o resumo sai vazio em pré-atendimento.
 
 ### `principio_ativo` — Substância ativa
 Plano: pro.

@@ -52,7 +52,7 @@ from routers.capabilities import portal_router as capabilities_portal_router, ad
 from routers.shipping_rules import router as shipping_rules_router
 from routers.offers import router as offers_router
 from routers.payments_webhook import router as payments_webhook_router
-from routers.payments import payments_router, recovery_router
+from routers.payments import payments_router, recovery_router, order_summary_router
 from routers.conversations import router as conversations_router
 from middleware.usage import UsageEnforcementMiddleware
 
@@ -165,6 +165,7 @@ app.include_router(offers_router)
 app.include_router(payments_webhook_router)
 app.include_router(payments_router)
 app.include_router(recovery_router)
+app.include_router(order_summary_router)
 app.include_router(conversations_router)
 
 

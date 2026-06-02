@@ -57,6 +57,7 @@ const NAV_SECTIONS: NavSection[] = [
       { path: "/portal/ofertas",      label: "Ofertas",              icon: "🏷️", key: "ofertas"     },
       { path: "/portal/pagamentos",   label: "Pagamentos (PIX)",     icon: "📱", key: "pagamentos"  },
       { path: "/portal/recuperacao",  label: "Recuperação Automática",icon: "🔁", key: "recuperacao"},
+      { path: "/portal/resumo-pedido",label: "Resumo no Atendente",  icon: "🧾", key: "resumo-pedido"},
       { path: "/portal/pedidos",      label: "Pedidos",              icon: "🧾", key: "pedidos"     },
     ],
   },

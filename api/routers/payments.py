@@ -26,6 +26,9 @@ log = structlog.get_logger()
 
 payments_router = APIRouter(prefix="/portal/payments", tags=["portal:payments"])
 recovery_router = APIRouter(prefix="/portal/recovery", tags=["portal:recovery"])
+order_summary_router = APIRouter(
+    prefix="/portal/order-summary", tags=["portal:order_summary"],
+)
 
 TenantUser = Annotated[TenantUserContext, Depends(require_tenant_user)]
 
@@ -956,6 +959,275 @@ async def preview_expire_template(payload: TemplatePreviewIn,
         template=tpl, subtotal=float(row["subtotal"] or 0),
     )
     return TemplatePreviewOut(rendered=rendered, used_sample=False)
+
+
+# ── Template do resumo de pedido enviado no handoff ────────────────────────
+# Endpoints do template da capability `sales.order_summary_after_handoff`
+# (migration 044). Mora aqui pra ficar perto dos outros editores de mensagem
+# proativa, mas tem página dedicada (PortalResumoPedido) no portal. Toda a
+# config (header / item / total / footer) vai num único endpoint, porque a
+# UI edita os 5 campos juntos com 1 botão Salvar.
+
+ORDER_SUMMARY_KEY = "sales.order_summary_after_handoff"
+
+ORDER_SUMMARY_PLACEHOLDERS = [
+    ("nome",        "Nome do produto"),
+    ("quantidade",  "Quantidade pedida"),
+    ("preco_unit",  "Preço unitário (R$ x,xx). Vazio se pré-atendimento."),
+    ("preco_total", "Preço × quantidade (R$ x,xx). Vazio se pré-atendimento."),
+    ("preco",       "Alias de preco_unit."),
+]
+
+
+class OrderSummaryConfigOut(BaseModel):
+    header_text:    str
+    item_template:  str
+    show_total:     bool
+    total_label:    str
+    footer_text:    str
+    is_default:     bool                 # nenhum campo foi customizado
+    defaults:       dict                 # do catálogo — usado pelo "Restaurar"
+    placeholders:   list[dict]
+    enabled:        bool                 # toggle da capability
+
+
+class OrderSummaryConfigIn(BaseModel):
+    header_text:    str | None = None
+    item_template:  str | None = None
+    show_total:     bool | None = None
+    total_label:    str | None = None
+    footer_text:    str | None = None
+
+
+class OrderSummaryPreviewIn(BaseModel):
+    # Qualquer campo None → cai pro valor salvo. Tudo None → preview do salvo.
+    header_text:    str | None = None
+    item_template:  str | None = None
+    show_total:     bool | None = None
+    total_label:    str | None = None
+    footer_text:    str | None = None
+    # Sample por padrão; quando fornecido um session_key real, busca cart.
+    session_key:    str | None = None
+    # Força preview no modo pré-atendimento (sem preços). Default: auto.
+    no_prices:      bool | None = None
+
+
+class OrderSummaryPreviewOut(BaseModel):
+    rendered:    str
+    used_sample: bool
+
+
+async def _get_order_summary_defaults() -> dict:
+    """Lê `default_config` do catálogo (migration 044)."""
+    async with get_db_conn() as conn:
+        row = await conn.fetchrow(
+            "SELECT default_config FROM public.capability_catalog WHERE key = $1",
+            ORDER_SUMMARY_KEY,
+        )
+    defaults: dict = {}
+    if row and row["default_config"]:
+        v = row["default_config"]
+        if isinstance(v, dict):
+            defaults = v
+        elif isinstance(v, str):
+            try:
+                import json as _json
+                parsed = _json.loads(v)
+                defaults = parsed if isinstance(parsed, dict) else {}
+            except Exception:
+                defaults = {}
+    # Fallbacks finais — o catálogo deveria ter, mas defesa em profundidade
+    defaults.setdefault("header_text",   "📋 *Resumo do seu pedido:*")
+    defaults.setdefault("item_template", "• {quantidade}x {nome} — {preco_total}")
+    defaults.setdefault("show_total",    True)
+    defaults.setdefault("total_label",   "*Total*")
+    defaults.setdefault("footer_text",   "")
+    return defaults
+
+
+def _merge_summary_cfg(saved: dict, defaults: dict) -> dict:
+    """Para cada campo do template, prefere o tenant, cai pro default."""
+    return {
+        "header_text":   saved.get("header_text",   defaults["header_text"]),
+        "item_template": saved.get("item_template", defaults["item_template"]),
+        "show_total":    bool(saved.get("show_total", defaults["show_total"])),
+        "total_label":   saved.get("total_label",   defaults["total_label"]),
+        "footer_text":   saved.get("footer_text",   defaults["footer_text"]),
+    }
+
+
+@order_summary_router.get("/config", response_model=OrderSummaryConfigOut)
+async def get_order_summary_config(user: TenantUser) -> OrderSummaryConfigOut:
+    from services import capabilities as cap_svc
+
+    defaults = await _get_order_summary_defaults()
+    tenant_cfg = await cap_svc.get_config(user.tenant_id, ORDER_SUMMARY_KEY) or {}
+    merged = _merge_summary_cfg(tenant_cfg, defaults)
+
+    is_default = all(
+        tenant_cfg.get(k) is None or tenant_cfg.get(k) == defaults.get(k)
+        for k in ("header_text", "item_template", "show_total", "total_label", "footer_text")
+    )
+
+    enabled = False
+    try:
+        enabled = await cap_svc.is_enabled(user.tenant_id, ORDER_SUMMARY_KEY)
+    except Exception:
+        pass
+
+    return OrderSummaryConfigOut(
+        **merged,
+        is_default=is_default,
+        defaults=defaults,
+        placeholders=[{"key": k, "desc": d} for k, d in ORDER_SUMMARY_PLACEHOLDERS],
+        enabled=enabled,
+    )
+
+
+def _render_summary_preview(cfg: dict, *, no_prices: bool) -> str:
+    """Renderiza o resumo com cart sample. Função pura — sem I/O."""
+    from services.order_summary import build_summary_text
+    if no_prices:
+        items = [
+            {"nome": "Dipirona 500mg",      "quantidade": 2, "preco": 0},
+            {"nome": "Soro fisiológico",    "quantidade": 1, "preco": 0},
+        ]
+        subtotal = 0
+    else:
+        items = [
+            {"nome": "Dipirona 500mg", "quantidade": 2, "preco": 7.50},
+            {"nome": "Tylenol",        "quantidade": 1, "preco": 18.90},
+        ]
+        subtotal = 33.90
+    return build_summary_text({"items": items, "subtotal": subtotal}, cfg) or ""
+
+
+@order_summary_router.put("/config", response_model=OrderSummaryConfigOut)
+async def update_order_summary_config(
+    payload: OrderSummaryConfigIn, user: TenantUser,
+) -> OrderSummaryConfigOut:
+    """Salva os campos do template. Campo None = remove o override (volta ao
+    default do catálogo). String vazia em header/footer é VÁLIDA — quem quer
+    omitir literalmente."""
+    user.assert_role("manager")
+    from services import capabilities as cap_svc
+
+    # Sanity: tenta renderizar com sample antes de salvar, evita template
+    # quebrado em prod (igual ao /template do abandoned_cart).
+    defaults = await _get_order_summary_defaults()
+    candidate = {
+        "header_text":   payload.header_text   if payload.header_text   is not None else defaults["header_text"],
+        "item_template": payload.item_template if payload.item_template is not None else defaults["item_template"],
+        "show_total":    payload.show_total    if payload.show_total    is not None else defaults["show_total"],
+        "total_label":   payload.total_label   if payload.total_label   is not None else defaults["total_label"],
+        "footer_text":   payload.footer_text   if payload.footer_text   is not None else defaults["footer_text"],
+    }
+    try:
+        _render_summary_preview(candidate, no_prices=False)
+        _render_summary_preview(candidate, no_prices=True)
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=f"Template inválido: {e}")
+
+    current = await cap_svc.list_for_tenant(user.tenant_id)
+    cap = next((c for c in current if c["key"] == ORDER_SUMMARY_KEY), None)
+    if not cap:
+        raise HTTPException(status_code=404, detail="Capacidade não encontrada.")
+
+    new_config = dict(cap.get("config") or {})
+    # Para cada campo: valor != default → grava override; igual ao default →
+    # remove a chave do override (mantém a config esparsa, como em SPEC 04).
+    for key in ("header_text", "item_template", "show_total", "total_label", "footer_text"):
+        value = getattr(payload, key)
+        if value is None:
+            new_config.pop(key, None)
+        elif value == defaults.get(key):
+            new_config.pop(key, None)
+        else:
+            new_config[key] = value
+
+    await cap_svc.set_enabled(
+        tenant_id=str(user.tenant_id),
+        key=ORDER_SUMMARY_KEY,
+        enabled=bool(cap.get("enabled")),
+        config=new_config,
+        user_id=user.email,
+    )
+    await log_event(
+        action="order_summary.template_updated", actor_id=user.email,
+        actor_type="user", tenant_id=user.tenant_id,
+        target=ORDER_SUMMARY_KEY,
+        meta={"reset_to_default": all(v is None for v in payload.dict().values())},
+    )
+    return await get_order_summary_config(user)
+
+
+@order_summary_router.post("/preview", response_model=OrderSummaryPreviewOut)
+async def preview_order_summary(
+    payload: OrderSummaryPreviewIn, user: TenantUser,
+) -> OrderSummaryPreviewOut:
+    """Renderiza preview combinando os campos do payload com o salvo.
+
+    Modos:
+      • session_key fornecido → usa cart real desse cliente (preço se houver).
+      • Senão → cart sample. `no_prices=True` mostra como fica em pré-atendimento.
+    """
+    from services import capabilities as cap_svc
+
+    defaults = await _get_order_summary_defaults()
+    saved = await cap_svc.get_config(user.tenant_id, ORDER_SUMMARY_KEY) or {}
+    merged = _merge_summary_cfg(saved, defaults)
+    # Sobrescreve com o que veio no payload (campos None mantêm o salvo)
+    for k in ("header_text", "item_template", "show_total", "total_label", "footer_text"):
+        v = getattr(payload, k)
+        if v is not None:
+            merged[k] = v
+
+    if not payload.session_key:
+        no_prices = bool(payload.no_prices) if payload.no_prices is not None else False
+        rendered = _render_summary_preview(merged, no_prices=no_prices)
+        return OrderSummaryPreviewOut(rendered=rendered, used_sample=True)
+
+    # Preview com cart real
+    import json as _json
+    async with get_db_conn() as conn:
+        schema_row = await conn.fetchrow(
+            "SELECT schema_name FROM public.tenants WHERE id = $1",
+            user.tenant_id,
+        )
+        if not schema_row:
+            raise HTTPException(status_code=404, detail="Farmácia não encontrada.")
+        await conn.execute(f"SET search_path = {schema_row['schema_name']}, public")
+        row = await conn.fetchrow(
+            "SELECT items, subtotal FROM cart WHERE session_key = $1",
+            payload.session_key,
+        )
+    if not row:
+        raise HTTPException(status_code=404, detail="Carrinho não encontrado.")
+
+    raw = row["items"]
+    if isinstance(raw, str):
+        try: items_raw = _json.loads(raw)
+        except _json.JSONDecodeError: items_raw = []
+    else:
+        items_raw = list(raw or [])
+
+    # Normaliza chaves EN→PT antes de mandar ao build_summary_text
+    items = []
+    for it in items_raw:
+        if not isinstance(it, dict):
+            continue
+        items.append({
+            "nome":       it.get("nome")       or it.get("name")  or "",
+            "quantidade": it.get("quantidade") or it.get("qty")   or 1,
+            "preco":      it.get("preco")      or it.get("price") or 0,
+        })
+
+    from services.order_summary import build_summary_text
+    rendered = build_summary_text(
+        {"items": items, "subtotal": float(row["subtotal"] or 0)},
+        merged,
+    ) or ""
+    return OrderSummaryPreviewOut(rendered=rendered, used_sample=False)
 
 
 # ── Disparo manual em lote ──────────────────────────────────────────────────
