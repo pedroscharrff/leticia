@@ -41,8 +41,14 @@ celery_app.conf.update(
     # Beat schedule — jobs proativos (capability-gated por dentro)
     beat_schedule={
         "recover_abandoned_carts": {
+            # 2 min: granularidade fina pra honrar `delay_minutes` (1–1440 min)
+            # configurável pelo tenant. Schedule antigo (1h) só funcionava
+            # quando o campo legado era `delay_hours` (4h default) — agora um
+            # cart elegível na régua de 2 min esperaria até a próxima hora
+            # cheia pro nudge sair. Job é leve (1 SELECT por tenant) e respeita
+            # quiet_hours por dentro, então 2 min é barato e correto.
             "task":     "jobs.recover_abandoned_carts",
-            "schedule": 60 * 60,           # 1 hora
+            "schedule": 60 * 2,
         },
         "expire_abandoned_carts": {
             # 2 min: granularidade fina pra honrar expire_minutes a partir de 1.
