@@ -179,7 +179,17 @@ async def _process_tenant(tenant_id: str, schema_name: str) -> dict:
                 SELECT c.session_key, c.items, c.subtotal, c.recovery_attempts,
                        cu.phone, cu.name
                   FROM cart c
-                  LEFT JOIN customers cu ON cu.phone = SPLIT_PART(c.session_key, ':', 2)
+                  -- session_key pode vir como o phone direto (formato atual:
+                  -- '556581716652') OU como '<prefixo>:<phone>:<sufixo>'
+                  -- (formato legado de chat-test). LEFT JOIN tenta os dois
+                  -- pra não silenciar nudges. Sem isso o for-loop dá `continue`
+                  -- silencioso (checked=1 sent=0 errors=0 = bug invisível).
+                  LEFT JOIN LATERAL (
+                       SELECT name, phone FROM customers
+                        WHERE phone = c.session_key
+                           OR phone = NULLIF(SPLIT_PART(c.session_key, ':', 2), '')
+                        LIMIT 1
+                  ) cu ON TRUE
                  WHERE c.updated_at < $1
                    -- Helper trata array, string (double-encoded) e escalar.
                    -- Ver [[jsonb-array-typeof-guard]] + [[jsonb-double-encoding]].
@@ -199,7 +209,19 @@ async def _process_tenant(tenant_id: str, schema_name: str) -> dict:
         stats["checked"] += 1
         phone = r["phone"]
         if not phone:
-            # session_key pode não conter telefone parseável — pula
+            # Fallback: customer ainda não foi cadastrado em `customers`, mas
+            # o session_key pode SER o phone (formato atual: só dígitos).
+            sk = r["session_key"] or ""
+            if sk.isdigit():
+                phone = sk
+            elif ":" in sk:
+                for part in sk.split(":")[1:]:
+                    if part.isdigit():
+                        phone = part
+                        break
+        if not phone:
+            log.warning("recover.skip_no_phone",
+                        tenant=tenant_id, session=r["session_key"])
             continue
 
         items_raw = r["items"]
