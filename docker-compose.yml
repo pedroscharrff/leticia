@@ -147,6 +147,33 @@ services:
       retries: 3
       start_period: 30s
 
+  # ── Celery Beat (scheduler) ─────────────────────────────────────────────────
+  # Único responsável por disparar as tasks recorrentes definidas em
+  # `workers/celery_app.py::beat_schedule` (recover_abandoned_carts,
+  # expire_abandoned_carts, nudge_continuous_refill).
+  #
+  # ⚠️ NUNCA escalar para 2+ réplicas — dois beats agendariam cada task
+  # em dobro. Se o container cair, a próxima janela perdida não é recuperada
+  # (jobs são idempotentes — uma rodada perdida só atrasa o nudge).
+  beat:
+    build:
+      context: .
+      dockerfile: api/Dockerfile
+    command: >
+      celery -A workers.celery_app.celery_app beat
+      --loglevel=${LOG_LEVEL:-info}
+      --schedule=/tmp/celerybeat-schedule
+    environment:
+      <<: *api-env
+    depends_on:
+      pgbouncer:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    restart: unless-stopped
+
   # ── PgBouncer (transaction pooling) ─────────────────────────────────────────
   # Sentado entre os apps (api, worker) e o Postgres. Multiplexa muitas conexões
   # cliente (centenas) sobre poucas conexões de servidor (~25 reais), evitando
