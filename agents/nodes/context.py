@@ -254,6 +254,23 @@ async def save_context(state: AgentState) -> AgentState:
             # nas queries de Recuperação. Ver [[jsonb-double-encoding]] e
             # migration 050 que desfez o estrago em dados antigos.
             cart = state.get("cart") or {"items": [], "subtotal": 0.0}
+            # `just_finalized` é setado por tools de fechamento (finalizar_pedido
+            # no ERP, anotar_pedido_balcao no pré-atendimento). Modo ERP já
+            # DELETEa a row do cart dentro da tool — chega aqui com items=[]
+            # naturalmente. Modo pré-atendimento NÃO deleta: mantém os items
+            # populados em memória para o worker montar `send_order_summary`
+            # via `cart.last_order` ([[transferencia-handoff-escalate-ofertas-pre-handoff-fluxo-completo]]).
+            # Sem o guard abaixo, esses itens persistem em `{schema}.cart` com
+            # items > 0 e o job de recuperação ([[recover-silent-skip]]) acha
+            # "abandono ativo" horas depois — apesar do ticket já estar fechado
+            # (closed_at) e do pedido já existir em `orders`. Solução: persistir
+            # `items=[]` quando `just_finalized` está ativo, espelhando o efeito
+            # do DELETE do ERP. O state em memória NÃO é alterado — o worker
+            # continua tendo `cart.items`/`cart.last_order` disponíveis pro
+            # resumo e ofertas (esta função retorna o state inalterado abaixo).
+            cart_finalized = bool(cart.get("just_finalized"))
+            persisted_items = [] if cart_finalized else (cart.get("items", []) or [])
+            persisted_subtotal = 0.0 if cart_finalized else float(cart.get("subtotal", 0) or 0)
             await conn.execute(
                 """
                 INSERT INTO cart (session_key, items, subtotal, stock_mode,
@@ -267,11 +284,13 @@ async def save_context(state: AgentState) -> AgentState:
                     updated_at     = NOW()
                 """,
                 session_id,
-                cart.get("items", []) or [],
-                float(cart.get("subtotal", 0) or 0),
+                persisted_items,
+                persisted_subtotal,
                 state.get("stock_mode") or "catalogo",
                 int(cart.get("sales_attempts", 0) or 0),
             )
+            if cart_finalized:
+                log.info("context.cart.cleared_on_finalize", session=session_id)
 
             # Log de conversa — guarda phone separado para agrupar a inbox por contato.
             phone_clean = state.get("phone") or ""

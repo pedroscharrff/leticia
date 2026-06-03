@@ -251,11 +251,18 @@ async def _process_tenant(tenant_id: str, schema_name: str) -> dict:
             rows = await conn.fetch(
                 """
                 SELECT session_key
-                  FROM cart
+                  FROM cart c
                  WHERE sent_recovery_at IS NOT NULL
                    AND EXTRACT(EPOCH FROM (NOW() - sent_recovery_at)) >= $1
                    AND updated_at <= sent_recovery_at
                    AND public.safe_jsonb_array_length(items) > 0
+                   -- Guard simétrico ao do varredor de recuperação: cart
+                   -- com order posterior já foi fechado (balcão/ERP).
+                   AND NOT EXISTS (
+                       SELECT 1 FROM orders o
+                        WHERE o.session_key = c.session_key
+                          AND o.created_at >= c.updated_at
+                   )
                  ORDER BY sent_recovery_at ASC
                  LIMIT 100
                 """,

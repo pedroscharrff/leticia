@@ -236,6 +236,35 @@ async def orchestrator(state: AgentState, llm_factory) -> AgentState:
 
     system_prompt = _SYSTEM.format(skills_list=_build_skills_list(available_skills))
 
+    # Validação farmacêutica (pré-atendimento): quando a capability está ON e o
+    # farmacêutico está ativo, medicamento NOMEADO vai PRIMEIRO ao farmacêutico
+    # (override da regra 2) — ele confere a apresentação na bula da ANVISA
+    # (`consultar_bula`, cobre além do catálogo local) antes da coleta. Isso
+    # resolve de forma confiável o "vendedor inventa dosagem", colocando a
+    # decisão no classificador dedicado em vez de depender do vendedor lembrar
+    # de fazer o handoff.
+    if "farmaceutico" in available_skills:
+        try:
+            from services import capabilities as cap_svc
+            if await cap_svc.is_enabled(
+                state.get("tenant_id"), "sales.pharmacist_validation"
+            ):
+                system_prompt += (
+                    "\n\n═══════════════════════════════════════════════════════\n"
+                    "OVERRIDE — VALIDAÇÃO FARMACÊUTICA ATIVA\n"
+                    "═══════════════════════════════════════════════════════\n"
+                    "Esta farmácia exige conferir o medicamento na bula antes de "
+                    "anotar o pedido. Quando o cliente CITAR um MEDICAMENTO por "
+                    "nome (ex.: 'quero dipirona', 'tem amoxicilina?', 'me vê um "
+                    "buscopan'), roteie para **farmaceutico** — NÃO para vendedor. "
+                    "Isso SOBREPÕE a regra 2 para medicamentos. Itens claramente "
+                    "NÃO-medicamento (fralda, soro, xampu, álcool, bala) continuam "
+                    "indo para vendedor."
+                )
+        except Exception as _exc:  # noqa: BLE001
+            log.warning("orchestrator.pharmacist_validation_check_failed",
+                        exc=str(_exc))
+
     user_content = ""
     if history_text:
         user_content = f"Histórico recente:\n{history_text}\n"

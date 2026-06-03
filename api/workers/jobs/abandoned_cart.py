@@ -196,6 +196,17 @@ async def _process_tenant(tenant_id: str, schema_name: str) -> dict:
                    AND public.safe_jsonb_array_length(c.items) > 0
                    AND c.recovery_attempts < $2
                    AND (c.sent_recovery_at IS NULL OR c.sent_recovery_at < $1)
+                   -- Defesa em profundidade: se já existe order pra essa sessão
+                   -- criada depois da última atividade do cart, o pedido foi
+                   -- fechado (modo balcão/ERP) e o cart é "lixo" — não recuperar.
+                   -- Causa raiz separada está em context.save_context (limpa
+                   -- items quando just_finalized=True); este guard cobre carts
+                   -- antigos pré-fix e qualquer caminho futuro que esqueça.
+                   AND NOT EXISTS (
+                       SELECT 1 FROM orders o
+                        WHERE o.session_key = c.session_key
+                          AND o.created_at >= c.updated_at
+                   )
                  ORDER BY c.updated_at DESC
                  LIMIT 50
                 """,
