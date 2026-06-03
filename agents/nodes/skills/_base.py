@@ -23,6 +23,9 @@ _HANDOFF_RE = re.compile(r"\[\[HANDOFF:([a-z_]+)(?::([^\]]+))?\]\]", re.IGNORECA
 # Regex para detectar pedido de escalation humana ([[ESCALATE]]).
 _ESCALATE_RE = re.compile(r"\[\[ESCALATE\]\]", re.IGNORECASE)
 
+# Regex para detectar fim de atendimento sinalizado pelo agente ([[END]]).
+_END_RE = re.compile(r"\[\[END\]\]", re.IGNORECASE)
+
 
 def _parse_escalate(response: str) -> tuple[str, bool]:
     """Detecta marcador [[ESCALATE]] na resposta.
@@ -34,6 +37,22 @@ def _parse_escalate(response: str) -> tuple[str, bool]:
         return response, False
     if _ESCALATE_RE.search(response):
         cleaned = _ESCALATE_RE.sub("", response).strip()
+        return cleaned, True
+    return response, False
+
+
+def _parse_end(response: str) -> tuple[str, bool]:
+    """Detecta marcador [[END]] na resposta (fim de atendimento).
+
+    Retorna (resposta_limpa, True) se o agente sinalizou que o cliente
+    encerrou o atendimento (despedida / "era só isso" sem pedido pendente),
+    senão (resposta_original, False). O marcador é SEMPRE removido do texto
+    antes de enviar ao cliente.
+    """
+    if not response:
+        return response, False
+    if _END_RE.search(response):
+        cleaned = _END_RE.sub("", response).strip()
         return cleaned, True
     return response, False
 
@@ -506,6 +525,13 @@ async def run_skill(
         handoff_target  = parsed_target
         handoff_ctx_new = parsed_ctx
 
+    # Fim de atendimento sinalizado pelo agente ([[END]]). SEMPRE limpamos o
+    # marcador do texto; o flag só é propagado quando NÃO estamos roteando um
+    # handoff (não queremos encerrar no meio de uma cadeia farmaceutico→vendedor).
+    final_response, end_conversation = _parse_end(final_response)
+    if handoff_target:
+        end_conversation = False
+
     # Se está recebendo handoff, concatena: resposta anterior + nova resposta
     if is_receiving_handoff and final_response and final_response.strip():
         final_response = f"{prev_response.strip()}\n\n{final_response.strip()}"
@@ -542,4 +568,5 @@ async def run_skill(
         "skill_history":   skill_history,
         # Atualiza selected_skill para refletir o skill que efetivamente respondeu
         "selected_skill":  handoff_target or state.get("selected_skill", skill_name),
+        "end_conversation": end_conversation,
     }

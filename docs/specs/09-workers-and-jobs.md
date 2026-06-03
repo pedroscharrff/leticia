@@ -55,7 +55,8 @@ Sequência (`_run_graph`):
 5. `graph.ainvoke(initial_state)`
 6. Decide handoff (worker, fora do grafo):
    - `agent_escalate` ou `order_just_finalized` ou keyword
-   - `transfer_to_human` + `auto_pause_after_handoff`
+   - `transfer_to_human` + `auto_pause_after_handoff` (chamado SEMPRE que `do_handoff`, **independente do `ok` da API externa** — ver "Finalização determinística" abaixo)
+   - Se NÃO houve handoff e o agente sinalizou `[[END]]` (`final_state.end_conversation`) → `end_session` (closed_at, sem pausar, limpa histórico)
 7. POST callback com `reply` formatado
 8. Pós-handoff: `send_order_summary` + `_send_pre_handoff_offers` em mensagens separadas
 9. `persist_trace` em `agent_traces`
@@ -150,6 +151,15 @@ Quando `handoff_was_executed=True`:
 
 Cada um em try/except — falha aqui não derruba o handoff.
 
+### Finalização determinística do atendimento (closed_at)
+
+O status "encerrado" do portal (inbox em `routers/conversations.py`) vem de `conversation_state.closed_at`. Regras:
+
+- **Handoff** (`do_handoff=True`): chamamos `auto_pause_after_handoff` **sempre**, mesmo se `transfer_to_human` retornar `ok=False`. Decisão de produto: o atendimento é dado por encerrado independentemente de a API externa (ClickMassa/TalkFarma) aceitar a transferência. Falha externa só gera `log.warning(...external_failed_closing_anyway)`.
+- `auto_pause_after_handoff` SEMPRE seta `closed_at`; pausa a IA (`ai_paused`+`paused_until`) só quando `pause_minutes > 0`. Com `pause_minutes <= 0` finaliza o ticket SEM pausar (antes fazia early-return e não fechava nada — era o bug do "resumo enviado mas ticket aberto").
+- **Fim sinalizado pelo agente** (`[[END]]` → `end_conversation=True`): quando NÃO houve handoff, o worker chama `end_session` (closed_at, `ai_paused=FALSE`, limpa histórico). Cobre "era só isso / tchau" sem depender de `close_keywords` cadastradas.
+- **close_keywords** (cliente digita palavra configurada): tratado ANTES do grafo em `_maybe_close_or_reset_session` → `end_session`. Broker lê de `tenant_integrations.session_config`; nativo de `tenant_channels.session_config` (fontes distintas — cuidado ao configurar).
+
 ## Pontos de extensão
 
 ### Novo job proativo
@@ -180,6 +190,7 @@ Criar task no estilo `process_*_message` + endpoint correspondente em `routers/`
 - **Não esquecer `init_pool()` + `init_redis()` no início da task.** Worker é processo separado, sem pool pré-aberto.
 - **Não usar `task.delay` síncrono dentro do worker** pra encadear — use `apply_async` com countdown.
 - **Não levantar exceção em `_send_pre_handoff_offers` ou `send_order_summary`** — handoff já saiu, nada deve quebrar.
+- **Não re-acoplar `auto_pause_after_handoff` (closed_at) ao `handoff_result.ok` nem voltar o early-return de `pause_minutes <= 0`.** Era o bug do "resumo enviado mas ticket nunca finaliza": o resumo é gated em `do_handoff`, o close ficava gated em `ok` + `pause_minutes>0`. Finalização do ticket é determinística; pausa da IA é o que depende de `pause_minutes`.
 - **Não atualizar `broker_raw_events.status='processed'` ANTES do forward** — se forward falhar, perde sinal de retry.
 - **Não confiar em `prev_state` carregado fora do worker** — tudo tem que vir do args da task (tenant_id, schema_name, etc.).
 - **Não usar `Celery retry mechanism` (retries automáticos)** — duplica mensagem ao cliente. Falha = trace + log + segue.

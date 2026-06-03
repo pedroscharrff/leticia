@@ -16,7 +16,8 @@ from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
 
 from agents.state import AgentState
 from agents.nodes.skills._base import (
-    _persona_prefix, _build_messages, _parse_handoff, _parse_escalate, _extract_text,
+    _persona_prefix, _build_messages, _parse_handoff, _parse_escalate,
+    _parse_end, _extract_text,
 )
 
 log = structlog.get_logger()
@@ -251,6 +252,26 @@ quando:
 
 Exemplo:
   "Entendo, vou te passar para um de nossos atendentes agora.[[ESCALATE]]"
+
+═══════════════════════════════════════════════════════════════════════
+FIM DE ATENDIMENTO — encerrar a conversa ([[END]])
+═══════════════════════════════════════════════════════════════════════
+Termine sua resposta com `[[END]]` (marcador invisível, removido antes de ir
+ao cliente) quando o cliente sinalizar que TERMINOU e NÃO há pedido pendente
+para anotar nem nada a transferir:
+• "era só isso", "só queria tirar essa dúvida", "obrigado, mais nada".
+• Despedida sem pedido: "tchau", "valeu", "até mais".
+
+Coloque ANTES uma despedida curta e cordial e então o marcador. Exemplo:
+  "Imagina, qualquer coisa é só chamar. Tenha um ótimo dia![[END]]"
+
+🛑 NÃO use `[[END]]` quando:
+• Há itens que o cliente pediu mas ainda NÃO foram anotados via
+  `anotar_pedido_balcao` — nesse caso conclua a Etapa 3 (anotar) primeiro.
+• O cliente pediu atendente humano (use `[[ESCALATE]]`).
+• O cliente ainda está escolhendo / pode querer mais algo — pergunte antes.
+
+[[END]] é só para fechar a conversa quando não restou nenhuma ação pendente.
 
 ═══════════════════════════════════════════════════════════════════════
 FERRAMENTAS (tools)
@@ -839,6 +860,18 @@ async def vendedor_node(state: AgentState, llm_factory) -> AgentState:
                  mode="pre_atendimento" if use_preattendimento else "normal",
                  schema=schema_name)
 
+    # ── Detecta fim de atendimento sinalizado pelo agente ([[END]]) ──────────
+    # Cliente se despediu / disse que era só isso, SEM pedido pendente. SEMPRE
+    # limpamos o marcador do texto. Só propagamos o flag quando NÃO houve
+    # balcão nem escalation (essas têm prioridade — já fecham via handoff).
+    final_response, end_conversation = _parse_end(final_response)
+    if balcao_called or explicit_escalate:
+        end_conversation = False
+    if end_conversation:
+        log.info("vendedor.end_conversation",
+                 mode="pre_atendimento" if use_preattendimento else "normal",
+                 schema=schema_name)
+
     # ── Parseia handoff ──────────────────────────────────────────────────────
     # Mesmo em pré-atendimento (onde não roteamos pra outro skill), PRECISAMOS
     # rodar o parse pra LIMPAR o marcador [[HANDOFF:...]] do texto antes de
@@ -942,4 +975,7 @@ async def vendedor_node(state: AgentState, llm_factory) -> AgentState:
         #   1) o agente pediu explicitamente via [[ESCALATE]]
         #   2) modo pré-atendimento concluiu com sucesso (balcão)
         "escalate":        balcao_called or explicit_escalate,
+        # end_conversation=True faz o worker encerrar a sessão (end_session)
+        # de forma determinística — cliente se despediu sem pedido pendente.
+        "end_conversation": end_conversation,
     }

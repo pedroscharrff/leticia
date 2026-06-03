@@ -657,20 +657,45 @@ async def _run_graph(
                 skill_used = "handoff"
                 log.info("webhook.handoff.result", ok=hresult.get("ok"),
                          status_code=hresult.get("status_code"))
-                # Pausa a IA automaticamente para o atendente humano poder
-                # responder sem competir com o bot (default 4h).
-                if hresult.get("ok"):
-                    try:
-                        from services.conversation_state import auto_pause_after_handoff
-                        await auto_pause_after_handoff(
-                            tenant_id, phone,
-                            pause_minutes=channel_pause_minutes,
-                        )
-                    except Exception as exc:  # noqa: BLE001
-                        log.warning("webhook.handoff.autopause_failed",
-                                    tenant=tenant_id, exc=str(exc))
+                if not hresult.get("ok"):
+                    # Transferência externa falhou — finalizamos mesmo assim
+                    # (decisão de produto). O atendimento é dado por encerrado
+                    # e a IA é pausada; o operador acompanha pela inbox.
+                    log.warning("webhook.handoff.external_failed_closing_anyway",
+                                tenant=tenant_id, error=hresult.get("error"),
+                                status_code=hresult.get("status_code"))
+                # Finaliza o atendimento (closed_at) e pausa a IA — SEMPRE que
+                # houve handoff, independente do sucesso da API externa.
+                try:
+                    from services.conversation_state import auto_pause_after_handoff
+                    await auto_pause_after_handoff(
+                        tenant_id, phone,
+                        pause_minutes=channel_pause_minutes,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("webhook.handoff.autopause_failed",
+                                tenant=tenant_id, exc=str(exc))
         except Exception as exc:  # noqa: BLE001
             log.error("webhook.handoff.dispatch_failed", tenant=tenant_id, exc=str(exc))
+
+        # ── Fim de atendimento sinalizado pelo agente ([[END]]) ──────────────
+        # Cliente se despediu sem pedido pendente. Encerra a sessão de forma
+        # determinística (closed_at, sem pausar). Só quando NÃO houve handoff —
+        # o handoff já finaliza via auto_pause_after_handoff.
+        if not handoff_was_executed and final_state.get("end_conversation"):
+            try:
+                from services.conversation_state import end_session
+                await end_session(
+                    tenant_id, phone,
+                    by="agent:end_marker",
+                    reason="agent_end_conversation",
+                    clear_history=True,
+                )
+                log.info("webhook.session.ended_by_agent", tenant=tenant_id,
+                         phone_prefix=phone[:4])
+            except Exception as exc:  # noqa: BLE001
+                log.warning("webhook.session.end_failed",
+                            tenant=tenant_id, exc=str(exc))
 
         await _deliver_response(
             callback_url,
@@ -1106,21 +1131,46 @@ async def _run_broker_flow(
                 reply_text = (handoff_cfg.get("transfer_message")
                               or "Estou te transferindo para um atendente agora. Um momento, por favor.")
             skill_used = "handoff"
-            # Pausa a IA pra esse cliente — atendente humano vai assumir
-            if handoff_result and handoff_result.get("ok"):
-                try:
-                    from services.conversation_state import auto_pause_after_handoff
-                    pause_min = int(integration.get("handoff_pause_minutes") or 240)
-                    await auto_pause_after_handoff(
-                        tenant_id, phone_clean,
-                        pause_minutes=pause_min,
-                    )
-                except Exception as exc:  # noqa: BLE001
-                    log.warning("broker.handoff.autopause_failed", exc=str(exc))
+            if not (handoff_result and handoff_result.get("ok")):
+                # Transferência externa falhou — finalizamos mesmo assim
+                # (decisão de produto): o atendimento é encerrado e a IA pausada.
+                log.warning("broker.handoff.external_failed_closing_anyway",
+                            tenant=tenant_id,
+                            error=(handoff_result or {}).get("error"),
+                            status_code=(handoff_result or {}).get("status_code"))
+            # Finaliza o atendimento (closed_at) e pausa a IA — SEMPRE que houve
+            # handoff, independente do sucesso da API externa.
+            try:
+                from services.conversation_state import auto_pause_after_handoff
+                pause_min = int(integration.get("handoff_pause_minutes") or 240)
+                await auto_pause_after_handoff(
+                    tenant_id, phone_clean,
+                    pause_minutes=pause_min,
+                )
+            except Exception as exc:  # noqa: BLE001
+                log.warning("broker.handoff.autopause_failed", exc=str(exc))
     except Exception as exc:
         log.error("broker.flow.handoff_dispatch_failed", error=str(exc))
         handoff_result = {"ok": False, "error": f"Erro no dispatcher de handoff: {exc}",
                           "status_code": None, "response": None}
+
+    # ── Fim de atendimento sinalizado pelo agente ([[END]]) ──────────────────
+    # Cliente se despediu sem pedido pendente. Encerra a sessão de forma
+    # determinística (closed_at, sem pausar). Só quando NÃO houve handoff — o
+    # handoff já finaliza via auto_pause_after_handoff.
+    if not handoff_was_executed and final_state and final_state.get("end_conversation"):
+        try:
+            from services.conversation_state import end_session
+            await end_session(
+                tenant_id, phone_clean,
+                by="agent:end_marker",
+                reason="agent_end_conversation",
+                clear_history=True,
+            )
+            log.info("broker.session.ended_by_agent", tenant=tenant_id,
+                     phone_prefix=phone_clean[:4])
+        except Exception as exc:  # noqa: BLE001
+            log.warning("broker.session.end_failed", tenant=tenant_id, exc=str(exc))
 
     from services.agent_traces import persist_trace
     await persist_trace(

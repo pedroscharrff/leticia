@@ -59,7 +59,7 @@ Para skills **complexos** (vendedor), implementar inline replicando o padrão de
 
 1. **Persona única externa**: bot nunca diz "vou te passar pro farmacêutico/vendedor". Cliente vê uma pessoa só. Garantido em `_persona_prefix`.
 2. **Resposta curta**: máx 3-4 frases, 1 pergunta por vez. Garantido em prompt + `analyst`.
-3. **Marker invisível**: `[[HANDOFF:X]]`, `[[ESCALATE]]` SEMPRE removidos do texto antes do cliente ver (regex em `_parse_handoff` / `_parse_escalate`).
+3. **Marker invisível**: `[[HANDOFF:X]]`, `[[ESCALATE]]`, `[[END]]` SEMPRE removidos do texto antes do cliente ver (regex em `_parse_handoff` / `_parse_escalate` / `_parse_end`). `[[END]]` sinaliza fim de atendimento (cliente se despediu sem pedido pendente) → propaga `end_conversation=True` no state; o worker chama `end_session` (closed_at, sem pausar, limpa histórico). Não propaga quando há handoff/escalate/balcão (essas têm prioridade e já finalizam).
 4. **Nunca alucinar tool result**: skill não pode afirmar "pedido confirmado" / "anotado" / "no estoque" sem chamar a tool no mesmo turno. Trava no prompt + (no vendedor) force-call.
 5. **Retry-safe**: se LLM falhar, gera fallback amigável em vez de quebrar o grafo.
 6. **Tools via factory**: tools recebem `schema_name`, `tenant_id`, `cart`, `customer` via closure. Mutações em `cart` precisam refletir no `AgentState` (passar a mesma ref).

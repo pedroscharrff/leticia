@@ -302,42 +302,49 @@ async def auto_pause_after_handoff(
     *,
     pause_minutes: int,
 ) -> None:
-    """Chamada do worker quando transfer_to_human roda com sucesso.
+    """Finaliza o atendimento após um handoff p/ atendente humano.
 
-    Pausa a IA pelo tempo configurado para que o atendente humano possa
-    responder sem competir com o bot.
+    SEMPRE marca `closed_at` — finalização DETERMINÍSTICA do ticket, desacoplada
+    do sucesso da API externa de transferência. (O caller chama esta função
+    sempre que decide transferir; se a API externa falhou, o atendimento ainda
+    é dado por encerrado — decisão de produto.)
+
+    Pausa a IA (`ai_paused` + `paused_until`) somente quando `pause_minutes > 0`.
+    Com `pause_minutes <= 0` o tenant optou por NÃO pausar, mas o ticket ainda
+    é finalizado (closed_at). Quando o cliente voltar a falar depois da janela,
+    o worker detecta o marker e abre um novo atendimento (reset_session).
     """
-    if pause_minutes <= 0:
-        return
     try:
-        # Marca também closed_at: quando o cliente voltar a falar depois do
-        # fim da janela de pausa, o webhook/worker detecta o marker e abre
-        # um novo atendimento do zero (reset_session) em vez de continuar
-        # o histórico anterior.
         from datetime import timedelta
-        paused_until = datetime.now(timezone.utc) + timedelta(minutes=pause_minutes)
+        if pause_minutes and pause_minutes > 0:
+            ai_paused = True
+            paused_until = datetime.now(timezone.utc) + timedelta(minutes=pause_minutes)
+        else:
+            ai_paused = False
+            paused_until = None
         async with get_db_conn() as conn:
             await conn.execute(
                 """
                 INSERT INTO public.conversation_state
                     (tenant_id, phone, ai_paused, paused_until,
                      paused_by, paused_reason, closed_at, updated_at)
-                VALUES ($1, $2, TRUE, $3, 'auto:handoff',
+                VALUES ($1, $2, $4, $3, 'auto:handoff',
                         'atendente_humano_assumiu', NOW(), NOW())
                 ON CONFLICT (tenant_id, phone) DO UPDATE SET
-                    ai_paused     = TRUE,
+                    ai_paused     = $4,
                     paused_until  = EXCLUDED.paused_until,
                     paused_by     = 'auto:handoff',
                     paused_reason = 'atendente_humano_assumiu',
                     closed_at     = NOW(),
                     updated_at    = NOW()
                 """,
-                tenant_id, phone, paused_until,
+                tenant_id, phone, paused_until, ai_paused,
             )
         await _invalidate_cache(tenant_id, phone)
         log.info("convstate.auto_pause_after_handoff",
                  tenant=tenant_id, phone=phone[:4],
-                 until=paused_until.isoformat())
+                 paused=ai_paused,
+                 until=paused_until.isoformat() if paused_until else None)
     except Exception as exc:
         log.warning("convstate.auto_pause_failed",
                     tenant=tenant_id, phone=phone[:4], exc=str(exc))

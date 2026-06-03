@@ -43,6 +43,10 @@ class AgentState(TypedDict, total=False):
     # ── Quality control ───────────────────────────────────────────────────────
     analyst_approved: bool
     escalate:        bool
+    # Cliente sinalizou fim do atendimento (sem pedido pendente / só despedida).
+    # O worker lê este flag e fecha a sessão (end_session) de forma determinística,
+    # sem depender de close_keywords configuradas. Emitido pelo skill via [[END]].
+    end_conversation: bool
 
     # ── Output ────────────────────────────────────────────────────────────────
     final_response:  str
