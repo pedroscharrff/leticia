@@ -356,6 +356,9 @@ async def vendedor_node(state: AgentState, llm_factory) -> AgentState:
         "shipping":        False,
         "interactive":     False,
         "pix":             False,
+        # Pré-atendimento: rotear nome de medicamento ao farmacêutico p/ validar
+        # na bula antes de anotar (evita dosagem/apresentação inventada).
+        "pharmacist_validation": False,
     }
     cap_config: dict[str, dict] = {}
     try:
@@ -367,6 +370,7 @@ async def vendedor_node(state: AgentState, llm_factory) -> AgentState:
             "shipping":        "delivery.shipping_by_cep",
             "interactive":     "attendance.interactive_buttons",
             "pix":             "payments.pix_asaas",
+            "pharmacist_validation": "sales.pharmacist_validation",
         }
         for slug, key in keys.items():
             caps[slug] = await cap_svc.is_enabled(tenant_id, key)
@@ -846,10 +850,22 @@ async def vendedor_node(state: AgentState, llm_factory) -> AgentState:
     if not received_handoff:
         final_response, parsed_target, parsed_ctx = _parse_handoff(final_response)
         # Em modo NORMAL: respeita o roteamento.
-        # Em pré-atendimento: só limpa o texto, descarta o target (sem roteamento
-        # entre skills — a transferência ocorre via escalate quando o balcão
-        # finaliza).
         if not use_preattendimento:
+            handoff_target  = parsed_target
+            handoff_ctx_new = parsed_ctx
+        # Em pré-atendimento: por padrão só limpa o texto e descarta o target
+        # (sem roteamento entre skills — a transferência ocorre via escalate
+        # quando o balcão finaliza). EXCEÇÃO: quando a capability
+        # `sales.pharmacist_validation` está ON, roteamos o handoff de validação
+        # ao farmacêutico (single-hop), que confere o medicamento na bula da
+        # ANVISA antes de o item entrar na coleta — evita anotar dosagem/
+        # apresentação inventada. Só roteia se o farmacêutico estiver ativo no
+        # tenant; senão degrada para o comportamento padrão (sem validação).
+        elif (
+            caps.get("pharmacist_validation")
+            and parsed_target == "farmaceutico"
+            and "farmaceutico" in set(state.get("available_skills", []))
+        ):
             handoff_target  = parsed_target
             handoff_ctx_new = parsed_ctx
 
