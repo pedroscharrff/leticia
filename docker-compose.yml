@@ -24,6 +24,11 @@ x-api-env: &api-env
   ADMIN_EMAIL:                 ${ADMIN_EMAIL}
   ADMIN_PASSWORD_HASH:         ${ADMIN_PASSWORD_HASH}
   CORS_ORIGINS:                ${CORS_ORIGINS}
+  # URL pública do backend — usada pra montar a URL exibida na tela de
+  # integrações do portal (broker). Se ausente, cai no default
+  # `http://localhost:8000` do pydantic-settings e o tenant copia URL errada
+  # pro painel do provider. Veja `api/routers/broker.py::_build_ingest_url`.
+  PUBLIC_API_URL:              ${PUBLIC_API_URL:-http://localhost:8000}
   SESSION_TTL_SECONDS:         ${SESSION_TTL_SECONDS:-1800}
   MAX_CONTEXT_MESSAGES:        ${MAX_CONTEXT_MESSAGES:-10}
   ANALYST_MAX_RETRIES:         ${ANALYST_MAX_RETRIES:-1}
