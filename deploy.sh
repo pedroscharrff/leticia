@@ -177,6 +177,7 @@ collect_config() {
     API_DOMAIN="api.${DOMAIN}"
     ADMIN_DOMAIN="admin.${DOMAIN}"
     STORAGE_DOMAIN="storage.${DOMAIN}"
+    METRICS_DOMAIN="metrics.${DOMAIN}"
 
     # E-mail SSL
     while true; do
@@ -230,6 +231,7 @@ collect_config() {
     echo -e "  │  API:         ${CYAN}https://${API_DOMAIN}${NC}"
     echo -e "  │  Admin:       ${CYAN}https://${ADMIN_DOMAIN}${NC}"
     echo -e "  │  Storage:     ${CYAN}https://${STORAGE_DOMAIN}${NC}"
+    echo -e "  │  Metrics:     ${CYAN}https://${METRICS_DOMAIN}${NC}  (basic auth)"
     echo -e "  │  Admin email: ${CYAN}${ADMIN_EMAIL}${NC}"
     echo -e "  │  SSL e-mail:  ${CYAN}${SSL_EMAIL}${NC}"
     echo -e "  └──────────────────────────────────────────────────┘"
@@ -251,7 +253,7 @@ check_dns() {
 
     local all_ok=true
 
-    for fqdn in "${API_DOMAIN}" "${ADMIN_DOMAIN}" "${STORAGE_DOMAIN}"; do
+    for fqdn in "${API_DOMAIN}" "${ADMIN_DOMAIN}" "${STORAGE_DOMAIN}" "${METRICS_DOMAIN}"; do
         local resolved
         resolved=$(dig +short "${fqdn}" 2>/dev/null | grep -E '^[0-9]+\.' | tail -1 || echo "")
 
@@ -363,7 +365,7 @@ write_nginx_http() {
 # ─── Configuração temporária HTTP — emissão do certificado Let's Encrypt ──────
 server {
     listen 80;
-    server_name ${API_DOMAIN} ${ADMIN_DOMAIN} ${STORAGE_DOMAIN};
+    server_name ${API_DOMAIN} ${ADMIN_DOMAIN} ${STORAGE_DOMAIN} ${METRICS_DOMAIN};
 
     # ACME challenge (Let's Encrypt)
     location /.well-known/acme-challenge/ {
@@ -394,7 +396,7 @@ limit_req_zone \$binary_remote_addr zone=api_auth:10m rate=10r/m;
 # ── HTTP → HTTPS redirect + ACME renewal ─────────────────────────────────────
 server {
     listen 80;
-    server_name ${API_DOMAIN} ${ADMIN_DOMAIN} ${STORAGE_DOMAIN};
+    server_name ${API_DOMAIN} ${ADMIN_DOMAIN} ${STORAGE_DOMAIN} ${METRICS_DOMAIN};
 
     location /.well-known/acme-challenge/ {
         root /var/www/certbot;
@@ -596,6 +598,82 @@ server {
 }
 EOF
     success "Configuração HTTPS do nginx gerada"
+
+    write_nginx_metrics
+    setup_metrics_auth
+}
+
+# ── Nginx: vhost dedicado pro Prometheus (subdomínio metrics.*) ──────────────
+write_nginx_metrics() {
+    cat > "${SCRIPT_DIR}/nginx/metrics.conf" << EOF
+# ─── Gerado por deploy.sh em $(date) ─────────────────────────────────────────
+# https://${METRICS_DOMAIN} → Prometheus (basic auth via /etc/nginx/htpasswd)
+
+server {
+    listen 443 ssl http2;
+    server_name ${METRICS_DOMAIN};
+
+    ssl_certificate     /etc/letsencrypt/live/${API_DOMAIN}/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/${API_DOMAIN}/privkey.pem;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_ciphers         ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384;
+    ssl_session_cache   shared:SSL:10m;
+    ssl_session_timeout 1d;
+
+    add_header Strict-Transport-Security "max-age=63072000; includeSubDomains; preload" always;
+    add_header X-Frame-Options           DENY                                            always;
+    add_header X-Content-Type-Options    nosniff                                         always;
+    add_header Referrer-Policy           "no-referrer"                                   always;
+
+    auth_basic           "Metrics — restricted";
+    auth_basic_user_file /etc/nginx/htpasswd;
+
+    resolver 127.0.0.11 valid=10s ipv6=off;
+
+    location / {
+        set \$upstream_prom prometheus:9090;
+        proxy_pass            http://\$upstream_prom;
+        proxy_http_version    1.1;
+        proxy_set_header      Host              \$host;
+        proxy_set_header      X-Real-IP         \$remote_addr;
+        proxy_set_header      X-Forwarded-For   \$proxy_add_x_forwarded_for;
+        proxy_set_header      X-Forwarded-Proto \$scheme;
+        proxy_read_timeout    60s;
+    }
+}
+EOF
+    success "Configuração HTTPS do Prometheus (${METRICS_DOMAIN}) gerada"
+}
+
+# ── Basic auth do Prometheus (gera /nginx/htpasswd) ──────────────────────────
+setup_metrics_auth() {
+    local htpasswd_file="${SCRIPT_DIR}/nginx/htpasswd"
+    METRICS_USER="${METRICS_USER:-admin}"
+
+    # Senha aleatória se ainda não tiver
+    if [[ -z "${METRICS_PASSWORD:-}" ]]; then
+        METRICS_PASSWORD=$(openssl rand -hex 16)
+    fi
+
+    # Gera hash bcrypt usando container alpine (sem depender do htpasswd local)
+    docker run --rm httpd:2.4-alpine htpasswd -nbB "${METRICS_USER}" "${METRICS_PASSWORD}" \
+        2>/dev/null > "${htpasswd_file}" \
+        || error "Falha ao gerar htpasswd. Verifique se o Docker está rodando."
+
+    chmod 644 "${htpasswd_file}"
+
+    # Persiste credenciais no .env pra deploys futuros não rotacionarem
+    if ! grep -q "^METRICS_USER=" "${SCRIPT_DIR}/.env" 2>/dev/null; then
+        {
+            echo ""
+            echo "# ─── Prometheus basic auth (gerado por deploy.sh) ───"
+            echo "METRICS_USER='${METRICS_USER}'"
+            echo "METRICS_PASSWORD='${METRICS_PASSWORD}'"
+            echo "METRICS_DOMAIN='${METRICS_DOMAIN}'"
+        } >> "${SCRIPT_DIR}/.env"
+    fi
+
+    success "Basic auth gerado — user=${METRICS_USER} (senha em .env como METRICS_PASSWORD)"
 }
 
 # ── Emitir certificado SSL ────────────────────────────────────────────────────
@@ -632,7 +710,7 @@ issue_ssl() {
     # garantindo que o container execute 'certonly' em vez de travar no loop.
     # Saída exibida no terminal (sem redirecionar) para diagnóstico em tempo real.
     # Timeout de 180s evita travamento se Let's Encrypt não responder.
-    info "Solicitando certificado para: ${API_DOMAIN}, ${ADMIN_DOMAIN}, ${STORAGE_DOMAIN}"
+    info "Solicitando certificado para: ${API_DOMAIN}, ${ADMIN_DOMAIN}, ${STORAGE_DOMAIN}, ${METRICS_DOMAIN}"
     timeout 180 docker compose -f "${SCRIPT_DIR}/docker-compose.yml" \
         run --rm --entrypoint certbot certbot certonly \
         --webroot \
@@ -645,6 +723,7 @@ issue_ssl() {
         -d "${API_DOMAIN}" \
         -d "${ADMIN_DOMAIN}" \
         -d "${STORAGE_DOMAIN}" \
+        -d "${METRICS_DOMAIN}" \
         || error "Falha ao emitir certificado. Verifique: (1) DNS apontado, (2) porta 80 aberta na nuvem, (3) logs em ${LOG_FILE}"
 
     success "Certificado SSL emitido com sucesso!"

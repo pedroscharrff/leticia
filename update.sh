@@ -214,6 +214,160 @@ else
     info "nginx config já contém ${STORAGE_DOMAIN} — sem alteração."
 fi
 
+# ── 1.6 Provisionamento incremental: Prometheus + subdomínio metrics ─────────
+# Idempotente: detecta o que falta (cert, htpasswd, nginx block, .env) e
+# adiciona. Seguro de rodar várias vezes.
+step "1.6/5  Provisionando Prometheus + subdomínio metrics (idempotente)"
+
+METRICS_DOMAIN="metrics.${BASE_DOMAIN}"
+HTPASSWD_FILE="${SCRIPT_DIR}/nginx/htpasswd"
+METRICS_CONF="${SCRIPT_DIR}/nginx/metrics.conf"
+
+# ── 1.6.1 Verifica DNS de metrics.${DOMAIN} ──────────────────────────────────
+METRICS_IP=$(getent hosts "${METRICS_DOMAIN}" | awk '{print $1}' | head -1 || true)
+if [[ -z "$METRICS_IP" ]]; then
+    warn "DNS de ${METRICS_DOMAIN} ainda não propagado."
+    warn "Configure no registrador:  A  ${METRICS_DOMAIN}  →  ${SERVER_IP:-IP_DO_SERVIDOR}"
+    read -rp "  Continuar mesmo assim (cert + nginx só funcionarão após DNS)? [s/N]: " cont
+    [[ "${cont,,}" == "s" ]] || error "Configure o DNS e rode update.sh de novo."
+elif [[ -n "$SERVER_IP" && "$METRICS_IP" != "$SERVER_IP" ]]; then
+    warn "DNS de ${METRICS_DOMAIN} aponta para ${METRICS_IP}, mas este servidor é ${SERVER_IP}."
+    warn "Provavelmente é Cloudflare Proxy — se for, OK. Senão, corrija o A record."
+else
+    success "DNS de ${METRICS_DOMAIN} aponta corretamente."
+fi
+
+# ── 1.6.2 Gera basic auth (htpasswd) se ainda não existir ────────────────────
+# Detecta arquivo "vazio" (só comentários) também — o repo vem com placeholder.
+HAS_REAL_HTPASSWD=false
+if [[ -s "$HTPASSWD_FILE" ]] && grep -vE "^\s*(#|$)" "$HTPASSWD_FILE" | grep -q ":"; then
+    HAS_REAL_HTPASSWD=true
+fi
+
+if [[ "$HAS_REAL_HTPASSWD" == "false" ]]; then
+    info "Gerando basic auth para o Prometheus..."
+    METRICS_USER="${METRICS_USER:-admin}"
+    METRICS_PASSWORD="${METRICS_PASSWORD:-$(openssl rand -hex 16)}"
+
+    # Bcrypt via container alpine (sem depender do htpasswd local)
+    docker run --rm httpd:2.4-alpine htpasswd -nbB "${METRICS_USER}" "${METRICS_PASSWORD}" \
+        2>/dev/null > "${HTPASSWD_FILE}" \
+        || error "Falha ao gerar htpasswd. Verifique se o Docker está rodando."
+    chmod 644 "${HTPASSWD_FILE}"
+
+    # Persiste no .env pra update.sh seguinte não rotacionar
+    if ! grep -q "^METRICS_PASSWORD=" "$ENV_FILE"; then
+        {
+            echo ""
+            echo "# ─── Prometheus basic auth (gerado por update.sh) ───"
+            echo "METRICS_USER='${METRICS_USER}'"
+            echo "METRICS_PASSWORD='${METRICS_PASSWORD}'"
+            echo "METRICS_DOMAIN='${METRICS_DOMAIN}'"
+        } >> "$ENV_FILE"
+        chmod 600 "$ENV_FILE"
+    fi
+    success "htpasswd gerado — user=${METRICS_USER} (senha em .env como METRICS_PASSWORD)"
+else
+    info "htpasswd já existe — preservando credenciais."
+fi
+
+# ── 1.6.3 Expande certificado SSL para cobrir metrics.${DOMAIN} ──────────────
+CERT_COVERS_METRICS=false
+if docker compose run --rm --entrypoint sh certbot -c \
+    "openssl x509 -in ${CERT_PATH} -noout -text 2>/dev/null | grep -q ${METRICS_DOMAIN}"; then
+    CERT_COVERS_METRICS=true
+fi
+
+if [[ "$CERT_COVERS_METRICS" == "true" ]]; then
+    success "Certificado SSL já cobre ${METRICS_DOMAIN} — sem reemissão."
+else
+    info "Expandindo certificado SSL para incluir ${METRICS_DOMAIN}..."
+    if ! timeout 180 docker compose run --rm --entrypoint certbot certbot certonly \
+        --webroot --webroot-path=/var/www/certbot \
+        --expand --non-interactive --agree-tos \
+        --cert-name "${API_DOMAIN}" \
+        -d "${API_DOMAIN}" -d "${ADMIN_DOMAIN}" -d "${STORAGE_DOMAIN}" -d "${METRICS_DOMAIN}"; then
+        warn "Falha ao expandir cert p/ ${METRICS_DOMAIN}. Pode tentar manualmente depois."
+        warn "  Verifique DNS + porta 80 aberta."
+    else
+        success "Certificado expandido"
+    fi
+fi
+
+# ── 1.6.4 Garante metrics.conf (vhost nginx do Prometheus) ───────────────────
+# Não bate com default.conf porque está em arquivo separado. nginx carrega
+# tudo em /etc/nginx/conf.d/*.conf automaticamente.
+if [[ ! -f "$METRICS_CONF" ]] || ! grep -q "${METRICS_DOMAIN}" "$METRICS_CONF" 2>/dev/null; then
+    info "Escrevendo ${METRICS_CONF}..."
+    cat > "$METRICS_CONF" << EOF
+# ─── Gerado por update.sh ─────────────────────────────────────────────────────
+# https://${METRICS_DOMAIN} → Prometheus (basic auth via /etc/nginx/htpasswd)
+
+server {
+    listen 443 ssl http2;
+    server_name ${METRICS_DOMAIN};
+
+    ssl_certificate     /etc/letsencrypt/live/${API_DOMAIN}/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/${API_DOMAIN}/privkey.pem;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_ciphers         ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384;
+    ssl_session_cache   shared:SSL:10m;
+    ssl_session_timeout 1d;
+
+    add_header Strict-Transport-Security "max-age=63072000; includeSubDomains; preload" always;
+    add_header X-Frame-Options           DENY                                            always;
+    add_header X-Content-Type-Options    nosniff                                         always;
+    add_header Referrer-Policy           "no-referrer"                                   always;
+
+    auth_basic           "Metrics — restricted";
+    auth_basic_user_file /etc/nginx/htpasswd;
+
+    resolver 127.0.0.11 valid=10s ipv6=off;
+
+    location / {
+        set \$upstream_prom prometheus:9090;
+        proxy_pass            http://\$upstream_prom;
+        proxy_http_version    1.1;
+        proxy_set_header      Host              \$host;
+        proxy_set_header      X-Real-IP         \$remote_addr;
+        proxy_set_header      X-Forwarded-For   \$proxy_add_x_forwarded_for;
+        proxy_set_header      X-Forwarded-Proto \$scheme;
+        proxy_read_timeout    60s;
+    }
+}
+
+server {
+    listen 80;
+    server_name ${METRICS_DOMAIN};
+    location /.well-known/acme-challenge/ { root /var/www/certbot; try_files \$uri =404; }
+    location / { return 301 https://\$host\$request_uri; }
+}
+EOF
+    success "metrics.conf escrito"
+else
+    info "metrics.conf já existe — preservando."
+fi
+
+# ── 1.6.5 Sobe Prometheus + Grafana ──────────────────────────────────────────
+# `up -d` é idempotente: se já estiver rodando com a config atual, no-op; se
+# o prometheus.yml ou docker-compose.yml mudou, recria.
+info "Subindo Prometheus + Grafana..."
+docker compose up -d --no-deps prometheus grafana
+
+# Sanity check do prometheus.yml antes do reload do nginx
+if ! docker compose exec -T prometheus promtool check config /etc/prometheus/prometheus.yml &>/dev/null; then
+    warn "prometheus.yml inválido — verifique: docker compose logs prometheus"
+fi
+
+# ── 1.6.6 Recarrega nginx pra carregar metrics.conf + htpasswd ──────────────
+if docker compose exec -T nginx nginx -t &>/dev/null; then
+    docker compose exec -T nginx nginx -s reload
+    success "nginx recarregado (vhost ${METRICS_DOMAIN} ativo)"
+else
+    warn "nginx -t falhou após adicionar metrics.conf — config NÃO recarregada."
+    warn "  Verifique: docker compose exec nginx nginx -t"
+fi
+
 # ── 2. Build apenas das imagens da aplicação ──────────────────────────────────
 step "2/5  Fazendo build das imagens"
 
@@ -312,4 +466,5 @@ echo -e "${GREEN}${BOLD}Atualização concluída!${NC}"
 echo -e "  Logs em tempo real:  ${CYAN}docker compose logs -f api${NC}"
 echo -e "  Workers:             ${CYAN}docker compose logs -f worker${NC}"
 echo -e "  Beat (scheduler):    ${CYAN}docker compose logs -f beat${NC}"
+echo -e "  Métricas:            ${CYAN}https://${METRICS_DOMAIN}${NC}  (basic auth: cat .env | grep METRICS_)"
 echo

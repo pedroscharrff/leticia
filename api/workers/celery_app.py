@@ -9,11 +9,30 @@ Each task:
 """
 import asyncio
 import json
+import os
 import time
+
+# ── Prometheus multiprocess setup ─────────────────────────────────────────────
+# DEVE rodar antes de qualquer Counter()/Histogram() ser instanciado, porque
+# prometheus_client decide o backend (single vs mmap) no momento da criação
+# da métrica, lendo $PROMETHEUS_MULTIPROC_DIR.
+_METRICS_PORT = int(os.environ.get("WORKER_METRICS_PORT", "9100"))
+_MULTIPROC_DIR = os.environ.get("PROMETHEUS_MULTIPROC_DIR", "/tmp/prom_multiproc_celery")
+
+if _METRICS_PORT > 0:
+    os.environ["PROMETHEUS_MULTIPROC_DIR"] = _MULTIPROC_DIR
+    os.makedirs(_MULTIPROC_DIR, exist_ok=True)
+    # Limpa restos de execução anterior (PIDs antigos com mmap stale)
+    for _fname in os.listdir(_MULTIPROC_DIR):
+        try:
+            os.unlink(os.path.join(_MULTIPROC_DIR, _fname))
+        except OSError:
+            pass
 
 import httpx
 import structlog
 from celery import Celery
+from celery.signals import worker_init, worker_process_init, worker_process_shutdown
 from prometheus_client import Counter, Histogram
 from tenacity import retry, stop_after_attempt, wait_exponential
 
@@ -130,6 +149,57 @@ LLM_ERRORS = Counter(
     "LLM call failures",
     ["tenant_id", "skill", "llm_model"],
 )
+
+
+# ── Expor métricas via HTTP no worker (multiprocess mode) ────────────────────
+#
+# Celery prefork: N processos filhos. Cada um tem seu próprio in-memory
+# REGISTRY → se cada fork servisse HTTP, (a) só o primeiro bindaria a porta
+# e (b) o scrape veria só o slice de um fork.
+#
+# Modelo oficial: `prometheus_client.multiprocess`. Forks escrevem samples
+# em arquivos mmap em $PROMETHEUS_MULTIPROC_DIR (setado no topo deste módulo);
+# um único HTTP server no processo PAI lê os arquivos via MultiProcessCollector
+# no momento do scrape e devolve a soma agregada.
+#
+# Réplicas de worker no compose recebem hostnames separados; Prometheus
+# scrape `worker:9100` resolve via DNS-RR — pra Counter (monotônico) está OK
+# porque PromQL agrega com sum().
+#
+# Desligar: WORKER_METRICS_PORT=0
+
+
+@worker_init.connect
+def _start_metrics_server(**_kw) -> None:
+    """Sobe o HTTP no processo PAI do Celery (uma vez por container)."""
+    if _METRICS_PORT <= 0:
+        return
+    try:
+        from prometheus_client import CollectorRegistry, multiprocess
+        from prometheus_client.exposition import start_http_server as _start
+
+        registry = CollectorRegistry()
+        multiprocess.MultiProcessCollector(registry)
+        _start(_METRICS_PORT, registry=registry)
+        log.info("worker.metrics.listening",
+                 port=_METRICS_PORT, dir=_MULTIPROC_DIR)
+    except OSError as exc:
+        log.warning("worker.metrics.bind_failed",
+                    port=_METRICS_PORT, exc=str(exc))
+    except Exception as exc:  # noqa: BLE001
+        log.warning("worker.metrics.start_failed", exc=str(exc))
+
+
+@worker_process_shutdown.connect
+def _cleanup_child_metrics(pid=None, **_kw) -> None:
+    """Remove o mmap do fork quando ele encerra (evita drift de Counters)."""
+    if _METRICS_PORT <= 0:
+        return
+    try:
+        from prometheus_client import multiprocess
+        multiprocess.mark_process_dead(pid or os.getpid(), path=_MULTIPROC_DIR)
+    except Exception:  # noqa: BLE001
+        pass
 
 
 # ── Callback delivery ─────────────────────────────────────────────────────────

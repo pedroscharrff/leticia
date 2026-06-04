@@ -55,6 +55,7 @@ from routers.payments_webhook import router as payments_webhook_router
 from routers.payments import payments_router, recovery_router, order_summary_router
 from routers.conversations import router as conversations_router
 from middleware.usage import UsageEnforcementMiddleware
+from services import metrics_collector
 
 # ── Structured logging ────────────────────────────────────────────────────────
 
@@ -92,8 +93,17 @@ async def lifespan(app: FastAPI):
         await auto_migrate()
     except Exception as exc:
         log.warning("migrations.failed", error=str(exc))
+    # Roda 1 refresh sincronamente antes de subir a task, pra primeira scrape
+    # do Prometheus já encontrar valores (start_period do scheduler é 0 no
+    # arranque do container).
+    try:
+        await metrics_collector.refresh_business_metrics()
+    except Exception as exc:  # noqa: BLE001
+        log.warning("metrics.initial_refresh_failed", error=str(exc))
+    metrics_collector.start_refresher()
     log.info("app.started", env=settings.environment)
     yield
+    await metrics_collector.stop_refresher()
     await close_pool()
     await close_redis()
     log.info("app.stopped")

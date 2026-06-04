@@ -1,0 +1,159 @@
+{
+  "annotations": {"list": []},
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 0,
+  "id": null,
+  "links": [],
+  "liveNow": false,
+  "panels": [
+    {
+      "type": "stat",
+      "title": "Tenants ativos",
+      "gridPos": {"h": 4, "w": 4, "x": 0, "y": 0},
+      "id": 1,
+      "datasource": {"type": "prometheus", "uid": "Prometheus"},
+      "targets": [
+        {"expr": "saas_tenants_total{active=\"true\"}", "refId": "A"}
+      ],
+      "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"steps": [{"color": "green"}]}}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "colorMode": "value", "graphMode": "area"}
+    },
+    {
+      "type": "stat",
+      "title": "Tickets abertos (total)",
+      "gridPos": {"h": 4, "w": 4, "x": 4, "y": 0},
+      "id": 2,
+      "datasource": {"type": "prometheus", "uid": "Prometheus"},
+      "targets": [{"expr": "sum(saas_tenant_tickets_open)", "refId": "A"}],
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "value", "graphMode": "area"}
+    },
+    {
+      "type": "stat",
+      "title": "Tickets com IA pausada",
+      "gridPos": {"h": 4, "w": 4, "x": 8, "y": 0},
+      "id": 3,
+      "datasource": {"type": "prometheus", "uid": "Prometheus"},
+      "targets": [{"expr": "sum(saas_tenant_tickets_paused)", "refId": "A"}],
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "value", "graphMode": "area"}
+    },
+    {
+      "type": "stat",
+      "title": "Mensagens últimas 24h",
+      "gridPos": {"h": 4, "w": 4, "x": 12, "y": 0},
+      "id": 4,
+      "datasource": {"type": "prometheus", "uid": "Prometheus"},
+      "targets": [{"expr": "sum(saas_tenant_messages_24h)", "refId": "A"}],
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "value", "graphMode": "area"}
+    },
+    {
+      "type": "stat",
+      "title": "Carrinhos abertos",
+      "gridPos": {"h": 4, "w": 4, "x": 16, "y": 0},
+      "id": 5,
+      "datasource": {"type": "prometheus", "uid": "Prometheus"},
+      "targets": [{"expr": "sum(saas_tenant_carts_open)", "refId": "A"}],
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "value", "graphMode": "area"}
+    },
+    {
+      "type": "stat",
+      "title": "Erros 24h",
+      "gridPos": {"h": 4, "w": 4, "x": 20, "y": 0},
+      "id": 6,
+      "datasource": {"type": "prometheus", "uid": "Prometheus"},
+      "targets": [{"expr": "sum(saas_tenant_agent_errors_24h)", "refId": "A"}],
+      "fieldConfig": {"defaults": {"thresholds": {"steps": [{"color": "green"}, {"color": "red", "value": 1}]}}},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "value", "graphMode": "area"}
+    },
+    {
+      "type": "timeseries",
+      "title": "Mensagens 24h por tenant",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 4},
+      "id": 7,
+      "datasource": {"type": "prometheus", "uid": "Prometheus"},
+      "targets": [
+        {"expr": "sum by (tenant_name) (saas_tenant_messages_24h)", "refId": "A", "legendFormat": "{{tenant_name}}"}
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Tickets abertos por tenant",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 4},
+      "id": 8,
+      "datasource": {"type": "prometheus", "uid": "Prometheus"},
+      "targets": [
+        {"expr": "saas_tenant_tickets_open", "refId": "A", "legendFormat": "{{tenant_name}}"}
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Latência de conversa (p95) por skill",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 12},
+      "id": 9,
+      "datasource": {"type": "prometheus", "uid": "Prometheus"},
+      "targets": [
+        {"expr": "histogram_quantile(0.95, sum by (le, skill) (rate(conversation_latency_seconds_bucket[5m])))", "refId": "A", "legendFormat": "{{skill}}"}
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Conversas/min por status",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 12},
+      "id": 10,
+      "datasource": {"type": "prometheus", "uid": "Prometheus"},
+      "targets": [
+        {"expr": "sum by (status) (rate(conversations_total[5m])) * 60", "refId": "A", "legendFormat": "{{status}}"}
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Tokens consumidos 24h por tenant (in+out)",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 20},
+      "id": 11,
+      "datasource": {"type": "prometheus", "uid": "Prometheus"},
+      "targets": [
+        {"expr": "sum by (tenant_name) (saas_tenant_tokens_24h)", "refId": "A", "legendFormat": "{{tenant_name}}"}
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Pedidos 24h por status",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 20},
+      "id": 12,
+      "datasource": {"type": "prometheus", "uid": "Prometheus"},
+      "targets": [
+        {"expr": "sum by (status) (saas_tenant_orders_24h)", "refId": "A", "legendFormat": "{{status}}"}
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "HTTP request rate (API)",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 28},
+      "id": 13,
+      "datasource": {"type": "prometheus", "uid": "Prometheus"},
+      "targets": [
+        {"expr": "sum by (handler) (rate(http_requests_total[5m]))", "refId": "A", "legendFormat": "{{handler}}"}
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "LLM errors / min",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 28},
+      "id": 14,
+      "datasource": {"type": "prometheus", "uid": "Prometheus"},
+      "targets": [
+        {"expr": "sum by (llm_model) (rate(llm_errors_total[5m])) * 60", "refId": "A", "legendFormat": "{{llm_model}}"}
+      ]
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 39,
+  "tags": ["saas-farmacia"],
+  "templating": {"list": []},
+  "time": {"from": "now-6h", "to": "now"},
+  "timepicker": {},
+  "timezone": "",
+  "title": "SaaS Farmácia — Overview",
+  "uid": "saas-farmacia-overview",
+  "version": 1
+}

@@ -1,9 +1,41 @@
 global:
   scrape_interval: 15s
   evaluation_interval: 15s
+  external_labels:
+    env: production
+    service: saas-farmacia
 
 scrape_configs:
+  # ── API FastAPI ──────────────────────────────────────────────────────────
+  # /metrics exposto pelo prometheus-fastapi-instrumentator.
+  # Inclui métricas HTTP (latência, status, in-flight) + Gauges de negócio
+  # (saas_tenants_total, saas_tenant_tickets_open, saas_tenant_messages_*,
+  # saas_tenant_carts_open, saas_tenant_orders_*, saas_tenant_tokens_24h,
+  # saas_tenant_agent_errors_24h). As Gauges são refrescadas em background
+  # a cada 30s a partir do Postgres (services/metrics_collector.py).
   - job_name: "saas-farmacia-api"
+    metrics_path: /metrics
     static_configs:
       - targets: ["api:8000"]
+        labels:
+          component: api
+
+  # ── Celery workers ───────────────────────────────────────────────────────
+  # Processos forkados escrevem em $PROMETHEUS_MULTIPROC_DIR; o processo pai
+  # serve HTTP em :9100 com MultiProcessCollector (workers/celery_app.py).
+  # Métricas: conversations_total, conversation_latency_seconds, llm_errors_total.
+  # Réplicas (deploy.replicas: 2) recebem hostnames distintos via Docker DNS;
+  # scrape resolve round-robin — Counter agregado em PromQL com sum().
+  - job_name: "saas-farmacia-worker"
     metrics_path: /metrics
+    static_configs:
+      - targets: ["worker:9100"]
+        labels:
+          component: worker
+
+  # ── Auto-scrape do próprio Prometheus ────────────────────────────────────
+  - job_name: "prometheus"
+    static_configs:
+      - targets: ["localhost:9090"]
+        labels:
+          component: prometheus

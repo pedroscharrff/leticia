@@ -74,6 +74,8 @@ services:
       - "443:443"
     volumes:
       - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./nginx/metrics.conf:/etc/nginx/conf.d/metrics.conf:ro
+      - ./nginx/htpasswd:/etc/nginx/htpasswd:ro    # basic auth p/ metrics.*
       - certbot_certs:/etc/letsencrypt:ro          # certificados SSL
       - certbot_www:/var/www/certbot:ro             # webroot para ACME challenge
     depends_on:
@@ -133,8 +135,13 @@ services:
       --concurrency=${CELERY_WORKERS_CONCURRENCY:-16}
       --loglevel=${LOG_LEVEL:-info}
       --queues=celery
+    expose:
+      - "9100"   # métricas Prometheus (rede interna apenas)
     environment:
       <<: *api-env
+      # ── Prometheus multiprocess (forks escrevem aqui, PAI serve HTTP) ──
+      WORKER_METRICS_PORT:        "9100"
+      PROMETHEUS_MULTIPROC_DIR:   "/tmp/prom_multiproc_celery"
     depends_on:
       pgbouncer:
         condition: service_healthy
@@ -304,8 +311,13 @@ services:
     restart: unless-stopped
 
   # ── Prometheus ───────────────────────────────────────────────────────────────
+  # Acessível externamente via nginx em https://${METRICS_DOMAIN} com basic auth.
+  # Internamente o api/worker NÃO falam com o Prometheus — só o nginx (proxy)
+  # e o Grafana (datasource).
   prometheus:
     image: prom/prometheus:v2.55.0
+    expose:
+      - "9090"   # interno: nginx + grafana
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - prometheus_data:/prometheus
@@ -313,6 +325,8 @@ services:
       - "--config.file=/etc/prometheus/prometheus.yml"
       - "--storage.tsdb.path=/prometheus"
       - "--storage.tsdb.retention.time=30d"
+      - "--web.external-url=https://${METRICS_DOMAIN:-metrics.localhost}"
+      - "--web.route-prefix=/"
     restart: unless-stopped
 
   # ── Grafana ──────────────────────────────────────────────────────────────────
@@ -326,6 +340,7 @@ services:
       GF_SERVER_ROOT_URL:         "http://localhost:3000"
     volumes:
       - grafana_data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
     depends_on:
       - prometheus
     restart: unless-stopped
