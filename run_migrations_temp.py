@@ -1,0 +1,66 @@
+#!/usr/bin/env python
+import sys
+from pathlib import Path
+import os
+
+# Carregar .env ANTES de importar config
+from dotenv import load_dotenv
+load_dotenv('api/.env')
+
+# Agora sim, rodar o script de migrations
+sys.path.insert(0, str(Path(__file__).parent / "api"))
+
+import asyncio
+import asyncpg
+from config import settings
+
+MIGRATIONS_DIR = Path(__file__).parent / "api" / "db" / "migrations"
+
+
+async def run():
+    db_url = settings.database_url_direct or settings.database_url
+    if "pgbouncer" in db_url:
+        print(
+            "ERRO: DATABASE_URL aponta para PgBouncer. Defina DATABASE_URL_DIRECT "
+            "apontando para postgres:5432.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+    print(f"  conn  {db_url.split('@')[-1]}")
+    try:
+        conn = await asyncpg.connect(db_url)
+    except Exception as e:
+        print(f"ERRO ao conectar ao banco: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    await conn.execute("""
+        CREATE TABLE IF NOT EXISTS public._migrations (
+            filename TEXT PRIMARY KEY,
+            applied_at TIMESTAMPTZ DEFAULT NOW()
+        )
+    """)
+
+    applied = {r["filename"] for r in await conn.fetch("SELECT filename FROM public._migrations")}
+
+    files = sorted(MIGRATIONS_DIR.glob("*.sql"))
+    for f in files:
+        if f.name in applied:
+            print(f"  skip  {f.name}")
+            continue
+        print(f"  apply {f.name} ...", end=" ", flush=True)
+        sql = f.read_text(encoding="utf-8")
+        try:
+            await conn.execute(sql)
+            await conn.execute("INSERT INTO public._migrations (filename) VALUES ($1)", f.name)
+            print("OK")
+        except Exception as e:
+            print(f"ERRO: {e}")
+            await conn.close()
+            sys.exit(1)
+
+    await conn.close()
+    print("Migrations concluídas.")
+
+
+if __name__ == "__main__":
+    asyncio.run(run())

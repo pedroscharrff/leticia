@@ -18,10 +18,12 @@ export interface CapabilityBlocker {
 export interface ConfigSchemaProperty {
   type: "boolean" | "integer" | "number" | "string";
   title?: string;
+  description?: string;
   default?: unknown;
   minimum?: number;
   maximum?: number;
   enum?: string[];
+  format?: "textarea" | string;
 }
 
 export interface ConfigSchema {

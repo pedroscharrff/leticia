@@ -166,6 +166,8 @@ docker compose logs -f worker  # logs do worker
 ### Nova migration de capability/skill (atalho)
 Padrão: usa `ON CONFLICT (key) DO UPDATE SET ...` para idempotência total. Veja `046_safety_guards_v2.sql` como template.
 
+⚠️ **Para setar `config_schema` aninhado (campo editável no modal de Recursos): use `jsonb_build_object` montando o objeto inteiro, NUNCA `jsonb_set(col, '{properties,x}', ...)`.** A coluna nasce `NOT NULL DEFAULT '{}'`, e `jsonb_set` não cria o pai `properties` quando ele não existe → NO-OP silencioso (campo não aparece no portal mesmo com a migration aplicada). Mordeu nas migs 051 e 057; corrigido na 058. Detalhes em SPEC 04 §"Adicionar campo de config editável" e SPEC 07 §"Não fazer".
+
 ---
 
 ## 7. Hotspots conhecidos (refatorar com cuidado)

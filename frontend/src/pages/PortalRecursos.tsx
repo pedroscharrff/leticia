@@ -179,19 +179,34 @@ function SchemaForm({ schema, value, onChange, disabled }: SchemaFormProps) {
           );
         }
 
+        const isTextarea = prop.format === "textarea";
         return (
           <div className="recursos-form__row recursos-form__row--col" key={key}>
             <label htmlFor={id} className="recursos-form__label">
               {prop.title ?? key}
             </label>
-            <input
-              id={id}
-              type="text"
-              className="recursos-form__input"
-              value={String(current)}
-              onChange={(e) => set(key, e.target.value)}
-              disabled={disabled}
-            />
+            {prop.description && (
+              <span className="recursos-form__hint">{prop.description}</span>
+            )}
+            {isTextarea ? (
+              <textarea
+                id={id}
+                className="recursos-form__input"
+                rows={3}
+                value={String(current)}
+                onChange={(e) => set(key, e.target.value)}
+                disabled={disabled}
+              />
+            ) : (
+              <input
+                id={id}
+                type="text"
+                className="recursos-form__input"
+                value={String(current)}
+                onChange={(e) => set(key, e.target.value)}
+                disabled={disabled}
+              />
+            )}
           </div>
         );
       })}

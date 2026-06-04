@@ -133,6 +133,34 @@ POST /portal/capabilities/{key}/toggle  → set_enabled(tenant, key, enabled, co
 
 Migration que faz `UPDATE capability_catalog SET default_enabled = TRUE WHERE key = '...'`. Tenants sem override imediatamente herdam.
 
+### Adicionar campo de config editável (aparece no modal de Recursos)
+
+O modal "Saber mais e configurar" (`PortalRecursos.tsx` → `SchemaForm`) renderiza `config_schema.properties`. Cada chave vira um campo (boolean→toggle, integer/number→input numérico, enum→select, string→input de texto; `"format":"textarea"`→textarea). O valor inicial vem de `default_config` (mesclado com override do tenant via `get_config`).
+
+⚠️ **Use `jsonb_build_object` para setar `config_schema`, NUNCA `jsonb_set` com path aninhado.** A coluna nasce `NOT NULL DEFAULT '{}'` — `jsonb_set(config_schema, '{properties,x}', ...)` é NO-OP silencioso quando `config_schema` é `{}` (o pai `properties` não existe e o `jsonb_set` só cria o elemento final). `COALESCE(config_schema, '{...}')` também não salva (nunca é NULL). Mordeu nas migs 051 e 057. Padrão correto:
+
+```sql
+UPDATE public.capability_catalog
+   SET config_schema = jsonb_build_object(
+         'type', 'object',
+         'properties', jsonb_build_object(
+           'meu_campo', jsonb_build_object(
+             'type', 'string', 'title', '...', 'description', '...',
+             'format', 'textarea', 'default', '...'
+           )
+         )
+       )
+ WHERE key = 'namespace.my_key';
+
+-- default_config pode usar || (funciona em '{}'):
+UPDATE public.capability_catalog
+   SET default_config = COALESCE(default_config, '{}'::jsonb)
+                        || jsonb_build_object('meu_campo', '...')
+ WHERE key = 'namespace.my_key' AND NOT (default_config ? 'meu_campo');
+```
+
+No código, leia com `cfg = await cap_svc.get_config(tenant_id, "namespace.my_key")` e use `cfg.get("meu_campo")`.
+
 ### Forçar gate em endpoint REST
 
 ```python
@@ -150,6 +178,7 @@ async def fn(user: TenantUserContext = Depends(require_tenant_user)):
 - **Não usar `is_enabled` em loop apertado sem cache local por turno** — embora seja cacheado em Redis, ainda há roundtrip. Para múltiplas checagens no mesmo turno, leia uma vez e armazene local (pattern usado em `vendedor.py`).
 - **Não confundir `enabled=False` (operador desligou) com "capability não existe"** (chave fora do catálogo). Ambos retornam False, mas tratamento de erro/UI deve diferenciar via `_load_tenant_state` retornar `None` vs `{enabled:False}`.
 - **Não jogar config sensível em `default_config`** — ele aparece pra todos os tenants. Use `requires_secret` + `tenant_secrets`.
+- **Não setar `config_schema` aninhado com `jsonb_set`** (vira NO-OP em `{}`). Use `jsonb_build_object` montando o objeto inteiro — ver "Adicionar campo de config editável". Sintoma do bug: campo não aparece no modal de Recursos mesmo com a migration "aplicada".
 - **Não puxar `category` do código** — pegue do catálogo. Categorias hoje: `inventory`, `sales`, `safety`, `delivery`, `payments`, `attendance`. Nova categoria? Migration + atualizar frontend.
 
 ## Testes manuais úteis
