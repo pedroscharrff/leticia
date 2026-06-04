@@ -177,7 +177,7 @@ async def _send_pre_handoff_offers(
     phone: str,
     channel_cfg: dict | None,
     text_sender,        # callable async (text: str) -> None  — texto para o cliente
-) -> None:
+) -> int:
     """Envia ofertas vigentes como mensagens SEPARADAS (após a mensagem
     principal de handoff já ter saído).
 
@@ -196,7 +196,7 @@ async def _send_pre_handoff_offers(
         from services import channel_media as cm
 
         if not await cap_svc.is_enabled(tenant_id, "sales.pre_handoff_offers"):
-            return
+            return 0
 
         cfg = await cap_svc.get_config(tenant_id, "sales.pre_handoff_offers") or {}
         limit  = int(cfg.get("max_offers", 3) or 3)
@@ -204,7 +204,7 @@ async def _send_pre_handoff_offers(
 
         offers = await offers_svc.get_active_offers(tenant_id, limit=limit)
         if not offers:
-            return
+            return 0
 
         text_only = [o for o in offers if not (o.get("media_url") and o.get("media_type"))]
         with_media = [o for o in offers if (o.get("media_url") and o.get("media_type"))]
@@ -255,9 +255,11 @@ async def _send_pre_handoff_offers(
             text_count=len(text_only),
             media_count=len(with_media),
         )
+        return len(with_media)
     except Exception as exc:  # noqa: BLE001
         log.warning("pre_handoff_offers.failed",
                     tenant=tenant_id, exc=str(exc))
+        return 0
 
 
 async def _send_post_handoff_messages(
@@ -274,12 +276,20 @@ async def _send_post_handoff_messages(
       - "summary_first"  (default) → resumo depois ofertas  [comportamento original]
       - "offers_first"             → ofertas depois resumo
 
+    ⚠️ Ordem de ENVIO ≠ ordem de ENTREGA: ofertas com mídia saem direto pela API
+    do canal (ex. ClickMassa), o resumo sai pelo `reply_url` (transportes
+    distintos), e o WhatsApp entrega mídia mais devagar que texto. Por isso, no
+    fluxo `offers_first`, quando a oferta tinha mídia, esperamos um intervalo
+    antes do resumo pra dar tempo da imagem aparecer primeiro. Configurável em
+    `handoff_config.post_handoff_media_delay_seconds` (default 2.5s, 0 desativa).
+
     Cada bloco é independente — falha num não cancela o outro.
     NUNCA levanta exceção.
     """
     from services.order_summary import send_order_summary
 
-    order = (channel_cfg or {}).get("post_handoff_order") or "summary_first"
+    cfg = channel_cfg or {}
+    order = cfg.get("post_handoff_order") or "summary_first"
 
     async def _do_summary() -> None:
         try:
@@ -293,8 +303,8 @@ async def _send_post_handoff_messages(
             log.warning("post_handoff.order_summary_failed",
                         tenant=tenant_id, exc=str(exc))
 
-    async def _do_offers() -> None:
-        await _send_pre_handoff_offers(
+    async def _do_offers() -> int:
+        return await _send_pre_handoff_offers(
             tenant_id,
             phone=phone,
             channel_cfg=channel_cfg,
@@ -302,7 +312,18 @@ async def _send_post_handoff_messages(
         )
 
     if order == "offers_first":
-        await _do_offers()
+        media_count = await _do_offers()
+        # Atraso só quando houve mídia: a imagem demora mais pra entregar no
+        # WhatsApp; sem isso o resumo (texto) ultrapassa a oferta (imagem).
+        if media_count and media_count > 0:
+            try:
+                delay = float(cfg.get("post_handoff_media_delay_seconds", 2.5))
+            except (TypeError, ValueError):
+                delay = 2.5
+            if delay > 0:
+                log.info("post_handoff.media_delay_before_summary",
+                         tenant=tenant_id, seconds=delay, media_count=media_count)
+                await asyncio.sleep(delay)
         await _do_summary()
     else:
         await _do_summary()

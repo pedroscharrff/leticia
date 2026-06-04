@@ -154,6 +154,17 @@ Quando `handoff_was_executed=True`, `_send_post_handoff_messages` despacha os do
 
 Cada bloco em try/except — falha num não cancela o outro nem derruba o handoff.
 
+⚠️ **Ordem de ENVIO ≠ ordem de ENTREGA.** Ofertas com mídia saem direto pela API
+do canal (ex. ClickMassa `base_url`); o resumo sai pelo `reply_url` (n8n/forward).
+Transportes distintos + WhatsApp entrega mídia mais devagar que texto = o resumo
+(texto) pode chegar antes da oferta (imagem) mesmo tendo sido enviado depois.
+Por isso, no fluxo `offers_first`, quando `_send_pre_handoff_offers` retornou
+`media_count > 0`, a helper espera `handoff_config.post_handoff_media_delay_seconds`
+(default 2.5s, 0 desativa) antes do resumo. `_send_pre_handoff_offers` passou a
+retornar `int` (qtd de mídias enviadas) justamente pra isso — não voltar a `None`.
+Em `summary_first` não há atraso: texto-antes-imagem já cai na ordem desejada
+naturalmente.
+
 ### Finalização determinística do atendimento (closed_at)
 
 O status "encerrado" do portal (inbox em `routers/conversations.py`) vem de `conversation_state.closed_at`. Regras:
