@@ -674,6 +674,21 @@ function TabTransferencia({ channel, onChanged }: { channel: Channel; onChanged:
         </small>
       </div>
 
+      <div className="drawer-row">
+        <label className="form-label">Ordem das mensagens após transferência</label>
+        <select
+          className="form-select"
+          value={cfg.post_handoff_order || "summary_first"}
+          onChange={(e) => set("post_handoff_order", e.target.value as "summary_first" | "offers_first")}
+        >
+          <option value="summary_first">Resumo do pedido → Ofertas</option>
+          <option value="offers_first">Ofertas → Resumo do pedido</option>
+        </select>
+        <small style={{ color: "#6b7280" }}>
+          Define qual mensagem o cliente recebe primeiro após a transferência ao balcão.
+        </small>
+      </div>
+
       {info && <div className="cliente-help">{info}</div>}
       {err && <div className="form-error">{err}</div>}
 
