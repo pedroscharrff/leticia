@@ -22,8 +22,25 @@ def get_llm_for_tenant(provider, model, api_key, base_url=None) -> BaseChatModel
 HAIKU         = ("anthropic", "claude-haiku-4-5-20251001")
 SONNET        = ("anthropic", "claude-sonnet-4-6")
 GEMINI_FLASH  = ("google", "gemini-2.0-flash")
+# GPT-4o family (128K ctx)
 GPT4O_MINI    = ("openai", "gpt-4o-mini")
 GPT4O         = ("openai", "gpt-4o")
+# GPT-4.1 family (1M ctx)
+GPT41_NANO    = ("openai", "gpt-4.1-nano")
+GPT41_MINI    = ("openai", "gpt-4.1-mini")
+GPT41         = ("openai", "gpt-4.1")
+# GPT-5 family (400K ctx)
+GPT5_NANO     = ("openai", "gpt-5-nano")
+GPT5_MINI     = ("openai", "gpt-5-mini")
+GPT5          = ("openai", "gpt-5")
+# GPT-5.4 / GPT-5.5 frontier (1M ctx)
+GPT54_MINI    = ("openai", "gpt-5.4-mini")
+GPT54         = ("openai", "gpt-5.4")
+GPT55         = ("openai", "gpt-5.5")
+# Reasoning (o-series, 200K ctx)
+O3_MINI       = ("openai", "o3-mini")
+O3            = ("openai", "o3")
+O4_MINI       = ("openai", "o4-mini")
 OLLAMA_LLAMA  = ("ollama", "llama3.2")
 
 # caching.py
@@ -159,6 +176,7 @@ Por enquanto Google cai no fallback "concat tudo".
 - **Não esquecer de chamar `_build_messages` com `volatile_prompt=...`** quando o skill tem estado por-turno. Default vazio → tudo cai no prefixo estável; **MAS** isso só ajuda se o caller manteve esse estado fora do `system_prompt`. A trava real está em separar `parts` vs `volatile_parts` ANTES de juntar.
 - **Não esquecer de incluir `tools` no `llm.bind_tools(tools)` ANTES do prefixo cacheado** — Anthropic cacheia tools junto com o prefixo. Mudar tools = cache miss.
 - **Não usar `langchain.ChatModel` genérico** — passe sempre por `get_llm` pro factory wirar provider/cache certo.
+- **Não passar `temperature` diretamente a modelos o1/o3/o4** — eles rejeitam o parâmetro e explodem em runtime. O factory já cuida disso; só é problema se alguém instanciar `ChatOpenAI` fora do factory.
 
 ## Métricas LLM (de olho)
 
@@ -172,13 +190,55 @@ Métrica de cache hit não está exposta. Caminho: tap em response Anthropic (`r
 
 ## Custo aproximado (referência interna)
 
+### OpenAI — GPT-4.1 family (1M ctx, knowledge cutoff Jun/2024)
+
+| Modelo | $/1M input (cached) | $/1M input | $/1M output |
+|---|---|---|---|
+| gpt-4.1-nano | $0.025 | $0.10 | $0.40 |
+| gpt-4.1-mini | $0.10 | $0.40 | $1.60 |
+| gpt-4.1 | $0.50 | $2.00 | $8.00 |
+
+### OpenAI — GPT-4o family (128K ctx)
+
+| Modelo | $/1M input (cached) | $/1M input | $/1M output |
+|---|---|---|---|
+| gpt-4o-mini | $0.075 | $0.15 | $0.60 |
+| gpt-4o | $1.25 | $2.50 | $10.00 |
+
+### OpenAI — GPT-5 family (400K ctx, knowledge cutoff Set/2024)
+
+| Modelo | $/1M input (cached) | $/1M input | $/1M output |
+|---|---|---|---|
+| gpt-5-nano | — | $0.05 | — |
+| gpt-5-mini | — | $0.25 | — |
+| gpt-5 | $0.125 | $1.25 | $10.00 |
+
+### OpenAI — GPT-5.4 / GPT-5.5 frontier (1M ctx)
+
+| Modelo | $/1M input | $/1M output |
+|---|---|---|
+| gpt-5.4-mini | $0.75 | $4.50 |
+| gpt-5.4 | $2.50 | $15.00 |
+| gpt-5.5 | $5.00 | $30.00 |
+
+### OpenAI — Reasoning / o-series (200K ctx, sem temperature)
+
+| Modelo | $/1M input (cached) | $/1M input | $/1M output |
+|---|---|---|---|
+| o3-mini | $0.55 | $1.10 | $4.40 |
+| o4-mini | $0.275 | $1.10 | $4.40 |
+| o3 | $0.50 | $2.00 | $8.00 |
+
+### Outros providers
+
 | Modelo | $/1M input (cached) | $/1M input | $/1M output |
 |---|---|---|---|
 | Claude Haiku 4.5 | $0.08 | $0.80 | $4.00 |
 | Claude Sonnet 4.6 | $0.30 | $3.00 | $15.00 |
-| GPT-4o mini | $0.075 | $0.15 | $0.60 |
 | Gemini 2.0 Flash | $0.0375 | $0.075 | $0.30 |
 
-(Preços públicos aproximados, sujeitos a mudança.)
+(Preços públicos em USD, sujeitos a mudança. Fonte: developers.openai.com/api/docs/models)
+
+⚠️ **Modelos de raciocínio (o1/o3/o4)**: não aceitam o parâmetro `temperature`. O factory `_build_llm` detecta automaticamente pelo prefixo do model id e omite `temperature` nesses casos. Não passar temperatura explicitamente para esses modelos fora do factory.
 
 Default da plataforma: Haiku para orchestrator/analyst (low cost, alto volume), Sonnet para skills (qualidade na resposta ao cliente).

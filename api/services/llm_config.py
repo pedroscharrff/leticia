@@ -12,8 +12,9 @@ from services.secrets import decrypt
 
 log = structlog.get_logger()
 
-# Models that belong to OpenAI and cannot be used with other providers
-_OPENAI_MODEL_PREFIXES = ("gpt-", "o1-", "o3-", "o4-", "chatgpt-")
+# Models that belong to OpenAI and cannot be used with other providers.
+# Include bare "o1"/"o3"/"o4" so models like "o3" (no dash) are also detected.
+_OPENAI_MODEL_PREFIXES = ("gpt-", "o1", "o3", "o4", "chatgpt-")
 # Models that belong to Anthropic
 _ANTHROPIC_MODEL_PREFIXES = ("claude-",)
 

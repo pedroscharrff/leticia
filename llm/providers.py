@@ -55,12 +55,15 @@ def _build_llm(
 
     if provider == "openai":
         from langchain_openai import ChatOpenAI
+        # Reasoning models (o1/o3/o4 family) reject the temperature parameter.
+        is_reasoning = model.startswith(("o1", "o3", "o4"))
+        extra = {} if is_reasoning else {"temperature": temp}
         return ChatOpenAI(
             model=model,
             api_key=api_key or settings.openai_api_key,
             timeout=timeout,
-            temperature=temp,
             max_retries=0,
+            **extra,
         )
 
     if provider == "ollama":
@@ -102,6 +105,24 @@ def get_llm_for_tenant(
 HAIKU = ("anthropic", "claude-haiku-4-5-20251001")
 SONNET = ("anthropic", "claude-sonnet-4-6")
 GEMINI_FLASH = ("google", "gemini-2.0-flash")
+# GPT-4o family (128K ctx)
 GPT4O_MINI = ("openai", "gpt-4o-mini")
 GPT4O = ("openai", "gpt-4o")
+# GPT-4.1 family (1M ctx)
+GPT41_NANO = ("openai", "gpt-4.1-nano")
+GPT41_MINI = ("openai", "gpt-4.1-mini")
+GPT41 = ("openai", "gpt-4.1")
+# GPT-5 family (400K ctx)
+GPT5_NANO = ("openai", "gpt-5-nano")
+GPT5_MINI = ("openai", "gpt-5-mini")
+GPT5 = ("openai", "gpt-5")
+# GPT-5.4 family (1M ctx, frontier)
+GPT54_MINI = ("openai", "gpt-5.4-mini")
+GPT54 = ("openai", "gpt-5.4")
+# GPT-5.5 — latest flagship (1M ctx)
+GPT55 = ("openai", "gpt-5.5")
+# Reasoning models (o-series, 200K ctx) — sem temperature
+O3_MINI = ("openai", "o3-mini")
+O3 = ("openai", "o3")
+O4_MINI = ("openai", "o4-mini")
 OLLAMA_LLAMA = ("ollama", "llama3.2")

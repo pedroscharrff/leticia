@@ -39,10 +39,26 @@ MODEL_CATALOG: dict[str, list[dict]] = {
         {"id": "claude-opus-4-7",           "label": "Claude Opus 4.7",   "tier": "smart",    "good_for": ["skill"]},
     ],
     "openai": [
-        {"id": "gpt-4o-mini",   "label": "GPT-4o mini", "tier": "fast",     "good_for": ["orchestrator", "analyst"]},
-        {"id": "gpt-4o",        "label": "GPT-4o",      "tier": "balanced", "good_for": ["skill"]},
-        {"id": "gpt-5-mini",    "label": "GPT-5 mini",  "tier": "fast",     "good_for": ["orchestrator", "analyst"]},
-        {"id": "gpt-5",         "label": "GPT-5",       "tier": "smart",    "good_for": ["skill"]},
+        # GPT-4.1 family — 1M context, instruction following / tool calling
+        {"id": "gpt-4.1-nano",  "label": "GPT-4.1 nano",  "tier": "fast",      "good_for": ["orchestrator", "analyst"]},
+        {"id": "gpt-4.1-mini",  "label": "GPT-4.1 mini",  "tier": "fast",      "good_for": ["orchestrator", "analyst"]},
+        {"id": "gpt-4.1",       "label": "GPT-4.1",       "tier": "balanced",  "good_for": ["skill"]},
+        # GPT-4o family — 128K context
+        {"id": "gpt-4o-mini",   "label": "GPT-4o mini",   "tier": "fast",      "good_for": ["orchestrator", "analyst"]},
+        {"id": "gpt-4o",        "label": "GPT-4o",        "tier": "balanced",  "good_for": ["skill"]},
+        # GPT-5 family — 400K context
+        {"id": "gpt-5-nano",    "label": "GPT-5 nano",    "tier": "fast",      "good_for": ["orchestrator", "analyst"]},
+        {"id": "gpt-5-mini",    "label": "GPT-5 mini",    "tier": "fast",      "good_for": ["orchestrator", "analyst"]},
+        {"id": "gpt-5",         "label": "GPT-5",         "tier": "smart",     "good_for": ["skill"]},
+        # GPT-5.4 family — 1M context, frontier
+        {"id": "gpt-5.4-mini",  "label": "GPT-5.4 mini",  "tier": "balanced",  "good_for": ["skill"]},
+        {"id": "gpt-5.4",       "label": "GPT-5.4",       "tier": "smart",     "good_for": ["skill"]},
+        # GPT-5.5 — latest frontier, 1M context
+        {"id": "gpt-5.5",       "label": "GPT-5.5",       "tier": "smart",     "good_for": ["skill"]},
+        # Reasoning models (o-series) — sem temperature, 200K context
+        {"id": "o3-mini",       "label": "o3-mini",       "tier": "reasoning", "good_for": ["skill"]},
+        {"id": "o3",            "label": "o3",            "tier": "reasoning", "good_for": ["skill"]},
+        {"id": "o4-mini",       "label": "o4-mini",       "tier": "reasoning", "good_for": ["skill"]},
     ],
     "google": [
         {"id": "gemini-2.0-flash", "label": "Gemini 2.0 Flash", "tier": "fast",     "good_for": ["orchestrator", "analyst", "skill"]},
