@@ -368,6 +368,164 @@ else
     warn "  Verifique: docker compose exec nginx nginx -t"
 fi
 
+# ── 1.7 Provisionamento incremental: Grafana + subdomínio grafana ────────────
+# Idempotente. Grafana TEM auth próprio — sem basic auth no nginx.
+step "1.7/5  Provisionando Grafana + subdomínio grafana (idempotente)"
+
+GRAFANA_DOMAIN="grafana.${BASE_DOMAIN}"
+GRAFANA_CONF="${SCRIPT_DIR}/nginx/grafana.conf"
+
+# ── 1.7.1 DNS check ──────────────────────────────────────────────────────────
+GRAFANA_IP=$(getent hosts "${GRAFANA_DOMAIN}" | awk '{print $1}' | head -1 || true)
+if [[ -z "$GRAFANA_IP" ]]; then
+    warn "DNS de ${GRAFANA_DOMAIN} ainda não propagado."
+    warn "Configure no registrador:  A  ${GRAFANA_DOMAIN}  →  ${SERVER_IP:-IP_DO_SERVIDOR}"
+    read -rp "  Continuar mesmo assim (cert + nginx só funcionarão após DNS)? [s/N]: " cont
+    [[ "${cont,,}" == "s" ]] || error "Configure o DNS e rode update.sh de novo."
+elif [[ -n "$SERVER_IP" && "$GRAFANA_IP" != "$SERVER_IP" ]]; then
+    warn "DNS de ${GRAFANA_DOMAIN} aponta para ${GRAFANA_IP}, mas este servidor é ${SERVER_IP}."
+    warn "Provavelmente é Cloudflare Proxy — se for, OK."
+else
+    success "DNS de ${GRAFANA_DOMAIN} aponta corretamente."
+fi
+
+# ── 1.7.2 Garante GRAFANA_PASSWORD + GRAFANA_ROOT_URL no .env ─────────────────
+# Se já tem GRAFANA_PASSWORD, preserva. Se tem METRICS_PASSWORD (do passo 1.6),
+# reusa (o usuário pediu mesma senha). Senão, gera nova.
+if ! grep -q "^GRAFANA_PASSWORD=" "$ENV_FILE"; then
+    if grep -q "^METRICS_PASSWORD=" "$ENV_FILE"; then
+        GRAFANA_PWD=$(grep "^METRICS_PASSWORD=" "$ENV_FILE" | tail -1 | cut -d= -f2- | tr -d "'\"")
+        info "Reusando METRICS_PASSWORD do .env como senha do Grafana."
+    else
+        GRAFANA_PWD=$(openssl rand -hex 16)
+        info "Gerada senha aleatória do Grafana."
+    fi
+    {
+        echo ""
+        echo "# ─── Grafana (adicionado por update.sh) ───"
+        echo "GRAFANA_PASSWORD='${GRAFANA_PWD}'"
+        echo "GRAFANA_ROOT_URL='https://${GRAFANA_DOMAIN}'"
+    } >> "$ENV_FILE"
+    chmod 600 "$ENV_FILE"
+    success "GRAFANA_PASSWORD/ROOT_URL adicionados ao .env"
+else
+    # Garante GRAFANA_ROOT_URL mesmo se GRAFANA_PASSWORD já existia
+    if ! grep -q "^GRAFANA_ROOT_URL=" "$ENV_FILE"; then
+        echo "GRAFANA_ROOT_URL='https://${GRAFANA_DOMAIN}'" >> "$ENV_FILE"
+        chmod 600 "$ENV_FILE"
+    fi
+    info "GRAFANA_PASSWORD já existe — preservando."
+fi
+
+# ── 1.7.3 Expande cert SSL pra cobrir grafana.${DOMAIN} ──────────────────────
+CERT_COVERS_GRAFANA=false
+if docker compose run --rm --entrypoint sh certbot -c \
+    "openssl x509 -in ${CERT_PATH} -noout -text 2>/dev/null | grep -q ${GRAFANA_DOMAIN}"; then
+    CERT_COVERS_GRAFANA=true
+fi
+
+if [[ "$CERT_COVERS_GRAFANA" == "true" ]]; then
+    success "Certificado SSL já cobre ${GRAFANA_DOMAIN}."
+else
+    info "Expandindo cert SSL pra incluir ${GRAFANA_DOMAIN}..."
+    # Inclui TODOS os subdomínios que já estão no cert atual + grafana.
+    # Certbot exige que o --expand traga a lista COMPLETA de SANs novos.
+    EXPAND_DOMAINS=("-d" "${API_DOMAIN}" "-d" "${ADMIN_DOMAIN}" "-d" "${STORAGE_DOMAIN}" "-d" "${GRAFANA_DOMAIN}")
+    if docker compose run --rm --entrypoint sh certbot -c \
+        "openssl x509 -in ${CERT_PATH} -noout -text 2>/dev/null | grep -q metrics.${BASE_DOMAIN}"; then
+        EXPAND_DOMAINS+=("-d" "metrics.${BASE_DOMAIN}")
+    fi
+    if ! timeout 180 docker compose run --rm --entrypoint certbot certbot certonly \
+        --webroot --webroot-path=/var/www/certbot \
+        --expand --non-interactive --agree-tos \
+        --cert-name "${API_DOMAIN}" \
+        "${EXPAND_DOMAINS[@]}"; then
+        warn "Falha ao expandir cert p/ ${GRAFANA_DOMAIN}. Tente manualmente depois."
+    else
+        success "Certificado expandido"
+    fi
+fi
+
+# ── 1.7.4 Escreve grafana.conf (vhost nginx) ─────────────────────────────────
+# Sem basic auth — Grafana tem auth próprio. WebSocket upgrade pra live updates.
+if [[ ! -f "$GRAFANA_CONF" ]] || ! grep -q "${GRAFANA_DOMAIN}" "$GRAFANA_CONF" 2>/dev/null \
+   || grep -q "^# PLACEHOLDER" "$GRAFANA_CONF" 2>/dev/null; then
+    info "Escrevendo ${GRAFANA_CONF}..."
+    cat > "$GRAFANA_CONF" << EOF
+# ─── Gerado por update.sh ─────────────────────────────────────────────────────
+# https://${GRAFANA_DOMAIN} → Grafana (auth do Grafana, não basic auth nginx)
+
+server {
+    listen 443 ssl http2;
+    server_name ${GRAFANA_DOMAIN};
+
+    ssl_certificate     /etc/letsencrypt/live/${API_DOMAIN}/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/${API_DOMAIN}/privkey.pem;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_ciphers         ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384;
+    ssl_session_cache   shared:SSL:10m;
+    ssl_session_timeout 1d;
+
+    add_header Strict-Transport-Security "max-age=63072000; includeSubDomains; preload" always;
+    add_header X-Content-Type-Options    nosniff                                         always;
+
+    # Grafana faz upload de dashboards JSON grandes — 32M de folga
+    client_max_body_size 32M;
+
+    resolver 127.0.0.11 valid=10s ipv6=off;
+
+    # Live updates (WebSocket) — caminho /api/live/ws precisa de upgrade
+    location /api/live/ {
+        set \$upstream_grafana grafana:3000;
+        proxy_pass            http://\$upstream_grafana;
+        proxy_http_version    1.1;
+        proxy_set_header      Host              \$host;
+        proxy_set_header      Upgrade           \$http_upgrade;
+        proxy_set_header      Connection        "upgrade";
+        proxy_set_header      X-Real-IP         \$remote_addr;
+        proxy_set_header      X-Forwarded-For   \$proxy_add_x_forwarded_for;
+        proxy_set_header      X-Forwarded-Proto \$scheme;
+    }
+
+    location / {
+        set \$upstream_grafana grafana:3000;
+        proxy_pass            http://\$upstream_grafana;
+        proxy_http_version    1.1;
+        proxy_set_header      Host              \$host;
+        proxy_set_header      X-Real-IP         \$remote_addr;
+        proxy_set_header      X-Forwarded-For   \$proxy_add_x_forwarded_for;
+        proxy_set_header      X-Forwarded-Proto \$scheme;
+        proxy_read_timeout    60s;
+    }
+}
+
+server {
+    listen 80;
+    server_name ${GRAFANA_DOMAIN};
+    location /.well-known/acme-challenge/ { root /var/www/certbot; try_files \$uri =404; }
+    location / { return 301 https://\$host\$request_uri; }
+}
+EOF
+    success "grafana.conf escrito"
+else
+    info "grafana.conf já existe — preservando."
+fi
+
+# ── 1.7.5 Recria Grafana pra pegar GF_SERVER_ROOT_URL atualizado ────────────
+# `up -d --force-recreate` é necessário porque env vars só são lidas no boot;
+# se GRAFANA_ROOT_URL acabou de mudar, sem recreate o Grafana ainda serve
+# com a URL antiga (afeta links de share, OAuth redirect, e-mails).
+info "Recriando Grafana com nova GF_SERVER_ROOT_URL=https://${GRAFANA_DOMAIN}..."
+docker compose up -d --no-deps --force-recreate grafana
+
+# ── 1.7.6 Reload nginx ──────────────────────────────────────────────────────
+if docker compose exec -T nginx nginx -t &>/dev/null; then
+    docker compose exec -T nginx nginx -s reload
+    success "nginx recarregado (vhost ${GRAFANA_DOMAIN} ativo)"
+else
+    warn "nginx -t falhou — config NÃO recarregada. Veja: docker compose exec nginx nginx -t"
+fi
+
 # ── 2. Build apenas das imagens da aplicação ──────────────────────────────────
 step "2/5  Fazendo build das imagens"
 
@@ -467,4 +625,5 @@ echo -e "  Logs em tempo real:  ${CYAN}docker compose logs -f api${NC}"
 echo -e "  Workers:             ${CYAN}docker compose logs -f worker${NC}"
 echo -e "  Beat (scheduler):    ${CYAN}docker compose logs -f beat${NC}"
 echo -e "  Métricas:            ${CYAN}https://${METRICS_DOMAIN}${NC}  (basic auth: cat .env | grep METRICS_)"
+echo -e "  Grafana:             ${CYAN}https://${GRAFANA_DOMAIN}${NC}  (admin / cat .env | grep GRAFANA_PASSWORD)"
 echo

@@ -75,6 +75,7 @@ services:
     volumes:
       - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
       - ./nginx/metrics.conf:/etc/nginx/conf.d/metrics.conf:ro
+      - ./nginx/grafana.conf:/etc/nginx/conf.d/grafana.conf:ro
       - ./nginx/htpasswd:/etc/nginx/htpasswd:ro    # basic auth p/ metrics.*
       - certbot_certs:/etc/letsencrypt:ro          # certificados SSL
       - certbot_www:/var/www/certbot:ro             # webroot para ACME challenge
@@ -337,7 +338,10 @@ services:
     environment:
       GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD}
       GF_USERS_ALLOW_SIGN_UP:     "false"
-      GF_SERVER_ROOT_URL:         "http://localhost:3000"
+      # Domain público (servido pelo nginx em https://grafana.${DOMAIN}).
+      # Fallback p/ localhost mantém SSH tunnel funcionando em dev.
+      GF_SERVER_ROOT_URL:         ${GRAFANA_ROOT_URL:-http://localhost:3000}
+      GF_SERVER_SERVE_FROM_SUB_PATH: "false"
     volumes:
       - grafana_data:/var/lib/grafana
       - ./grafana/provisioning:/etc/grafana/provisioning:ro
