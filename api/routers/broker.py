@@ -247,6 +247,30 @@ async def _own_outbound(target_id: str, tenant_id: str) -> dict:
     return dict(row)
 
 
+def _as_jsonb(value: Any, *, default: Any = None):
+    """Coerce um valor de coluna jsonb pra dict/list nativo.
+
+    Blindagem contra double-encoding legado (ver [[jsonb-double-encoding]]): se a
+    coluna foi gravada como JSON string ("{...}"), o codec do asyncpg devolve uma
+    `str` Python em vez de dict/list. Aqui desempacotamos (json.loads) até no
+    máximo 2 níveis. Nunca levanta — em qualquer falha cai no `default`.
+    """
+    if default is None:
+        default = {}
+    if value is None:
+        return default
+    seen = 0
+    while isinstance(value, str) and seen < 2:
+        try:
+            value = json.loads(value)
+        except Exception:
+            return default
+        seen += 1
+    if isinstance(value, (dict, list)):
+        return value
+    return default
+
+
 def _integration_out(row: dict, ingest_url: str) -> IntegrationOut:
     return IntegrationOut(
         id=str(row["id"]),
@@ -258,19 +282,19 @@ def _integration_out(row: dict, ingest_url: str) -> IntegrationOut:
         has_secret=bool(row.get("hmac_secret")),
         enabled=row["enabled"],
         inbound_url=ingest_url,
-        inbound_field_map=row.get("inbound_field_map") or {},
+        inbound_field_map=_as_jsonb(row.get("inbound_field_map")),
         reply_mode=row.get("reply_mode") or "response",
         reply_url=row.get("reply_url"),
         reply_method=row.get("reply_method") or "POST",
-        reply_headers=row.get("reply_headers") or {},
-        reply_body_template=row.get("reply_body_template") or {},
+        reply_headers=_as_jsonb(row.get("reply_headers")),
+        reply_body_template=_as_jsonb(row.get("reply_body_template")),
         reply_status_code=row.get("reply_status_code") or 200,
         bundle_enabled=bool(row.get("bundle_enabled")),
         bundle_window_seconds=row.get("bundle_window_seconds") or 10,
-        skip_rules=row.get("skip_rules") or [],
-        handoff_config=row.get("handoff_config") or {},
-        session_config=row.get("session_config") or {},
-        config_json=row.get("config_json") or {},
+        skip_rules=_as_jsonb(row.get("skip_rules"), default=[]),
+        handoff_config=_as_jsonb(row.get("handoff_config")),
+        session_config=_as_jsonb(row.get("session_config")),
+        config_json=_as_jsonb(row.get("config_json")),
     )
 
 
