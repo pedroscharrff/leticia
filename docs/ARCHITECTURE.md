@@ -138,7 +138,7 @@ Mensagens picadas em sequência rápida são agrupadas via **debounce/bundling**
    - palavra-chave do `handoff_config.trigger_keywords`
    - Se sim → `transfer_to_human` (POST no provider, ex. ClickMassa) + `auto_pause_after_handoff` (default 4h)
 8. POST callback / forward `reply_url` com `reply_body_template` aplicado
-9. **Pós-handoff** (se executou): `send_order_summary` (capability) + `_send_pre_handoff_offers` (capability) em mensagens separadas
+9. **Pós-handoff** (se executou): `_send_post_handoff_messages` — resumo + ofertas em mensagens separadas; ordem controlada por `handoff_config.post_handoff_order` (`"summary_first"` default, `"offers_first"` para inverter)
 10. `persist_trace` em `{schema}.agent_traces` com latência, error, steps
 
 ### 4.3. Grafo (LangGraph)

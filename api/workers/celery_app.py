@@ -260,6 +260,55 @@ async def _send_pre_handoff_offers(
                     tenant=tenant_id, exc=str(exc))
 
 
+async def _send_post_handoff_messages(
+    tenant_id: str,
+    *,
+    phone: str,
+    cart,
+    channel_cfg: dict | None,
+    text_sender,
+) -> None:
+    """Envia resumo do pedido e ofertas pré-handoff na ordem configurada.
+
+    Ordem controlada por `handoff_config.post_handoff_order`:
+      - "summary_first"  (default) → resumo depois ofertas  [comportamento original]
+      - "offers_first"             → ofertas depois resumo
+
+    Cada bloco é independente — falha num não cancela o outro.
+    NUNCA levanta exceção.
+    """
+    from services.order_summary import send_order_summary
+
+    order = (channel_cfg or {}).get("post_handoff_order") or "summary_first"
+
+    async def _do_summary() -> None:
+        try:
+            await send_order_summary(
+                tenant_id,
+                phone=phone,
+                cart=cart,
+                text_sender=text_sender,
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.warning("post_handoff.order_summary_failed",
+                        tenant=tenant_id, exc=str(exc))
+
+    async def _do_offers() -> None:
+        await _send_pre_handoff_offers(
+            tenant_id,
+            phone=phone,
+            channel_cfg=channel_cfg,
+            text_sender=text_sender,
+        )
+
+    if order == "offers_first":
+        await _do_offers()
+        await _do_summary()
+    else:
+        await _do_summary()
+        await _do_offers()
+
+
 # ── Session close keyword + auto-reset ──────────────────────────────────────
 
 async def _maybe_close_or_reset_session(
@@ -721,22 +770,10 @@ async def _run_graph(
                         "kind": "pre_handoff_offer",
                     },
                 )
-            # Resumo do pedido (capability-gated; antes das ofertas).
-            # Usa snapshot do pedido fechado (cart já foi esvaziado pela tool).
-            try:
-                from services.order_summary import send_order_summary
-                await send_order_summary(
-                    tenant_id,
-                    phone=phone,
-                    cart=_cart_for_summary(final_state),
-                    text_sender=_send_text,
-                )
-            except Exception as exc:  # noqa: BLE001
-                log.warning("webhook.order_summary_failed",
-                            tenant=tenant_id, exc=str(exc))
-            await _send_pre_handoff_offers(
+            await _send_post_handoff_messages(
                 tenant_id,
                 phone=phone,
+                cart=_cart_for_summary(final_state),
                 channel_cfg=handoff_cfg,
                 text_sender=_send_text,
             )
@@ -1257,22 +1294,10 @@ async def _run_broker_flow(
                 await client.request(method, integration["reply_url"],
                                      json=body, headers=headers)
 
-        # Resumo do pedido (capability-gated; antes das ofertas).
-        # Usa snapshot do pedido fechado (cart já foi esvaziado pela tool).
-        try:
-            from services.order_summary import send_order_summary
-            await send_order_summary(
-                tenant_id,
-                phone=phone_clean,
-                cart=_cart_for_summary(final_state),
-                text_sender=_send_text,
-            )
-        except Exception as exc:  # noqa: BLE001
-            log.warning("broker.order_summary_failed",
-                        tenant=tenant_id, exc=str(exc))
-        await _send_pre_handoff_offers(
+        await _send_post_handoff_messages(
             tenant_id,
             phone=phone_clean,
+            cart=_cart_for_summary(final_state),
             channel_cfg=handoff_cfg,
             text_sender=_send_text,
         )

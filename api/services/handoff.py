@@ -21,7 +21,8 @@ Config esperada (campo `handoff_config` em public.tenant_integrations):
         "token": "<jwt>",
         "queue_id": 4,
         "transfer_message": "Vou te transferir...",
-        "trigger_keywords": ["atendente", "humano", "balcão"]
+        "trigger_keywords": ["atendente", "humano", "balcão"],
+        "post_handoff_order": "summary_first"  // ou "offers_first" para inverter
     }
 """
 from __future__ import annotations

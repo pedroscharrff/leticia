@@ -145,11 +145,14 @@ Mesma lógica em `anotar_pedido_balcao` (pré-atendimento) mas trigger via `esca
 
 ### Pre-handoff offers + order summary
 
-Quando `handoff_was_executed=True`:
-1. Pre: `send_order_summary` (capability `sales.order_summary`) — formata recibo do pedido fechado
-2. Pre: `_send_pre_handoff_offers` (capability `sales.pre_handoff_offers`) — envia ofertas vigentes
+Quando `handoff_was_executed=True`, `_send_post_handoff_messages` despacha os dois blocos:
 
-Cada um em try/except — falha aqui não derruba o handoff.
+| Campo `handoff_config.post_handoff_order` | Ordem de envio |
+|---|---|
+| `"summary_first"` (default — não quebra tenants existentes) | resumo → ofertas |
+| `"offers_first"` | ofertas → resumo |
+
+Cada bloco em try/except — falha num não cancela o outro nem derruba o handoff.
 
 ### Finalização determinística do atendimento (closed_at)
 
