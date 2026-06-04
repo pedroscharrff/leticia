@@ -271,6 +271,25 @@ else
     info "htpasswd já existe — preservando credenciais."
 fi
 
+# ── 1.6.2.5 Pré-cria metrics.conf SÓ COM :80 ACME ────────────────────────────
+# Garante que nginx tenha server_name pra metrics.${DOMAIN} ANTES do certbot
+# expandir (mesmo padrão que grafana.conf abaixo).
+if [[ ! -f "$METRICS_CONF" ]] || ! grep -q "${METRICS_DOMAIN}" "$METRICS_CONF" 2>/dev/null; then
+    info "Escrevendo metrics.conf temporário (:80 ACME only) pra cert expansion..."
+    cat > "$METRICS_CONF" << EOF
+# ─── TEMPORÁRIO (update.sh) — sobrescrito após certbot expandir ─────────────
+server {
+    listen 80;
+    server_name ${METRICS_DOMAIN};
+    location /.well-known/acme-challenge/ { root /var/www/certbot; try_files \$uri =404; }
+    location / { return 200 "Awaiting SSL...\n"; }
+}
+EOF
+    docker compose exec -T nginx nginx -s reload 2>/dev/null \
+        || docker compose restart nginx
+    sleep 2
+fi
+
 # ── 1.6.3 Expande certificado SSL para cobrir metrics.${DOMAIN} ──────────────
 CERT_COVERS_METRICS=false
 if docker compose run --rm --entrypoint sh certbot -c \
@@ -297,8 +316,9 @@ fi
 # ── 1.6.4 Garante metrics.conf (vhost nginx do Prometheus) ───────────────────
 # Não bate com default.conf porque está em arquivo separado. nginx carrega
 # tudo em /etc/nginx/conf.d/*.conf automaticamente.
-if [[ ! -f "$METRICS_CONF" ]] || ! grep -q "${METRICS_DOMAIN}" "$METRICS_CONF" 2>/dev/null; then
-    info "Escrevendo ${METRICS_CONF}..."
+if [[ ! -f "$METRICS_CONF" ]] || grep -q "^# ─── TEMPORÁRIO" "$METRICS_CONF" 2>/dev/null \
+   || ! grep -q "listen 443" "$METRICS_CONF" 2>/dev/null; then
+    info "Escrevendo ${METRICS_CONF} (vhost completo HTTPS)..."
     cat > "$METRICS_CONF" << EOF
 # ─── Gerado por update.sh ─────────────────────────────────────────────────────
 # https://${METRICS_DOMAIN} → Prometheus (basic auth via /etc/nginx/htpasswd)
@@ -417,6 +437,28 @@ else
     info "GRAFANA_PASSWORD já existe — preservando."
 fi
 
+# ── 1.7.2.5 Pré-cria grafana.conf SÓ COM :80 ACME ────────────────────────────
+# Sem isso, no momento do `certbot --expand` o nginx não tem server_name pra
+# grafana.${DOMAIN} → Let's Encrypt chega no http://grafana.../.well-known/...,
+# nginx faz 301 pra https → 443 sem cert → handshake fail → challenge falha.
+# Esta config é temporária e sobrescrita em 1.7.4 com o vhost completo.
+if [[ ! -f "$GRAFANA_CONF" ]] || grep -q "^# PLACEHOLDER" "$GRAFANA_CONF" 2>/dev/null \
+   || ! grep -q "${GRAFANA_DOMAIN}" "$GRAFANA_CONF" 2>/dev/null; then
+    info "Escrevendo grafana.conf temporário (:80 ACME only) pra cert expansion..."
+    cat > "$GRAFANA_CONF" << EOF
+# ─── TEMPORÁRIO (update.sh) — sobrescrito após certbot expandir ─────────────
+server {
+    listen 80;
+    server_name ${GRAFANA_DOMAIN};
+    location /.well-known/acme-challenge/ { root /var/www/certbot; try_files \$uri =404; }
+    location / { return 200 "Awaiting SSL...\n"; }
+}
+EOF
+    docker compose exec -T nginx nginx -s reload 2>/dev/null \
+        || docker compose restart nginx
+    sleep 2
+fi
+
 # ── 1.7.3 Expande cert SSL pra cobrir grafana.${DOMAIN} ──────────────────────
 CERT_COVERS_GRAFANA=false
 if docker compose run --rm --entrypoint sh certbot -c \
@@ -448,9 +490,9 @@ fi
 
 # ── 1.7.4 Escreve grafana.conf (vhost nginx) ─────────────────────────────────
 # Sem basic auth — Grafana tem auth próprio. WebSocket upgrade pra live updates.
-if [[ ! -f "$GRAFANA_CONF" ]] || ! grep -q "${GRAFANA_DOMAIN}" "$GRAFANA_CONF" 2>/dev/null \
-   || grep -q "^# PLACEHOLDER" "$GRAFANA_CONF" 2>/dev/null; then
-    info "Escrevendo ${GRAFANA_CONF}..."
+if [[ ! -f "$GRAFANA_CONF" ]] || grep -q "^# PLACEHOLDER\|^# ─── TEMPORÁRIO" "$GRAFANA_CONF" 2>/dev/null \
+   || ! grep -q "listen 443" "$GRAFANA_CONF" 2>/dev/null; then
+    info "Escrevendo ${GRAFANA_CONF} (vhost completo HTTPS)..."
     cat > "$GRAFANA_CONF" << EOF
 # ─── Gerado por update.sh ─────────────────────────────────────────────────────
 # https://${GRAFANA_DOMAIN} → Grafana (auth do Grafana, não basic auth nginx)
