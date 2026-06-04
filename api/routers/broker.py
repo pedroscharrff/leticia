@@ -793,12 +793,12 @@ async def create_integration(body: IntegrationIn, request: Request, user: Tenant
                 """
                 INSERT INTO public.tenant_integrations
                   (tenant_id, slug, name, direction, hmac_secret, hmac_header, hmac_algorithm, enabled, config_json)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
                 RETURNING *
                 """,
                 user.tenant_id, body.slug, body.name, body.direction,
                 body.hmac_secret, body.hmac_header, body.hmac_algorithm, body.enabled,
-                json.dumps(body.config_json or {}),
+                body.config_json or {},
             )
         except Exception as exc:
             if "duplicate" in str(exc).lower() or "unique" in str(exc).lower():
