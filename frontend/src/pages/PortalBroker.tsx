@@ -1166,6 +1166,9 @@ function HandoffTab({ integration, onSaved }: { integration: Integration; onSave
       : DEFAULT_TRIGGER_KEYWORDS
     ).join(", ")
   );
+  const [postHandoffOrder, setPostHandoffOrder] = useState<"summary_first" | "offers_first">(
+    cfg.post_handoff_order === "offers_first" ? "offers_first" : "summary_first"
+  );
 
   // ── Encerrar atendimento (session_config) ─────────────────────────────────
   const sessCfg = integration.session_config || {};
@@ -1199,6 +1202,7 @@ function HandoffTab({ integration, onSaved }: { integration: Integration; onSave
       ? c.trigger_keywords
       : DEFAULT_TRIGGER_KEYWORDS
     ).join(", "));
+    setPostHandoffOrder(c.post_handoff_order === "offers_first" ? "offers_first" : "summary_first");
     const s = integration.session_config || {};
     setCloseKeywordsText((s.close_keywords && s.close_keywords.length
       ? s.close_keywords
@@ -1227,6 +1231,7 @@ function HandoffTab({ integration, onSaved }: { integration: Integration; onSave
       queue_id: queueId.trim() ? Number(queueId.trim()) : undefined,
       transfer_message: transferMessage.trim(),
       trigger_keywords: parseKeywords(),
+      post_handoff_order: postHandoffOrder,
     };
     try {
       // Reaproveita o saveFlow — passa os demais campos da integração sem alteração
@@ -1386,6 +1391,22 @@ function HandoffTab({ integration, onSaved }: { integration: Integration; onSave
             uma destas palavras (case-insensitive), a transferência é disparada antes
             mesmo do agente responder. Deixe vazio para depender apenas do escalate
             do agente.
+          </small>
+        </label>
+
+        <label className="broker-field">
+          <span>Ordem das mensagens enviadas após a transferência</span>
+          <select
+            value={postHandoffOrder}
+            onChange={(e) => setPostHandoffOrder(e.target.value as "summary_first" | "offers_first")}
+          >
+            <option value="summary_first">Resumo do pedido primeiro, depois as ofertas</option>
+            <option value="offers_first">Ofertas primeiro, depois o resumo do pedido</option>
+          </select>
+          <small style={{ color: "#86868b", fontSize: 12 }}>
+            Após a transferência ao balcão, o cliente recebe o resumo do pedido e as
+            ofertas vigentes em mensagens separadas. Escolha qual vem primeiro. Cada
+            bloco só é enviado se a respectiva funcionalidade estiver ativa.
           </small>
         </label>
       </div>

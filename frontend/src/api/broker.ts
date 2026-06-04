@@ -47,6 +47,7 @@ export interface HandoffConfig {
   queue_id?: number | string;
   transfer_message?: string;
   trigger_keywords?: string[];
+  post_handoff_order?: "summary_first" | "offers_first";
 }
 
 export interface FlowConfig {
