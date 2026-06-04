@@ -104,7 +104,7 @@ POST /portal/capabilities/{key}/toggle  → set_enabled(tenant, key, enabled, co
 | `sales.stock_check` | ON | basic | Vendedor consulta estoque real |
 | `sales.cross_sell` | OFF | pro | Sugere complementos via product_relations |
 | `sales.pre_handoff_offers` | OFF | basic | Manda ofertas vigentes ANTES de transferir |
-| `sales.pharmacist_validation` | OFF | basic | Pré-atendimento: vendedor roteia medicamento ao farmacêutico p/ validar na bula antes de anotar (requer farmacêutico ativo) |
+| `sales.pharmacist_validation` | OFF | basic | Pré-atendimento: medicamento nomeado vai ao farmacêutico p/ validar na bula antes de anotar (requer farmacêutico ativo). Config `not_found_message` (editável): frase enviada ao cliente quando o remédio não está no bulário da ANVISA — pede dosagem/apresentação em vez de inventar (mig 056) |
 | `safety.availability_guard` | ON | basic | Detecta produto inventado pelo LLM |
 | `safety.price_guard` | ON | basic | Cruza preço citado com catálogo |
 | `safety.prescription_guard` | ON | basic | Bloqueia "não precisa receita" sobre tarja |

@@ -27,9 +27,16 @@ def _format_row(r: dict) -> str:
     return f"• {nome} | princípio ativo: {pa} | fabricante: {raz} | classe: {cls_txt}"
 
 
-def make_consultar_bula_tool():
+def make_consultar_bula_tool(not_found_message: str | None = None):
     """
     Factory — retorna a tool. Sem closure de tenant porque a base é global.
+
+    Args:
+        not_found_message: quando fornecido, o "nada encontrado" passa a
+            instruir o agente a NÃO inventar dosagem/apresentação e a perguntar
+            ao cliente usando exatamente esta frase (guard-rail de pré-atendimento,
+            configurável por tenant via `sales.pharmacist_validation`). Quando
+            None, mantém o comportamento histórico (mensagem genérica).
 
     Existe como factory para consistência com as outras tools do projeto
     (inventory, customer, balcao) e para facilitar mock em testes.
@@ -60,6 +67,20 @@ def make_consultar_bula_tool():
             )
 
         if not rows:
+            # Guard-rail: medicamento não está no bulário da ANVISA. O agente
+            # NÃO pode inventar apresentação/dosagem nem afirmar disponibilidade.
+            # Quando o tenant configurou a validação farmacêutica, devolvemos a
+            # frase EXATA que o agente deve dizer ao cliente para coletar a
+            # dosagem/apresentação desejada.
+            if not_found_message:
+                log.info("tool.consultar_bula.not_found_guardrail", termo=termo)
+                return (
+                    f"BULÁRIO: nenhum registro para '{termo}' na ANVISA. NÃO invente "
+                    f"dosagem, apresentação ou marca, e NÃO diga que a farmácia tem "
+                    f"ou não tem. Responda ao cliente EXATAMENTE com esta frase "
+                    f"(adapte só o nome do remédio se fizer sentido): "
+                    f"\"{not_found_message}\""
+                )
             return f"Nenhum medicamento encontrado no bulário para '{termo}'."
 
         lines = [f"Bulário ANVISA — '{termo}':"]

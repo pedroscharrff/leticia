@@ -15,6 +15,14 @@ from agents.tools.inventory import make_inventory_tool
 
 log = structlog.get_logger()
 
+# Frase padrão quando o medicamento não está no bulário da ANVISA (guard-rail
+# de validação farmacêutica). Pode ser sobrescrita por tenant via o config da
+# capability `sales.pharmacist_validation` → chave `not_found_message`.
+_DEFAULT_NOT_FOUND_MESSAGE = (
+    "Não localizei esse medicamento na minha base. Qual a dosagem e a "
+    "apresentação que você gostaria? Assim já deixo anotado para o balcão."
+)
+
 _SYSTEM = """\
 [ESPECIALIDADE ATUAL: orientação farmacêutica]
 
@@ -56,8 +64,9 @@ Quando o cliente nomeia um medicamento para COMPRAR ("quero dipirona",
      500mg comprimido. Posso anotar para você?"
    • Mais de uma → apresente as opções em UMA frase: "A Dipirona vem em
      500mg comprimido ou gotas. Qual você prefere?"
-   • Medicamento não encontrado na bula → ofereça alternativa pelo
-     princípio ativo, breve, e pergunte se serve.
+   • A tool retornou que NÃO há registro no bulário → NÃO invente
+     apresentação, dosagem nem alternativa. Siga a instrução que a própria
+     tool devolveu (perguntar ao cliente a dosagem/apresentação desejada).
 3. Quando o cliente CONFIRMAR a apresentação/dosagem → passe para o
    vendedor anotar o pedido:
    [[HANDOFF:vendedor:Dipirona 500mg comprimido]]
@@ -104,8 +113,9 @@ bula antes de anotar. Neste caso específico:
 1) Chame `consultar_bula(nome_base)`.
 2) Responda DIRETO ao cliente em 1-2 frases — NÃO faça handoff de volta.
    • Apresentação confere → confirme naturalmente e siga a coleta.
-   • Não confere → ofereça as reais e pergunte qual prefere.
-   • Nome inexistente → ofereça alternativa e pergunte se serve.
+   • Não confere → ofereça as apresentações reais e pergunte qual prefere.
+   • Sem registro no bulário → NÃO invente; siga a instrução que a tool
+     devolveu (perguntar a dosagem/apresentação desejada ao cliente).
 
 • Dúvida conceitual ("posso tomar com cerveja?") — responda e encerre.
 • Pergunta de informação pura ("qual a dose máxima?") — responda e encerre.
@@ -257,15 +267,28 @@ async def farmaceutico_node(state: AgentState, llm_factory) -> AgentState:
     schema_name = state.get("schema_name")
     cart        = state.get("cart") or {}
 
-    tools = [make_consultar_bula_tool(), make_consultar_bula_secao_tool()]
     base_system = _SYSTEM
 
+    # Guard-rail "não achou na bula": quando a validação farmacêutica está ON,
+    # o consultar_bula passa a instruir o agente a pedir a dosagem/apresentação
+    # ao cliente (mensagem configurável por tenant) em vez de inventar.
+    not_found_message: str | None = None
     track_stock = False
     try:
         from services import capabilities as cap_svc
         track_stock = await cap_svc.is_enabled(tenant_id, "inventory.track_stock")
+        if await cap_svc.is_enabled(tenant_id, "sales.pharmacist_validation"):
+            cfg = await cap_svc.get_config(tenant_id, "sales.pharmacist_validation")
+            not_found_message = (
+                (cfg or {}).get("not_found_message") or _DEFAULT_NOT_FOUND_MESSAGE
+            )
     except Exception as exc:  # noqa: BLE001
         log.warning("skill.farmaceutico.cap_check_failed", exc=str(exc))
+
+    tools = [
+        make_consultar_bula_tool(not_found_message=not_found_message),
+        make_consultar_bula_secao_tool(),
+    ]
 
     if track_stock and schema_name:
         tools.append(make_inventory_tool(schema_name, tenant_id, cart=cart))
