@@ -16,7 +16,13 @@ import time
 # DEVE rodar antes de qualquer Counter()/Histogram() ser instanciado, porque
 # prometheus_client decide o backend (single vs mmap) no momento da criação
 # da métrica, lendo $PROMETHEUS_MULTIPROC_DIR.
-_METRICS_PORT = int(os.environ.get("WORKER_METRICS_PORT", "9100"))
+#
+# Default = 0 (desligado) porque este módulo é importado pelo processo API
+# (via routers/webhook.py → process_message) e setar PROMETHEUS_MULTIPROC_DIR
+# lá quebra as Gauges do metrics_collector (multiproc sem `multiprocess_mode`
+# = série invisível no scrape). Container `worker:` do compose seta
+# WORKER_METRICS_PORT=9100 explícito; container `api:` não seta e cai em 0.
+_METRICS_PORT = int(os.environ.get("WORKER_METRICS_PORT", "0"))
 _MULTIPROC_DIR = os.environ.get("PROMETHEUS_MULTIPROC_DIR", "/tmp/prom_multiproc_celery")
 
 if _METRICS_PORT > 0:
