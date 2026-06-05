@@ -288,23 +288,19 @@ async def _refresh_one_tenant_schema(conn, tid: str, tname: str, schema: str) ->
         ORDERS_TOTAL.labels(tid, tname, status).set(float(r["total"] or 0))
         ORDERS_24H.labels(tid, tname, status).set(float(r["last24"] or 0))
 
-    # ── agent_traces: erros nas últimas 24h ───────────────────────────────
-    try:
-        err_row = await conn.fetchrow(
-            f"""
-            SELECT COUNT(*) AS n
-              FROM {schema}.agent_traces
-             WHERE created_at > NOW() - INTERVAL '24 hours'
-               AND node_error IS NOT NULL
-            """
-        )
-    except Exception:
-        # Tenant sem coluna node_error (factory antiga) — cai pro total.
-        err_row = await conn.fetchrow(
-            f"""
-            SELECT COUNT(*) AS n
-              FROM {schema}.agent_traces
-             WHERE created_at > NOW() - INTERVAL '24 hours'
-            """
-        )
+    # ── agent_traces: erros reais nas últimas 24h ─────────────────────────
+    # Erro vive em DOIS lugares (ver agents/nodes/skills/_base.py):
+    #   • coluna `error` (text) — erro top-level do turno (final state)
+    #   • `steps[i].error`     — erro estruturado por node (dict {type,msg,stack})
+    # Conta o trace se tiver qualquer um dos dois. DISTINCT pra não dobrar
+    # quando o mesmo trace tem múltiplos nodes com erro.
+    err_row = await conn.fetchrow(
+        f"""
+        SELECT COUNT(DISTINCT t.id) AS n
+          FROM {schema}.agent_traces t
+     LEFT JOIN LATERAL jsonb_array_elements(t.steps) AS step ON TRUE
+         WHERE t.created_at > NOW() - INTERVAL '24 hours'
+           AND (t.error IS NOT NULL OR step ? 'error')
+        """
+    )
     AGENT_ERRORS_24H.labels(tid, tname).set(float((err_row or {"n": 0})["n"] or 0))

@@ -21,11 +21,11 @@
     },
     {
       "type": "stat",
-      "title": "Tickets abertos (total)",
+      "title": "Tickets abertos",
       "gridPos": {"h": 4, "w": 4, "x": 4, "y": 0},
       "id": 2,
       "datasource": {"type": "prometheus", "uid": "Prometheus"},
-      "targets": [{"expr": "sum(saas_tenant_tickets_open)", "refId": "A"}],
+      "targets": [{"expr": "sum(saas_tenant_tickets_open{tenant_name=~\"$tenant\"})", "refId": "A"}],
       "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "value", "graphMode": "area"}
     },
     {
@@ -34,16 +34,17 @@
       "gridPos": {"h": 4, "w": 4, "x": 8, "y": 0},
       "id": 3,
       "datasource": {"type": "prometheus", "uid": "Prometheus"},
-      "targets": [{"expr": "sum(saas_tenant_tickets_paused)", "refId": "A"}],
+      "targets": [{"expr": "sum(saas_tenant_tickets_paused{tenant_name=~\"$tenant\"})", "refId": "A"}],
       "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "value", "graphMode": "area"}
     },
     {
       "type": "stat",
-      "title": "Mensagens últimas 24h",
+      "title": "Mensagens 24h (user)",
+      "description": "Apenas role=user pra evitar dupla contagem com assistant.",
       "gridPos": {"h": 4, "w": 4, "x": 12, "y": 0},
       "id": 4,
       "datasource": {"type": "prometheus", "uid": "Prometheus"},
-      "targets": [{"expr": "sum(saas_tenant_messages_24h)", "refId": "A"}],
+      "targets": [{"expr": "sum(saas_tenant_messages_24h{tenant_name=~\"$tenant\", role=\"user\"})", "refId": "A"}],
       "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "value", "graphMode": "area"}
     },
     {
@@ -52,27 +53,27 @@
       "gridPos": {"h": 4, "w": 4, "x": 16, "y": 0},
       "id": 5,
       "datasource": {"type": "prometheus", "uid": "Prometheus"},
-      "targets": [{"expr": "sum(saas_tenant_carts_open)", "refId": "A"}],
+      "targets": [{"expr": "sum(saas_tenant_carts_open{tenant_name=~\"$tenant\"})", "refId": "A"}],
       "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "value", "graphMode": "area"}
     },
     {
       "type": "stat",
-      "title": "Erros 24h",
+      "title": "Erros agente 24h",
       "gridPos": {"h": 4, "w": 4, "x": 20, "y": 0},
       "id": 6,
       "datasource": {"type": "prometheus", "uid": "Prometheus"},
-      "targets": [{"expr": "sum(saas_tenant_agent_errors_24h)", "refId": "A"}],
+      "targets": [{"expr": "sum(saas_tenant_agent_errors_24h{tenant_name=~\"$tenant\"})", "refId": "A"}],
       "fieldConfig": {"defaults": {"thresholds": {"steps": [{"color": "green"}, {"color": "red", "value": 1}]}}},
       "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "value", "graphMode": "area"}
     },
     {
       "type": "timeseries",
-      "title": "Mensagens 24h por tenant",
+      "title": "Mensagens 24h por tenant (user)",
       "gridPos": {"h": 8, "w": 12, "x": 0, "y": 4},
       "id": 7,
       "datasource": {"type": "prometheus", "uid": "Prometheus"},
       "targets": [
-        {"expr": "sum by (tenant_name) (saas_tenant_messages_24h)", "refId": "A", "legendFormat": "{{tenant_name}}"}
+        {"expr": "sum by (tenant_name) (saas_tenant_messages_24h{tenant_name=~\"$tenant\", role=\"user\"})", "refId": "A", "legendFormat": "{{tenant_name}}"}
       ]
     },
     {
@@ -82,7 +83,7 @@
       "id": 8,
       "datasource": {"type": "prometheus", "uid": "Prometheus"},
       "targets": [
-        {"expr": "saas_tenant_tickets_open", "refId": "A", "legendFormat": "{{tenant_name}}"}
+        {"expr": "saas_tenant_tickets_open{tenant_name=~\"$tenant\"}", "refId": "A", "legendFormat": "{{tenant_name}}"}
       ]
     },
     {
@@ -107,12 +108,12 @@
     },
     {
       "type": "timeseries",
-      "title": "Tokens consumidos 24h por tenant (in+out)",
+      "title": "Tokens 24h por tenant (in+out)",
       "gridPos": {"h": 8, "w": 12, "x": 0, "y": 20},
       "id": 11,
       "datasource": {"type": "prometheus", "uid": "Prometheus"},
       "targets": [
-        {"expr": "sum by (tenant_name) (saas_tenant_tokens_24h)", "refId": "A", "legendFormat": "{{tenant_name}}"}
+        {"expr": "sum by (tenant_name) (saas_tenant_tokens_24h{tenant_name=~\"$tenant\"})", "refId": "A", "legendFormat": "{{tenant_name}}"}
       ]
     },
     {
@@ -122,7 +123,7 @@
       "id": 12,
       "datasource": {"type": "prometheus", "uid": "Prometheus"},
       "targets": [
-        {"expr": "sum by (status) (saas_tenant_orders_24h)", "refId": "A", "legendFormat": "{{status}}"}
+        {"expr": "sum by (status) (saas_tenant_orders_24h{tenant_name=~\"$tenant\"})", "refId": "A", "legendFormat": "{{status}}"}
       ]
     },
     {
@@ -144,16 +145,55 @@
       "targets": [
         {"expr": "sum by (llm_model) (rate(llm_errors_total[5m])) * 60", "refId": "A", "legendFormat": "{{llm_model}}"}
       ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Tokens 24h por direção (in vs out)",
+      "description": "Soma global de tokens de entrada e saída nas últimas 24h. Cresce/decai com tráfego e tamanho de contexto. Útil pra estimar custo Anthropic.",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 36},
+      "id": 15,
+      "datasource": {"type": "prometheus", "uid": "Prometheus"},
+      "targets": [
+        {"expr": "sum by (direction) (saas_tenant_tokens_24h{tenant_name=~\"$tenant\"})", "refId": "A", "legendFormat": "{{direction}}"}
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Saúde do collector",
+      "description": "Latência p95 do refresh de gauges de negócio + taxa de erros. Se subir consistente, o /metrics da API vai começar a divergir do estado real do DB.",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 36},
+      "id": 16,
+      "datasource": {"type": "prometheus", "uid": "Prometheus"},
+      "targets": [
+        {"expr": "histogram_quantile(0.95, sum by (le) (rate(saas_business_metrics_refresh_seconds_bucket[5m])))", "refId": "A", "legendFormat": "refresh p95 (s)"},
+        {"expr": "sum by (scope) (rate(saas_business_metrics_refresh_errors_total[5m]))", "refId": "B", "legendFormat": "errors/s — {{scope}}"}
+      ]
     }
   ],
   "refresh": "30s",
   "schemaVersion": 39,
   "tags": ["saas-farmacia"],
-  "templating": {"list": []},
+  "templating": {
+    "list": [
+      {
+        "name": "tenant",
+        "label": "Tenant",
+        "type": "query",
+        "datasource": {"type": "prometheus", "uid": "Prometheus"},
+        "query": {"query": "label_values(saas_tenant_tickets_open, tenant_name)", "refId": "PrometheusVariableQueryEditor-VariableQuery"},
+        "refresh": 2,
+        "sort": 1,
+        "includeAll": true,
+        "multi": true,
+        "allValue": ".*",
+        "current": {"selected": false, "text": "All", "value": "$__all"}
+      }
+    ]
+  },
   "time": {"from": "now-6h", "to": "now"},
   "timepicker": {},
   "timezone": "",
   "title": "SaaS Farmácia — Overview",
   "uid": "saas-farmacia-overview",
-  "version": 1
+  "version": 2
 }
