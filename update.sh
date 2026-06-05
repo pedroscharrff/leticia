@@ -214,6 +214,37 @@ else
     info "nginx config já contém ${STORAGE_DOMAIN} — sem alteração."
 fi
 
+# ── 1.55 Garante que o nginx tem todos os mounts do compose ──────────────────
+# `nginx -s reload` SÓ pega mudanças em arquivos JÁ MONTADOS. Adicionar um
+# arquivo novo em /etc/nginx/conf.d/ (via volume novo no compose) exige
+# RECREATE do container, senão o vhost novo é invisível.
+# Detecta se há configs do host (metrics.conf, grafana.conf, htpasswd) que
+# ainda não estão no container e recria nginx se faltar algo.
+ensure_nginx_has_all_mounts() {
+    local missing=()
+    for f in metrics.conf grafana.conf; do
+        if [[ -f "${SCRIPT_DIR}/nginx/${f}" ]]; then
+            if ! docker compose exec -T nginx test -f "/etc/nginx/conf.d/${f}" 2>/dev/null; then
+                missing+=("${f}")
+            fi
+        fi
+    done
+    if [[ -f "${SCRIPT_DIR}/nginx/htpasswd" ]]; then
+        if ! docker compose exec -T nginx test -f "/etc/nginx/htpasswd" 2>/dev/null; then
+            missing+=("htpasswd")
+        fi
+    fi
+
+    if [[ ${#missing[@]} -gt 0 ]]; then
+        info "Nginx faltando mounts novos do compose: ${missing[*]} — recriando container"
+        docker compose up -d --no-deps --force-recreate nginx
+        sleep 3
+        success "Nginx recriado com todos os mounts"
+    fi
+}
+
+ensure_nginx_has_all_mounts
+
 # ── 1.6 Provisionamento incremental: Prometheus + subdomínio metrics ─────────
 # Idempotente: detecta o que falta (cert, htpasswd, nginx block, .env) e
 # adiciona. Seguro de rodar várias vezes.
