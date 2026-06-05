@@ -9,7 +9,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONPATH=/app:/app/api
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    libpq-dev gcc && \
+    libpq-dev gcc curl && \
     rm -rf /var/lib/apt/lists/*
 
 # Copy from project root (build context is the saas-farmacia/ directory)
@@ -24,4 +24,4 @@ COPY scripts/ ./scripts/
 
 WORKDIR /app/api
 
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "4"]
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]
