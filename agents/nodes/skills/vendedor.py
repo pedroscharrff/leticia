@@ -214,11 +214,12 @@ PLAYBOOK — 3 ETAPAS
 ═══════════════════════════════════════════════════════════════════════
 
 ETAPA 1 — DADOS DO CLIENTE
-Veja o bloco "## Dados para o atendimento" abaixo. Para cada campo:
-  • JÁ PREENCHIDO → "Posso confirmar seu nome como João Silva?"
-    - Cliente confirma → siga. Cliente corrige → chame `salvar_dados_cliente`.
-  • VAZIO → peça (uma pergunta por vez) e ao receber, chame
-    `salvar_dados_cliente` IMEDIATAMENTE.
+Veja o bloco "## Dados para o atendimento" abaixo. Ele lista, para CADA campo
+obrigatório desta farmácia, se você já tem o valor e o que fazer com ele
+(confirmar com o cliente, confiar e seguir, ou pedir). Siga EXATAMENTE a
+instrução do bloco — não confirme campos que o bloco mandou só usar, e não
+assuma campos que o bloco mandou pedir. Sempre que o cliente informar ou
+corrigir um dado, chame `salvar_dados_cliente` IMEDIATAMENTE — sem texto antes.
 Sem campos obrigatórios pendentes → vá para a Etapa 2.
 
 ETAPA 2 — COLETA DO PEDIDO
@@ -308,13 +309,18 @@ _CLOSING_HINTS = (
 def _build_preattendimento_customer_block(
     sales_config: dict,
     customer: dict | None,
+    skip_known_field_confirmation: bool = False,
 ) -> str:
     """
     Gera o bloco de dados do cliente para o modo pré-atendimento.
 
-    Diferente do build_sales_config_block normal, aqui instruímos o agente a
-    CONFIRMAR dados já existentes com o cliente antes de aceitá-los — não apenas
-    checar se estão preenchidos.
+    Carrega a política de confirmação per-turno (volátil): o prompt cacheado
+    fala só "siga as instruções deste bloco" — é AQUI que o agente descobre,
+    pra cada campo, se deve confirmar com o cliente, confiar e seguir, ou pedir.
+
+    Quando `skip_known_field_confirmation=True` (capability
+    `sales.skip_known_field_confirmation` ATIVA) o agente confia nos campos já
+    preenchidos e só pede os vazios — sem reconfirmar nada.
     """
     from services.sales_config import ALLOWED_FIELDS, _customer_value
 
@@ -324,34 +330,63 @@ def _build_preattendimento_customer_block(
 
     cust = customer or {}
     lines = ["## Dados para o atendimento"]
-    lines.append(
-        "Verifique cada campo abaixo antes de prosseguir para a coleta do pedido.\n"
-        "Para campos já preenchidos → confirme com o cliente. "
-        "Para campos vazios → solicite."
-    )
+    if skip_known_field_confirmation:
+        lines.append(
+            "Para cada campo abaixo, use APENAS as instruções entre colchetes. "
+            "Campos com valor já cadastrado: USE o valor sem perguntar nada — "
+            "NÃO confirme, NÃO mencione o dado, só siga. Campos vazios: peça ao "
+            "cliente (uma pergunta por vez)."
+        )
+    else:
+        lines.append(
+            "Verifique cada campo abaixo antes de prosseguir para a coleta do pedido.\n"
+            "Para campos já preenchidos → confirme com o cliente. "
+            "Para campos vazios → solicite."
+        )
 
     has_existing = False
+    has_missing = False
     for key in required:
         spec = ALLOWED_FIELDS.get(key, {"label": key})
         current = _customer_value(cust, key)
         if current:
             has_existing = True
-            lines.append(
-                f"- **{spec['label']}**: `{current}` "
-                f"← CONFIRME com o cliente se ainda é válido"
-            )
+            if skip_known_field_confirmation:
+                lines.append(
+                    f"- **{spec['label']}**: `{current}` "
+                    f"[USE — não confirme, não pergunte]"
+                )
+            else:
+                lines.append(
+                    f"- **{spec['label']}**: `{current}` "
+                    f"← CONFIRME com o cliente se ainda é válido"
+                )
         else:
+            has_missing = True
             lines.append(f"- **{spec['label']}**: ✗ vazio — peça ao cliente")
 
-    if not has_existing:
-        lines.append(
-            "\nTodos os campos estão vazios — colete-os antes de anotar o pedido."
-        )
+    if skip_known_field_confirmation:
+        if not has_missing:
+            lines.append(
+                "\nTodos os campos obrigatórios já estão preenchidos — "
+                "vá DIRETO para a coleta do pedido (Etapa 2), sem mencionar "
+                "os dados do cadastro."
+            )
+        elif has_existing:
+            lines.append(
+                "\nPeça apenas os campos vazios. Não traga à tona os campos que "
+                "já estão preenchidos."
+            )
     else:
-        lines.append(
-            "\nSe o cliente confirmar todos os dados existentes sem alteração, "
-            "pule direto para a coleta do pedido (PASSO 2)."
-        )
+        if not has_existing:
+            lines.append(
+                "\nTodos os campos estão vazios — colete-os antes de anotar o pedido."
+            )
+        else:
+            lines.append(
+                "\nSe o cliente confirmar todos os dados existentes sem alteração, "
+                "pule direto para a coleta do pedido (PASSO 2)."
+            )
 
     return "\n".join(lines)
 
@@ -386,6 +421,9 @@ async def vendedor_node(state: AgentState, llm_factory) -> AgentState:
         # Pré-atendimento: rotear nome de medicamento ao farmacêutico p/ validar
         # na bula antes de anotar (evita dosagem/apresentação inventada).
         "pharmacist_validation": False,
+        # Pré-atendimento: pular confirmação de campos do cliente já cadastrados
+        # (USE direto, sem perguntar "posso confirmar seu nome como ...?").
+        "skip_known_field_confirmation": False,
     }
     cap_config: dict[str, dict] = {}
     try:
@@ -398,6 +436,7 @@ async def vendedor_node(state: AgentState, llm_factory) -> AgentState:
             "interactive":     "attendance.interactive_buttons",
             "pix":             "payments.pix_asaas",
             "pharmacist_validation": "sales.pharmacist_validation",
+            "skip_known_field_confirmation": "sales.skip_known_field_confirmation",
         }
         for slug, key in keys.items():
             caps[slug] = await cap_svc.is_enabled(tenant_id, key)
@@ -441,7 +480,11 @@ async def vendedor_node(state: AgentState, llm_factory) -> AgentState:
 
             # ── Volátil: status do cliente + contexto de handoff ─────────────
             try:
-                customer_block = _build_preattendimento_customer_block(sales_config, customer)
+                customer_block = _build_preattendimento_customer_block(
+                    sales_config,
+                    customer,
+                    skip_known_field_confirmation=caps["skip_known_field_confirmation"],
+                )
                 if customer_block:
                     volatile_parts.append(customer_block)
             except Exception as _exc:  # noqa: BLE001
