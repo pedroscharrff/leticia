@@ -1,0 +1,56 @@
+# Recording rules — pricing por modelo LLM (USD por milhão de tokens).
+#
+# Deve ficar sincronizado com api/services/pricing.py (fonte de verdade
+# pro job diário). Atualizar nos dois lugares quando ajustar preço.
+#
+# Como funciona o join no Grafana:
+#   sum by (tenant_id) (
+#     increase(saas_llm_tokens_total{direction="in"}[24h]) / 1e6
+#     * on(llm_model) group_left() saas_llm_price_in_usd_per_mtok
+#   )
+# `group_left()` permite many-to-one entre série de tokens (muitas tenants
+# pro mesmo modelo) e a série de preço (1 por modelo).
+
+groups:
+  - name: llm_pricing
+    interval: 1h    # constantes mudam raro; reavaliar a cada hora basta
+    rules:
+      - record: saas_llm_price_in_usd_per_mtok
+        expr: |
+          label_replace(vector(15.00), "llm_model", "claude-opus-4-8", "", "")
+            or label_replace(vector(15.00), "llm_model", "claude-opus-4-7", "", "")
+            or label_replace(vector(3.00),  "llm_model", "claude-sonnet-4-6", "", "")
+            or label_replace(vector(1.00),  "llm_model", "claude-haiku-4-5", "", "")
+            or label_replace(vector(10.00), "llm_model", "gpt-5.5", "", "")
+            or label_replace(vector(8.00),  "llm_model", "gpt-5.4", "", "")
+            or label_replace(vector(2.00),  "llm_model", "gpt-5.4-mini", "", "")
+            or label_replace(vector(5.00),  "llm_model", "gpt-5", "", "")
+            or label_replace(vector(1.50),  "llm_model", "gpt-5-mini", "", "")
+            or label_replace(vector(0.30),  "llm_model", "gpt-5-nano", "", "")
+            or label_replace(vector(2.00),  "llm_model", "gpt-4.1", "", "")
+            or label_replace(vector(0.40),  "llm_model", "gpt-4.1-mini", "", "")
+            or label_replace(vector(0.10),  "llm_model", "gpt-4.1-nano", "", "")
+            or label_replace(vector(2.50),  "llm_model", "gpt-4o", "", "")
+            or label_replace(vector(0.15),  "llm_model", "gpt-4o-mini", "", "")
+            or label_replace(vector(0.10),  "llm_model", "gemini-2.0-flash", "", "")
+            or label_replace(vector(0.00),  "llm_model", "llama3.2", "", "")
+
+      - record: saas_llm_price_out_usd_per_mtok
+        expr: |
+          label_replace(vector(75.00), "llm_model", "claude-opus-4-8", "", "")
+            or label_replace(vector(75.00), "llm_model", "claude-opus-4-7", "", "")
+            or label_replace(vector(15.00), "llm_model", "claude-sonnet-4-6", "", "")
+            or label_replace(vector(5.00),  "llm_model", "claude-haiku-4-5", "", "")
+            or label_replace(vector(30.00), "llm_model", "gpt-5.5", "", "")
+            or label_replace(vector(24.00), "llm_model", "gpt-5.4", "", "")
+            or label_replace(vector(8.00),  "llm_model", "gpt-5.4-mini", "", "")
+            or label_replace(vector(15.00), "llm_model", "gpt-5", "", "")
+            or label_replace(vector(6.00),  "llm_model", "gpt-5-mini", "", "")
+            or label_replace(vector(1.20),  "llm_model", "gpt-5-nano", "", "")
+            or label_replace(vector(8.00),  "llm_model", "gpt-4.1", "", "")
+            or label_replace(vector(1.60),  "llm_model", "gpt-4.1-mini", "", "")
+            or label_replace(vector(0.40),  "llm_model", "gpt-4.1-nano", "", "")
+            or label_replace(vector(10.00), "llm_model", "gpt-4o", "", "")
+            or label_replace(vector(0.60),  "llm_model", "gpt-4o-mini", "", "")
+            or label_replace(vector(0.40),  "llm_model", "gemini-2.0-flash", "", "")
+            or label_replace(vector(0.00),  "llm_model", "llama3.2", "", "")

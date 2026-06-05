@@ -22,6 +22,12 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.language_models import BaseChatModel
 
 from config import settings
+from llm.usage_tracking import TokenUsageCallback
+
+
+# Callback singleton — stateless, lê ContextVars do turno. Anexado a TODO model
+# construído por essa factory pra captura uniforme de tokens.
+_USAGE_CB = TokenUsageCallback()
 
 
 def _build_llm(
@@ -42,6 +48,7 @@ def _build_llm(
             timeout=timeout,
             temperature=temp,
             max_retries=0,  # retries handled by llm_retry()
+            callbacks=[_USAGE_CB],
         )
 
     if provider == "google":
@@ -51,6 +58,7 @@ def _build_llm(
             request_options={"timeout": timeout},
             temperature=temp,
             max_retries=0,
+            callbacks=[_USAGE_CB],
         )
 
     if provider == "openai":
@@ -63,6 +71,7 @@ def _build_llm(
             api_key=api_key or settings.openai_api_key,
             timeout=timeout,
             max_retries=0,
+            callbacks=[_USAGE_CB],
             **extra,
         )
 
@@ -73,6 +82,7 @@ def _build_llm(
             base_url=base_url or settings.ollama_base_url,
             timeout=timeout,
             temperature=temp,
+            callbacks=[_USAGE_CB],
         )
 
     raise ValueError(f"Unknown LLM provider: {provider!r}")

@@ -5,6 +5,11 @@ global:
     env: production
     service: saas-farmacia
 
+# Recording rules — atualmente apenas pricing por modelo LLM (constantes
+# usadas pra calcular custo estimado em USD nos painéis do Grafana).
+rule_files:
+  - /etc/prometheus/rules/*.yml
+
 scrape_configs:
   # ── API FastAPI ──────────────────────────────────────────────────────────
   # /metrics exposto pelo prometheus-fastapi-instrumentator.

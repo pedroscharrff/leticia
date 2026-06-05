@@ -17,6 +17,7 @@ import time
 import structlog
 
 from agents.state import AgentState
+from llm.usage_tracking import aggregate_turn_usage
 
 log = structlog.get_logger()
 
@@ -293,19 +294,28 @@ async def save_context(state: AgentState) -> AgentState:
                 log.info("context.cart.cleared_on_finalize", session=session_id)
 
             # Log de conversa — guarda phone separado para agrupar a inbox por contato.
+            # Tokens consumidos no turno (in/out/model) vêm do ContextVar populado
+            # pelo TokenUsageCallback durante graph.ainvoke. Atribuímos ao row
+            # 'assistant' (a chamada LLM produziu a resposta — atribuir ao 'user'
+            # daria a impressão errada de que o input do usuário custou tokens).
             phone_clean = state.get("phone") or ""
+            usage = aggregate_turn_usage()
             await conn.execute(
                 """
                 INSERT INTO conversation_logs
-                    (session_key, phone, role, content, skill_used, created_at)
-                VALUES ($1, $5, 'user',      $2, $4, NOW()),
-                       ($1, $5, 'assistant', $3, $4, NOW())
+                    (session_key, phone, role, content, skill_used,
+                     tokens_in, tokens_out, llm_model, created_at)
+                VALUES ($1, $5, 'user',      $2, $4, 0,   0,   NULL, NOW()),
+                       ($1, $5, 'assistant', $3, $4, $6,  $7,  $8,   NOW())
                 """,
                 session_id,
                 current_msg,
                 final_response,
                 skill_used,
                 phone_clean,
+                int(usage["tokens_in"]),
+                int(usage["tokens_out"]),
+                usage["llm_model"],
             )
 
     except Exception as exc:

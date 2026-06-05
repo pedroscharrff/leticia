@@ -43,6 +43,7 @@ from prometheus_client import Counter, Histogram
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 from config import settings
+from llm.usage_tracking import begin_turn as _begin_token_turn
 
 log = structlog.get_logger()
 
@@ -87,6 +88,13 @@ celery_app.conf.update(
             "task":     "jobs.nudge_continuous_refill",
             "schedule": 60 * 60 * 24,
         },
+        "aggregate_llm_usage_daily": {
+            # 24h: agrega tokens consumidos do dia anterior por tenant×modelo
+            # em public.llm_usage_daily. Idempotente (ON CONFLICT). Não trava
+            # se um tenant falhar — segue pros próximos e loga erro.
+            "task":     "jobs.aggregate_llm_usage_daily",
+            "schedule": 60 * 60 * 24,
+        },
     },
 )
 
@@ -122,6 +130,22 @@ def nudge_continuous_refill_task(self) -> dict:
         return nudge_continuous_refill_sync()
     except Exception as exc:  # noqa: BLE001
         log.warning("celery.refill_failed", exc=str(exc))
+        return {"error": str(exc)}
+
+
+@celery_app.task(name="jobs.aggregate_llm_usage_daily", bind=True, max_retries=0)
+def aggregate_llm_usage_daily_task(self, target_day_iso: str | None = None) -> dict:
+    """Agrega conversation_logs do dia anterior em public.llm_usage_daily.
+
+    Passa `target_day_iso='YYYY-MM-DD'` pra re-processar um dia específico
+    (ex.: `celery -A workers.celery_app call jobs.aggregate_llm_usage_daily
+    --args='["2026-06-04"]'`).
+    """
+    from workers.jobs.aggregate_usage import aggregate_llm_usage_daily_sync
+    try:
+        return aggregate_llm_usage_daily_sync(target_day_iso)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("celery.aggregate_usage_failed", exc=str(exc))
         return {"error": str(exc)}
 
 
@@ -718,6 +742,11 @@ async def _run_graph(
     final_state: dict | None = None
     trace_error: str | None = None
 
+    # Abre buffer de tokens do turno (callback em llm/usage_tracking acumula
+    # nele E incrementa Counter Prometheus). tenant_name fica vazio aqui —
+    # Grafana faz join com saas_tenant_* via tenant_id.
+    _begin_token_turn(tenant_id, "")
+
     try:
         final_state = await graph.ainvoke(initial_state, config=config)
         skill_used = final_state.get("selected_skill", "unknown")
@@ -1201,6 +1230,8 @@ async def _run_broker_flow(
     reply_text = ""
     error: str | None = None
     final_state: dict | None = None
+
+    _begin_token_turn(tenant_id, "")
 
     try:
         final_state = await graph.ainvoke(initial_state, config=config)

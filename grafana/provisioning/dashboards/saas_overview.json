@@ -168,6 +168,67 @@
         {"expr": "histogram_quantile(0.95, sum by (le) (rate(saas_business_metrics_refresh_seconds_bucket[5m])))", "refId": "A", "legendFormat": "refresh p95 (s)"},
         {"expr": "sum by (scope) (rate(saas_business_metrics_refresh_errors_total[5m]))", "refId": "B", "legendFormat": "errors/s — {{scope}}"}
       ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Tokens/min por modelo (in+out)",
+      "description": "Taxa de consumo de tokens dos últimos 5min, agregada por modelo LLM. Counter saas_llm_tokens_total é incrementado no callback do LangChain a cada ainvoke().",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 44},
+      "id": 17,
+      "datasource": {"type": "prometheus", "uid": "Prometheus"},
+      "targets": [
+        {"expr": "sum by (llm_model) (rate(saas_llm_tokens_total{tenant_id=~\".+\"}[5m])) * 60", "refId": "A", "legendFormat": "{{llm_model}}"}
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Tokens 24h por tenant×modelo (input)",
+      "description": "Volume de tokens de entrada nas últimas 24h, dividido por modelo. Útil pra identificar onde está o cache miss alto (prompt grande sem cache hit dobra esse número).",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 44},
+      "id": 18,
+      "datasource": {"type": "prometheus", "uid": "Prometheus"},
+      "targets": [
+        {"expr": "sum by (tenant_id, llm_model) (increase(saas_llm_tokens_total{direction=\"in\", tenant_id=~\".+\"}[24h]))", "refId": "A", "legendFormat": "{{tenant_id}} · {{llm_model}}"}
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Custo estimado 24h (USD, total)",
+      "description": "Soma do custo de todos os tenants nas últimas 24h, calculado em PromQL via recording rules de pricing (saas_llm_price_*_usd_per_mtok, definidas em prometheus_rules.yml). Modelo desconhecido entra como 0.",
+      "gridPos": {"h": 4, "w": 6, "x": 0, "y": 52},
+      "id": 19,
+      "datasource": {"type": "prometheus", "uid": "Prometheus"},
+      "fieldConfig": {"defaults": {"unit": "currencyUSD", "decimals": 2}},
+      "targets": [
+        {"expr": "sum(\n  increase(saas_llm_tokens_total{direction=\"in\"}[24h]) / 1e6\n  * on(llm_model) group_left() saas_llm_price_in_usd_per_mtok\n) + sum(\n  increase(saas_llm_tokens_total{direction=\"out\"}[24h]) / 1e6\n  * on(llm_model) group_left() saas_llm_price_out_usd_per_mtok\n)", "refId": "A"}
+      ],
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "value"}
+    },
+    {
+      "type": "bargauge",
+      "title": "Custo 24h por tenant (USD)",
+      "description": "Top tenants por gasto estimado nas últimas 24h.",
+      "gridPos": {"h": 8, "w": 18, "x": 6, "y": 52},
+      "id": 20,
+      "datasource": {"type": "prometheus", "uid": "Prometheus"},
+      "fieldConfig": {"defaults": {"unit": "currencyUSD", "decimals": 4}},
+      "targets": [
+        {"expr": "sum by (tenant_id) (\n  increase(saas_llm_tokens_total{direction=\"in\", tenant_id=~\"$tenant\"}[24h]) / 1e6\n  * on(llm_model) group_left() saas_llm_price_in_usd_per_mtok\n) + sum by (tenant_id) (\n  increase(saas_llm_tokens_total{direction=\"out\", tenant_id=~\"$tenant\"}[24h]) / 1e6\n  * on(llm_model) group_left() saas_llm_price_out_usd_per_mtok\n)", "refId": "A", "legendFormat": "{{tenant_id}}"}
+      ],
+      "options": {"orientation": "horizontal", "displayMode": "gradient", "reduceOptions": {"calcs": ["lastNotNull"]}}
+    },
+    {
+      "type": "stat",
+      "title": "Custo estimado 24h por modelo (USD)",
+      "description": "Quebra do custo total por modelo. Mostra onde o dinheiro está indo — útil pra decidir se vale ajustar skill X de Sonnet pra Haiku.",
+      "gridPos": {"h": 4, "w": 6, "x": 0, "y": 56},
+      "id": 21,
+      "datasource": {"type": "prometheus", "uid": "Prometheus"},
+      "fieldConfig": {"defaults": {"unit": "currencyUSD", "decimals": 4}},
+      "targets": [
+        {"expr": "sum by (llm_model) (\n  increase(saas_llm_tokens_total{direction=\"in\"}[24h]) / 1e6\n  * on(llm_model) group_left() saas_llm_price_in_usd_per_mtok\n) + sum by (llm_model) (\n  increase(saas_llm_tokens_total{direction=\"out\"}[24h]) / 1e6\n  * on(llm_model) group_left() saas_llm_price_out_usd_per_mtok\n)", "refId": "A", "legendFormat": "{{llm_model}}"}
+      ],
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "value", "textMode": "value_and_name"}
     }
   ],
   "refresh": "30s",
