@@ -43,6 +43,17 @@ class AnotarPedidoInput(BaseModel):
     )
 
 
+class RegistrarItensInput(BaseModel):
+    itens: list[dict] = Field(
+        description=(
+            'Lista ATUAL e completa dos itens que o cliente quer até agora. '
+            'Cada item: {"name": "Dipirona 500mg", "qty": 2}. '
+            "Use exatamente o nome que o cliente informou — sem abreviar. "
+            "Informe a lista inteira a cada chamada (ela SUBSTITUI a anterior)."
+        )
+    )
+
+
 # ── Core logic ───────────────────────────────────────────────────────────────
 
 async def _anotar_pedido_balcao(
@@ -176,7 +187,99 @@ async def _anotar_pedido_balcao(
     )
 
 
+# ── Rascunho recuperável (pré-atendimento) ───────────────────────────────────
+
+def _normalize_itens(itens: list[dict]) -> list[dict]:
+    """Normaliza itens crus do LLM: garante name/qty, descarta vazios."""
+    out: list[dict] = []
+    for raw in itens or []:
+        if not isinstance(raw, dict):
+            continue
+        name = str(raw.get("name") or raw.get("produto") or "").strip()
+        qty  = int(raw.get("qty") or raw.get("quantidade") or 1)
+        if name:
+            out.append({"name": name, "qty": max(1, qty), "price": 0.0})
+    return out
+
+
+def _registrar_itens_interesse(cart: dict, itens: list[dict]) -> str:
+    """
+    Persiste a lista de interesse do cliente no `cart` em memória SEM finalizar.
+
+    Espelha `adicionar_ao_carrinho` do modo normal: muta `cart` in-place (mesma
+    ref do AgentState) para que `save_context` grave uma linha em `{schema}.cart`
+    com `items > 0`. Isso é o que torna o carrinho de PRÉ-ATENDIMENTO recuperável
+    pelo job `recover_abandoned_carts` quando o cliente some antes de confirmar.
+
+    NÃO seta `just_finalized`, NÃO cria `last_order`, NÃO escreve em `orders` —
+    isso é exclusivo de `anotar_pedido_balcao` (fechamento + handoff).
+    """
+    items_clean = _normalize_itens(itens)
+    if not items_clean:
+        return (
+            "Nenhum item válido informado. "
+            "Pergunte ao cliente o que deseja antes de registrar."
+        )
+
+    # Dedup determinístico por turno — o LLM às vezes re-chama a tool com os
+    # MESMOS args no mesmo turno. Sem isso, gravamos a mesma lista várias vezes
+    # à toa. Reset entre turnos é automático (load_context reconstrói o cart do
+    # banco e descarta esta key). Mesmo padrão de `adicionar_ao_carrinho`.
+    sig = "|".join(f"{i['name'].lower()}:{i['qty']}" for i in items_clean)
+    calls_seen = cart.setdefault("_calls_this_turn", [])
+    if sig in calls_seen:
+        return (
+            "⚠️ Essa lista já foi registrada agora mesmo. "
+            "NÃO chame esta tool de novo com os mesmos itens — só atualize "
+            "quando o cliente mudar a lista."
+        )
+    calls_seen.append(sig)
+
+    # SUBSTITUI a lista de interesse (a tool recebe sempre a lista completa).
+    cart["items"]    = items_clean
+    cart["subtotal"] = 0.0
+
+    log.info("balcao.itens_interesse_registrados", items=len(items_clean))
+    items_list = "\n".join(f"• {i['qty']}x {i['name']}" for i in items_clean)
+    return (
+        "ITENS_REGISTRADOS:OK (rascunho salvo — pedido NÃO finalizado)\n"
+        f"Lista atual:\n{items_list}"
+    )
+
+
 # ── Factory ──────────────────────────────────────────────────────────────────
+
+def make_registrar_itens_interesse_tool(
+    schema_name: str,
+    cart: dict,
+) -> StructuredTool:
+    """
+    Tool de RASCUNHO para o vendedor em pré-atendimento.
+
+    Salva a lista de itens que o cliente quer enquanto a coleta acontece, sem
+    finalizar nem transferir. `cart` é mutado in-place (mesma ref do AgentState)
+    e persistido por `save_context` — é o que permite recuperar o carrinho se o
+    cliente sumir antes de confirmar. Distinta de `anotar_pedido_balcao`, que é
+    terminal (cria order + handoff).
+    """
+
+    async def _run(itens: list[dict]) -> str:
+        return _registrar_itens_interesse(cart, itens)
+
+    return StructuredTool.from_function(
+        coroutine=_run,
+        name="registrar_itens_interesse",
+        description=(
+            "Salva/atualiza a lista de itens que o cliente quer ENQUANTO você "
+            "coleta o pedido. NÃO finaliza e NÃO transfere ao balcão — serve só "
+            "para registrar o interesse (e permitir recuperação se o cliente "
+            "sumir). Chame sempre que o cliente acrescentar/mudar um item, "
+            "passando a lista ATUAL completa. Para FECHAR o pedido, use "
+            "`anotar_pedido_balcao` (essa sim é a tool terminal)."
+        ),
+        args_schema=RegistrarItensInput,
+    )
+
 
 def make_anotar_pedido_balcao_tool(
     schema_name: str,

@@ -86,12 +86,14 @@ Com bundling:
 
 Texto combinado é `"\n".join(items)`. Preserva mídia do **último** item (se algum tinha).
 
-### `recover_abandoned_carts_task` (beat hourly)
+### `recover_abandoned_carts_task` (beat a cada 2 min)
 
-Capability-gated dentro do job. Para cada tenant com `sales.abandoned_cart_recovery` ON:
-1. Query carts em `{schema}.cart` com items != [] e `updated_at < NOW() - interval N hour` (config no capability)
-2. Para cada: chama callback do canal com mensagem de re-engajamento (template do tenant + items do cart)
-3. Marca timestamp pra não re-spammar
+Capability-gated dentro do job. Para cada tenant com `sales.abandoned_cart` ON:
+1. Query carts em `{schema}.cart` com `items != []` e `updated_at < NOW() - delay_minutes` (config no capability; `delay_hours*60` legado como fallback), respeitando quiet hours e `max_attempts`. Guard `NOT EXISTS orders ... created_at >= cart.updated_at` evita recuperar pedido já fechado.
+2. Para cada: envia mensagem de re-engajamento (template do tenant + items do cart) pelo path de outbound proativo.
+3. Marca `sent_recovery_at`/`recovery_attempts` pra não re-spammar.
+
+**Fonte de carts inclui pré-atendimento:** no modo `sales.stock_check` OFF, o cart só existe porque o vendedor chama `registrar_itens_interesse` (rascunho, sem `just_finalized`) durante a coleta — ver SPEC 02 §vendedor. Sem essa tool, o pré-atendimento nunca gera cart recuperável. Pedidos já confirmados via `anotar_pedido_balcao` ficam fora (cart limpo + guard de orders).
 
 ### `nudge_continuous_refill_task` (beat daily)
 

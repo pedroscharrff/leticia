@@ -1,9 +1,9 @@
 """
 Job: recover_abandoned_carts (capability `sales.abandoned_cart`).
 
-A cada hora, percorre TODOS os tenants ativos. Para cada um:
+A cada 2 minutos (beat), percorre TODOS os tenants ativos. Para cada um:
   • Se a capability `sales.abandoned_cart` está OFF → pula.
-  • Lê config (delay_hours, max_attempts, quiet_start, quiet_end).
+  • Lê config (delay_minutes/delay_hours, max_attempts, quiet_start, quiet_end).
   • Busca carrinhos parados por > delay_hours, com itens, e que ainda
     não esgotaram max_attempts.
   • Para cada candidato, gera mensagem personalizada e dispara via

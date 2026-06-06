@@ -231,7 +231,13 @@ ETAPA 2 — COLETA DO PEDIDO
     cliente disse". Em dúvida se é medicamento, faça o handoff — é seguro.
   • Para itens não-medicamento: anote o nome e a quantidade EXATAMENTE como o
     cliente disse.
-  • Após cada item (já validado/anotado): "Mais alguma coisa?"
+  • A CADA item que o cliente acrescentar/mudar (já validado), chame
+    `registrar_itens_interesse(itens=[{name,qty},...])` com a lista ATUAL
+    completa. Isso só SALVA a lista (rascunho) — NÃO finaliza, NÃO transfere e
+    NÃO precisa de confirmação. É o que permite retomar o cliente caso ele
+    suma antes de fechar. NÃO diga "anotei/registrado" ao cliente por causa
+    dessa tool — ela é silenciosa para você.
+  • Após cada item (já validado/registrado): "Mais alguma coisa?"
   • Cliente disser "não", "só isso", "pode anotar" → vá para a Etapa 3.
 
 ETAPA 3 — CONFIRMAÇÃO E REGISTRO (TOOL OBRIGATÓRIA)
@@ -288,10 +294,17 @@ FERRAMENTAS (tools)
 • consultar_pedido(codigo)
     Use quando o cliente perguntar o status/andamento de um pedido já feito.
     `codigo` é o número do pedido (ex: '7e2a5b91'). Vazio = pedido mais recente.
+• registrar_itens_interesse(itens)
+    itens: [{"name":"Dipirona 500mg","qty":2}, {"name":"Soro","qty":1}]
+    RASCUNHO durante a coleta (Etapa 2). Salva/atualiza a lista de interesse.
+    NÃO finaliza, NÃO transfere, NÃO confirma. Chame a cada mudança da lista
+    passando-a INTEIRA (substitui a anterior). Não é a tool de fechar.
 • anotar_pedido_balcao(itens, observacoes)
     itens: [{"name":"Dipirona 500mg","qty":2}, {"name":"Soro","qty":1}]
     observacoes: texto livre (ex: "tem receita", "urgente", "prefere genérico")
-    SEM essa chamada o pedido NÃO existe. NÃO finja que chamou.
+    TERMINAL (Etapa 3): registra o pedido e transfere ao balcão. Use SOMENTE
+    após o cliente confirmar a lista completa. SEM essa chamada o pedido NÃO
+    existe. NÃO finja que chamou.
 
 LEMBRE-SE: você é o "anotador" — confirma dados, anota itens, registra
 via tool. Tudo mais (preço, valor final, prazo) é com o atendente humano.
@@ -424,12 +437,9 @@ async def vendedor_node(state: AgentState, llm_factory) -> AgentState:
         # Pré-atendimento: pular confirmação de campos do cliente já cadastrados
         # (USE direto, sem perguntar "posso confirmar seu nome como ...?").
         "skip_known_field_confirmation": False,
-<<<<<<< HEAD
-=======
         # Saudação no período correto do dia (bom dia / boa tarde / boa noite /
         # boa madrugada). Injeta bloco volátil com hora + período.
         "time_aware_greeting": False,
->>>>>>> 7f77d76 (atualizando estado de saudação do agente)
     }
     cap_config: dict[str, dict] = {}
     try:
@@ -443,10 +453,7 @@ async def vendedor_node(state: AgentState, llm_factory) -> AgentState:
             "pix":             "payments.pix_asaas",
             "pharmacist_validation": "sales.pharmacist_validation",
             "skip_known_field_confirmation": "sales.skip_known_field_confirmation",
-<<<<<<< HEAD
-=======
             "time_aware_greeting":   "attendance.time_aware_greeting",
->>>>>>> 7f77d76 (atualizando estado de saudação do agente)
         }
         for slug, key in keys.items():
             caps[slug] = await cap_svc.is_enabled(tenant_id, key)
@@ -531,12 +538,22 @@ async def vendedor_node(state: AgentState, llm_factory) -> AgentState:
                 make_save_customer_tool,
                 make_consultar_pedido_tool,
             )
-            from agents.tools.balcao import make_anotar_pedido_balcao_tool
+            from agents.tools.balcao import (
+                make_anotar_pedido_balcao_tool,
+                make_registrar_itens_interesse_tool,
+            )
             tools = [
                 make_save_customer_tool(schema_name, phone_num, customer),
                 make_consultar_pedido_tool(schema_name, phone_num),
+                make_registrar_itens_interesse_tool(schema_name, cart),
                 make_anotar_pedido_balcao_tool(schema_name, phone_num, customer, cart),
             ]
+
+            # Pré-atendimento marca o carrinho como 'balcao' para o save_context
+            # persistir esse modo (o portal/relatórios diferenciam de 'catalogo').
+            # É o cart-rascunho gravado por `registrar_itens_interesse` que torna
+            # a recuperação possível neste modo.
+            state = {**state, "stock_mode": "balcao"}
 
         else:
             # ── Modo normal (com consulta de estoque) ────────────────────────
