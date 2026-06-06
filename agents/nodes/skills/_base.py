@@ -451,6 +451,18 @@ async def run_skill(
     except Exception as _exc:  # noqa: BLE001
         log.warning("skill.customer_memory_block.failed", exc=str(_exc))
 
+    # Contexto temporal (hora + período) — capability `attendance.time_aware_greeting`.
+    # Sempre volátil: o conteúdo muda a cada turno. Quando OFF, bloco vazio.
+    try:
+        from services import capabilities as cap_svc
+        from services.time_context import build_time_context_block
+        if await cap_svc.is_enabled(state.get("tenant_id"), "attendance.time_aware_greeting"):
+            time_block = build_time_context_block()
+            if time_block:
+                volatile_parts.append(time_block)
+    except Exception as _exc:  # noqa: BLE001
+        log.warning("skill.time_context_block.failed", exc=str(_exc))
+
     # Se este skill recebeu um handoff, injeta o contexto e a resposta anterior.
     # ESTE BLOCO É VOLÁTIL — depende do skill anterior e do conteúdo da resposta
     # dele. Se for pro prefixo estável, invalida o cache em TODO handoff

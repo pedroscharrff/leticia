@@ -424,6 +424,12 @@ async def vendedor_node(state: AgentState, llm_factory) -> AgentState:
         # Pré-atendimento: pular confirmação de campos do cliente já cadastrados
         # (USE direto, sem perguntar "posso confirmar seu nome como ...?").
         "skip_known_field_confirmation": False,
+<<<<<<< HEAD
+=======
+        # Saudação no período correto do dia (bom dia / boa tarde / boa noite /
+        # boa madrugada). Injeta bloco volátil com hora + período.
+        "time_aware_greeting": False,
+>>>>>>> 7f77d76 (atualizando estado de saudação do agente)
     }
     cap_config: dict[str, dict] = {}
     try:
@@ -437,6 +443,10 @@ async def vendedor_node(state: AgentState, llm_factory) -> AgentState:
             "pix":             "payments.pix_asaas",
             "pharmacist_validation": "sales.pharmacist_validation",
             "skip_known_field_confirmation": "sales.skip_known_field_confirmation",
+<<<<<<< HEAD
+=======
+            "time_aware_greeting":   "attendance.time_aware_greeting",
+>>>>>>> 7f77d76 (atualizando estado de saudação do agente)
         }
         for slug, key in keys.items():
             caps[slug] = await cap_svc.is_enabled(tenant_id, key)
@@ -489,6 +499,16 @@ async def vendedor_node(state: AgentState, llm_factory) -> AgentState:
                     volatile_parts.append(customer_block)
             except Exception as _exc:  # noqa: BLE001
                 log.warning("vendedor.pre_customer_block_failed", exc=str(_exc))
+
+            # Contexto temporal (hora + período) — cap attendance.time_aware_greeting
+            if caps["time_aware_greeting"]:
+                try:
+                    from services.time_context import build_time_context_block
+                    time_block = build_time_context_block()
+                    if time_block:
+                        volatile_parts.append(time_block)
+                except Exception as _exc:  # noqa: BLE001
+                    log.warning("vendedor.pre_time_block_failed", exc=str(_exc))
 
             if received_handoff and handoff_context:
                 volatile_parts.append(
@@ -637,6 +657,16 @@ async def vendedor_node(state: AgentState, llm_factory) -> AgentState:
                     volatile_parts.append(addr_hint)
             except Exception as _exc:  # noqa: BLE001
                 log.warning("vendedor.address_hint_failed", exc=str(_exc))
+
+            # Contexto temporal (hora + período) — cap attendance.time_aware_greeting
+            if caps["time_aware_greeting"]:
+                try:
+                    from services.time_context import build_time_context_block
+                    time_block = build_time_context_block()
+                    if time_block:
+                        volatile_parts.append(time_block)
+                except Exception as _exc:  # noqa: BLE001
+                    log.warning("vendedor.time_block_failed", exc=str(_exc))
 
             if received_handoff:
                 volatile_parts.append(
