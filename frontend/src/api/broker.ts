@@ -209,6 +209,27 @@ export const discoverPaths = (payload: unknown) =>
   api.post<{ paths: DiscoveredPath[] }>("/portal/broker/discover", { payload })
      .then((r) => r.data.paths);
 
+export interface DiscoveredFieldFromHistory {
+  path: string;
+  type: string;
+  samples: unknown[];
+  directions: string[];
+  event_count: number;
+}
+
+export interface DiscoverFieldsFromHistoryResponse {
+  paths: DiscoveredFieldFromHistory[];
+  event_count: number;
+  inbound_count: number;
+  outbound_count: number;
+}
+
+export const discoverFieldsFromHistory = (integrationId: string, limit = 30) =>
+  api.get<DiscoverFieldsFromHistoryResponse>(
+    `/portal/broker/integrations/${integrationId}/discover-fields`,
+    { params: { limit } },
+  ).then((r) => r.data);
+
 export const previewMapping = (
   payload: unknown,
   match_rules: Record<string, unknown>,

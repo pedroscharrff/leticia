@@ -3,12 +3,14 @@ import { useSearchParams } from "react-router-dom";
 import { PortalLayout } from "../components/PortalLayout";
 import { Spinner } from "../components/Spinner";
 import {
+  type DiscoveredFieldFromHistory,
   type DiscoveredPath,
   type HandoffConfig,
   type Integration,
   type RawEvent,
   createIntegration,
   deleteIntegration,
+  discoverFieldsFromHistory,
   discoverPaths,
   getRawEvent,
   listIntegrations,
@@ -1184,6 +1186,40 @@ function HandoffTab({ integration, onSaved }: { integration: Integration; onSave
   );
   const [hhdPhonePath, setHhdPhonePath] = useState<string>(hhd.customer_phone_path ?? "$.to");
 
+  // Sugestões de paths a partir dos últimos eventos reais (raw_events).
+  // Evita o tenant ter que decorar "$.fromMe"/"$.to" — ele clica e escolhe.
+  const [discovered, setDiscovered] = useState<DiscoveredFieldFromHistory[]>([]);
+  const [discMeta, setDiscMeta] = useState<{
+    event_count: number; inbound_count: number; outbound_count: number;
+  } | null>(null);
+  const [discBusy, setDiscBusy] = useState(false);
+  const [discErr, setDiscErr] = useState<string>("");
+
+  async function loadSuggestions() {
+    setDiscBusy(true); setDiscErr("");
+    try {
+      const r = await discoverFieldsFromHistory(integration.id, 30);
+      setDiscovered(r.paths);
+      setDiscMeta({
+        event_count: r.event_count,
+        inbound_count: r.inbound_count,
+        outbound_count: r.outbound_count,
+      });
+    } catch (e: any) {
+      setDiscErr(e?.response?.data?.detail ?? e.message ?? "Falha ao buscar eventos.");
+    } finally {
+      setDiscBusy(false);
+    }
+  }
+
+  // Heurística: pra "valor que indica saída", as opções vêm dos samples do path
+  // selecionado em `hhdOutPath`. Pra "telefone do cliente", priorizamos paths
+  // do tipo string/number que aparecem em eventos OUTBOUND.
+  const selectedOutPathInfo = discovered.find((p) => p.path === hhdOutPath);
+  const outboundOnlyPaths = discovered.filter((p) => p.directions.includes("outbound"));
+  const phonePathCandidates = (outboundOnlyPaths.length ? outboundOnlyPaths : discovered)
+    .filter((p) => p.type === "string" || p.type === "int");
+
   // ── Encerrar atendimento (session_config) ─────────────────────────────────
   const sessCfg = integration.session_config || {};
   const [closeKeywordsText, setCloseKeywordsText] = useState<string>(
@@ -1483,30 +1519,91 @@ function HandoffTab({ integration, onSaved }: { integration: Integration; onSave
 
         {hhdEnabled && (
           <>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, margin: "8px 0 12px" }}>
+              <button
+                type="button"
+                onClick={loadSuggestions}
+                disabled={discBusy}
+                style={{
+                  padding: "6px 12px", borderRadius: 6, border: "1px solid #d1d5db",
+                  background: discBusy ? "#f3f4f6" : "white", cursor: discBusy ? "wait" : "pointer",
+                  fontSize: 13,
+                }}
+                title="Lê os últimos eventos REAIS recebidos no /hooks e sugere os campos disponíveis"
+              >
+                {discBusy ? "Buscando..." : "🔎 Sugerir a partir de eventos reais"}
+              </button>
+              {discMeta && (
+                <small style={{ color: "#86868b", fontSize: 12 }}>
+                  Analisados {discMeta.event_count} evento(s)
+                  {" "}({discMeta.inbound_count} entrada, {discMeta.outbound_count} saída).
+                  {discMeta.outbound_count === 0 && (
+                    <> Nenhum evento de saída ainda — envie 1 msg pelo WhatsApp e tente de novo.</>
+                  )}
+                </small>
+              )}
+              {discErr && <small style={{ color: "#dc2626" }}>{discErr}</small>}
+            </div>
+
+            <datalist id={`hhd-out-path-${integration.id}`}>
+              {discovered.map((p) => (
+                <option
+                  key={p.path}
+                  value={p.path}
+                  label={`${p.type} · ex.: ${(p.samples[0] ?? "").toString().slice(0, 40)}`}
+                />
+              ))}
+            </datalist>
+            <datalist id={`hhd-out-equals-${integration.id}`}>
+              {(selectedOutPathInfo?.samples ?? []).map((s, i) => (
+                <option key={i} value={String(s)} />
+              ))}
+            </datalist>
+            <datalist id={`hhd-phone-path-${integration.id}`}>
+              {phonePathCandidates.map((p) => (
+                <option
+                  key={p.path}
+                  value={p.path}
+                  label={`${p.type} · ex.: ${(p.samples[0] ?? "").toString().slice(0, 40)}`}
+                />
+              ))}
+            </datalist>
+
             <label className="broker-field">
               <span>Campo que marca mensagem de saída (path)</span>
               <input
+                list={`hhd-out-path-${integration.id}`}
                 value={hhdOutPath}
                 onChange={(e) => setHhdOutPath(e.target.value)}
                 placeholder="$.fromMe"
               />
+              {discovered.length > 0 && (
+                <small style={{ color: "#86868b", fontSize: 12 }}>
+                  Clique no campo para ver os caminhos detectados nos eventos reais.
+                </small>
+              )}
             </label>
             <label className="broker-field">
               <span>Valor que indica saída</span>
               <input
+                list={`hhd-out-equals-${integration.id}`}
                 value={hhdOutEquals}
                 onChange={(e) => setHhdOutEquals(e.target.value)}
                 placeholder="true"
               />
               <small style={{ color: "#86868b", fontSize: 12 }}>
                 Ex.: <code>$.fromMe</code> = <code>true</code>, ou
-                {" "}<code>$.message.direction</code> = <code>out</code>. Veja o payload
-                bruto do gateway em Logs / Eventos.
+                {" "}<code>$.message.direction</code> = <code>out</code>.
+                {selectedOutPathInfo && selectedOutPathInfo.samples.length > 0 && (
+                  <> Valores vistos para <code>{hhdOutPath}</code>:{" "}
+                    {selectedOutPathInfo.samples.map((s) => String(s)).join(", ")}.</>
+                )}
               </small>
             </label>
             <label className="broker-field">
               <span>Caminho do telefone do CLIENTE na mensagem de saída (path)</span>
               <input
+                list={`hhd-phone-path-${integration.id}`}
                 value={hhdPhonePath}
                 onChange={(e) => setHhdPhonePath(e.target.value)}
                 placeholder="$.to"

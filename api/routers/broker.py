@@ -1222,6 +1222,87 @@ async def discover(body: DiscoverIn, _user: TenantUser):
     return {"paths": broker.discover_paths(body.payload)}
 
 
+@portal_router.get("/integrations/{integration_id}/discover-fields")
+async def discover_fields_from_history(
+    integration_id: str, user: TenantUser, limit: int = 30,
+):
+    """Agrega paths dos últimos N eventos REAIS desta integração.
+
+    Em vez de o tenant ter que decorar campos (`$.fromMe`, `$.to`, ...) e colar
+    um payload de amostra, o portal busca os últimos eventos brutos já recebidos
+    via `/hooks` (tabela `broker_raw_events`) e devolve a lista de paths
+    encontrados com seus tipos, amostras de valor e em quantos eventos cada um
+    apareceu. A UI alimenta os dropdowns da seção "Pausar a IA quando o
+    atendente responder" a partir disso. Stateless do ponto de vista de
+    metadados — usa só o que já está persistido.
+    """
+    await _own_integration(integration_id, user.tenant_id)
+    limit = min(max(limit, 1), 100)
+
+    async with get_db_conn() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT payload, direction
+              FROM public.broker_raw_events
+             WHERE tenant_id = $1
+               AND integration_id = $2
+               AND payload IS NOT NULL
+             ORDER BY created_at DESC
+             LIMIT $3
+            """,
+            user.tenant_id, integration_id, limit,
+        )
+
+    # Agregação: {path -> {type, samples[], directions{}, event_count}}
+    agg: dict[str, dict[str, Any]] = {}
+    inbound_count = 0
+    outbound_count = 0
+    for r in rows:
+        direction = (r["direction"] or "inbound").lower()
+        if direction == "outbound":
+            outbound_count += 1
+        else:
+            inbound_count += 1
+        try:
+            paths = broker.discover_paths(r["payload"])
+        except Exception:
+            continue
+        for p in paths:
+            key = p["path"]
+            slot = agg.get(key)
+            if slot is None:
+                slot = {"path": key, "type": p["type"],
+                        "samples": [], "directions": set(), "event_count": 0}
+                agg[key] = slot
+            slot["event_count"] += 1
+            slot["directions"].add(direction)
+            sample = p.get("sample")
+            # Mantém amostras únicas (máx 5), priorizando primitivos legíveis.
+            if sample is not None and sample != "" \
+                    and sample not in slot["samples"] and len(slot["samples"]) < 5:
+                slot["samples"].append(sample)
+
+    paths_out = [
+        {
+            "path": v["path"],
+            "type": v["type"],
+            "samples": v["samples"],
+            "directions": sorted(v["directions"]),
+            "event_count": v["event_count"],
+        }
+        for v in agg.values()
+    ]
+    # Ordena por contagem desc → quem mais aparece sobe (mais útil pro dropdown).
+    paths_out.sort(key=lambda x: (-x["event_count"], x["path"]))
+
+    return {
+        "paths": paths_out,
+        "event_count": len(rows),
+        "inbound_count": inbound_count,
+        "outbound_count": outbound_count,
+    }
+
+
 @portal_router.get("/raw-events", response_model=list[RawEventOut])
 async def list_events(user: TenantUser, limit: int = 50, status_filter: str | None = None):
     limit = min(max(limit, 1), 200)
