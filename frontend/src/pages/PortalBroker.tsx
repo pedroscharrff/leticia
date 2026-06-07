@@ -433,6 +433,8 @@ function FlowTab({ integration, onSaved }: { integration: Integration; onSaved: 
         // Preserva config de handoff (editada na aba "Transferir p/ atendente")
         handoff_config: integration.handoff_config || {},
         session_config: integration.session_config || {},
+        handoff_pause_minutes: integration.handoff_pause_minutes ?? 240,
+        human_handoff_detection: integration.human_handoff_detection || {},
       });
       setSaveMsg("✓ Configuração salva!");
       onSaved();
@@ -1170,6 +1172,18 @@ function HandoffTab({ integration, onSaved }: { integration: Integration; onSave
     cfg.post_handoff_order === "offers_first" ? "offers_first" : "summary_first"
   );
 
+  // ── Pausa da IA após handoff / resposta humana ────────────────────────────
+  const [pauseMin, setPauseMin] = useState<number>(integration.handoff_pause_minutes ?? 240);
+
+  // ── Detecção de resposta humana (pausa a IA quando o atendente responde) ──
+  const hhd = integration.human_handoff_detection || {};
+  const [hhdEnabled, setHhdEnabled] = useState<boolean>(!!hhd.enabled);
+  const [hhdOutPath, setHhdOutPath] = useState<string>(hhd.outbound_match?.path ?? "$.fromMe");
+  const [hhdOutEquals, setHhdOutEquals] = useState<string>(
+    hhd.outbound_match?.equals != null ? String(hhd.outbound_match.equals) : "true"
+  );
+  const [hhdPhonePath, setHhdPhonePath] = useState<string>(hhd.customer_phone_path ?? "$.to");
+
   // ── Encerrar atendimento (session_config) ─────────────────────────────────
   const sessCfg = integration.session_config || {};
   const [closeKeywordsText, setCloseKeywordsText] = useState<string>(
@@ -1203,6 +1217,12 @@ function HandoffTab({ integration, onSaved }: { integration: Integration; onSave
       : DEFAULT_TRIGGER_KEYWORDS
     ).join(", "));
     setPostHandoffOrder(c.post_handoff_order === "offers_first" ? "offers_first" : "summary_first");
+    setPauseMin(integration.handoff_pause_minutes ?? 240);
+    const h = integration.human_handoff_detection || {};
+    setHhdEnabled(!!h.enabled);
+    setHhdOutPath(h.outbound_match?.path ?? "$.fromMe");
+    setHhdOutEquals(h.outbound_match?.equals != null ? String(h.outbound_match.equals) : "true");
+    setHhdPhonePath(h.customer_phone_path ?? "$.to");
     const s = integration.session_config || {};
     setCloseKeywordsText((s.close_keywords && s.close_keywords.length
       ? s.close_keywords
@@ -1233,6 +1253,17 @@ function HandoffTab({ integration, onSaved }: { integration: Integration; onSave
       trigger_keywords: parseKeywords(),
       post_handoff_order: postHandoffOrder,
     };
+    // Coerção do valor esperado no match de saída: "true"/"false"/número/string
+    const equalsRaw = hhdOutEquals.trim();
+    let equalsCoerced: unknown = equalsRaw;
+    if (equalsRaw === "true") equalsCoerced = true;
+    else if (equalsRaw === "false") equalsCoerced = false;
+    else if (equalsRaw !== "" && !isNaN(Number(equalsRaw))) equalsCoerced = Number(equalsRaw);
+    const human_handoff_detection = {
+      enabled: hhdEnabled,
+      outbound_match: { path: hhdOutPath.trim(), equals: equalsCoerced },
+      customer_phone_path: hhdPhonePath.trim(),
+    };
     try {
       // Reaproveita o saveFlow — passa os demais campos da integração sem alteração
       await saveFlow(integration.id, {
@@ -1251,6 +1282,8 @@ function HandoffTab({ integration, onSaved }: { integration: Integration; onSave
           close_keywords: parseCloseKeywords(),
           close_message: closeMessage.trim() || DEFAULT_CLOSE_MESSAGE,
         },
+        handoff_pause_minutes: pauseMin,
+        human_handoff_detection,
       });
       setSaveMsg("✓ Configuração de transferência salva!");
       onSaved();
@@ -1409,6 +1442,82 @@ function HandoffTab({ integration, onSaved }: { integration: Integration; onSave
             bloco só é enviado se a respectiva funcionalidade estiver ativa.
           </small>
         </label>
+
+        <label className="broker-field">
+          <span>Tempo que a IA fica pausada após a transferência / resposta humana (minutos)</span>
+          <input
+            type="number"
+            min={0}
+            max={10080}
+            value={pauseMin}
+            onChange={(e) => setPauseMin(Math.max(0, Math.min(10080, parseInt(e.target.value || "0", 10) || 0)))}
+          />
+          <small style={{ color: "#86868b", fontSize: 12 }}>
+            Depois de transferir ao atendente (ou quando um humano responde, se a
+            detecção abaixo estiver ligada), o robô fica em silêncio por este tempo
+            (padrão 240 = 4h). Quando o cliente volta a falar após a janela, a IA
+            reassume. Use <strong>0</strong> para a IA não pausar.
+          </small>
+        </label>
+      </div>
+
+      {/* Bloco 3c: detecção de resposta humana → pausa automática da IA */}
+      <div className="broker-card">
+        <h3 className="broker-card-title">Pausar a IA quando o atendente responder</h3>
+        <p className="broker-card-sub">
+          Em gateways que reenviam as mensagens de <strong>saída</strong> (TalkFarma /
+          ClickMassa / WAHA / Evolution), conseguimos detectar quando um atendente
+          humano responde pelo WhatsApp e pausar a IA automaticamente (janela rolante:
+          cada resposta do humano renova o tempo de pausa configurado acima). As
+          respostas do próprio robô são reconhecidas e <strong>não</strong> pausam a IA.
+        </p>
+
+        <label className="broker-field" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <input
+            type="checkbox"
+            checked={hhdEnabled}
+            onChange={(e) => setHhdEnabled(e.target.checked)}
+          />
+          <span>Ativar detecção de resposta humana neste gateway</span>
+        </label>
+
+        {hhdEnabled && (
+          <>
+            <label className="broker-field">
+              <span>Campo que marca mensagem de saída (path)</span>
+              <input
+                value={hhdOutPath}
+                onChange={(e) => setHhdOutPath(e.target.value)}
+                placeholder="$.fromMe"
+              />
+            </label>
+            <label className="broker-field">
+              <span>Valor que indica saída</span>
+              <input
+                value={hhdOutEquals}
+                onChange={(e) => setHhdOutEquals(e.target.value)}
+                placeholder="true"
+              />
+              <small style={{ color: "#86868b", fontSize: 12 }}>
+                Ex.: <code>$.fromMe</code> = <code>true</code>, ou
+                {" "}<code>$.message.direction</code> = <code>out</code>. Veja o payload
+                bruto do gateway em Logs / Eventos.
+              </small>
+            </label>
+            <label className="broker-field">
+              <span>Caminho do telefone do CLIENTE na mensagem de saída (path)</span>
+              <input
+                value={hhdPhonePath}
+                onChange={(e) => setHhdPhonePath(e.target.value)}
+                placeholder="$.to"
+              />
+              <small style={{ color: "#86868b", fontSize: 12 }}>
+                Na saída, o telefone do cliente é o <strong>destinatário</strong> (não o
+                número do bot). Ex.: <code>$.to</code>, <code>$.message.to</code>.
+              </small>
+            </label>
+          </>
+        )}
       </div>
 
       {/* Bloco 3b: encerrar atendimento via palavra-chave do cliente */}

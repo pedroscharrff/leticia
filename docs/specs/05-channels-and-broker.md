@@ -103,17 +103,70 @@ class ChannelAdapter(ABC):
 ```
 POST /hooks/{tenant_token}/{integration_slug}
   ├─ valida tenant + integration (active, enabled)
+  ├─ skip_rules? → marca 'skipped' e retorna (evita loop bot↔gateway)
+  ├─ human_handoff_detection? (mensagem de SAÍDA — ver seção dedicada)
+  │     ├─ eco do próprio bot (bot_echo.is_echo) → 'skipped', IA segue ativa
+  │     └─ atendente humano → conversation_state.pause(handoff_pause_minutes), retorna
   ├─ valida HMAC se hmac_secret configurado
-  ├─ persiste broker_raw_events (status=received, payload bruto)
+  ├─ persiste broker_raw_events (status=pending, payload bruto)
   ├─ aplica inbound_field_map → canonical_input {phone, message, session_id, media_*, name}
   ├─ detect_media auxiliar (services.media_detect) se mapping não capturou mídia
-  ├─ is_ai_paused? → 200 OK, sem disparar worker
   ├─ usage_check (middleware) → 402 se limite
   ├─ bundle_enabled?
   │     SIM → push em Redis list + agenda process_bundled_message com countdown
   │     NÃO → disparada process_broker_message direto
   └─ retorna reply_status_code com body padrão ou template (modo response)
 ```
+
+> ⚠️ **O gate `is_ai_paused` do broker é enforçado no WORKER, não no ingest.**
+> Diferente do webhook nativo (que checa no ingest, `routers/webhook.py`), o
+> broker faz *bundling* (mensagens agrupadas com `countdown`), então o check
+> autoritativo precisa rodar no momento do processamento. Vive em
+> `celery_app.py::_run_broker_flow` (antes de `_maybe_close_or_reset_session`),
+> cobrindo `process_broker_message` E `process_bundled_message` — "mesmo as
+> picadas". Ver SPEC 09. Sem esse gate, o broker respondia durante a janela de
+> handoff e re-finalizava pedidos antigos (regressão real, Letícia 2026-06-07).
+
+### Detecção de resposta humana → pausa automática da IA
+
+**Problema (o "dilema do auto-eco"):** em gateways que ecoam mensagens de SAÍDA
+(TalkFarma/ClickMassa/WAHA/Evolution), tanto o bot quanto o atendente humano
+enviam pelo mesmo número e o gateway devolve AMBAS ao `/hooks`. Pausar a IA em
+todo eco de saída faria o bot se auto-pausar a cada resposta que ele mesmo dá.
+
+**Solução (config `tenant_integrations.human_handoff_detection`, jsonb):**
+```jsonc
+{
+  "enabled": true,
+  "outbound_match": { "path": "$.fromMe", "equals": true },  // marca msg de saída
+  "customer_phone_path": "$.to"                               // telefone do CLIENTE
+}
+```
+1. Se `outbound_match` casa (via `broker.resolve_path`), a msg é de SAÍDA.
+2. Extrai o telefone do **destinatário** via `customer_phone_path` (na saída, o
+   `phone` do `inbound_field_map` aponta pro número do BOT — não reusar).
+3. `services.bot_echo.is_echo(tenant, customer_phone, texto)`: o bot registra um
+   fingerprint efêmero (Redis, TTL 5 min) de tudo que envia (`bot_echo.remember`,
+   plugado nos sends do `_run_broker_flow` + `transfer_to_human`). Se casar → é o
+   próprio bot → ignora (IA segue ativa). Senão → atendente humano.
+4. Humano → `conversation_state.pause(until_minutes=handoff_pause_minutes,
+   by="auto:human_reply")`. **Janela rolante:** cada msg do humano renova
+   `paused_until`; após N min de silêncio do atendente a IA reassume sozinha.
+
+Dedup por `idempotency_key='out:{hash}'` ANTES do `is_echo` (que consome o
+fingerprint) — senão um retry do gateway leria o eco do bot como "humano".
+
+**Escopo:** SÓ gateways broker que ecoam saída. Z-API/Meta (canais nativos) não
+reenviam o outbound do atendente — fora de escopo (precisaria de echo mode).
+**Mídia** (ofertas) não tem texto casável → tratada conservadoramente como bot.
+
+### Tempo de pausa configurável
+
+Coluna `handoff_pause_minutes` (INTEGER, default 240) em `tenant_channels` E
+`tenant_integrations` (migration 028). Editável no portal:
+`PortalCanais.tsx` (aba Transferência) e `PortalBroker.tsx` (aba handoff).
+Reusada tanto pelo `auto_pause_after_handoff` quanto pelo `pause` de reply humano.
+`0` = não pausa.
 
 ### Apply mapping (broker.apply_mapping)
 
@@ -193,7 +246,10 @@ Para mídia (ofertas pré-handoff): `services.channel_media.send_media(provider,
 - **Não ignorar mídia que veio fora do `inbound_field_map`** — `services.media_detect.detect_media(raw_payload)` é safety net.
 - **Não fazer forward do reply principal quando `handoff_was_executed=True`** — `transfer_to_human` já entregou a mensagem ao cliente; forward duplicaria.
 - **Não confiar no `phone` cru pro `session_key`** — sempre normalize. Caso contrário, sessões duplicam.
-- **Não bypassar `is_ai_paused`** — quando atendente humano assumiu, bot ignora 100% das mensagens daquela conversa (mesmo as picadas).
+- **Não bypassar `is_ai_paused`** — quando atendente humano assumiu, bot ignora 100% das mensagens daquela conversa (mesmo as picadas). No broker, o gate vive em `_run_broker_flow` (worker), NÃO no ingest (por causa do bundling).
+- **Não pausar a IA em todo eco de saída sem checar `bot_echo.is_echo` primeiro** — o gateway ecoa as próprias respostas do bot; sem o fingerprint, a IA se auto-pausa a cada mensagem (o "dilema do auto-eco").
+- **Não reusar o `phone` do `inbound_field_map` em mensagem de SAÍDA** — ali ele é o número do bot. Use `customer_phone_path` (destinatário).
+- **Não rodar `is_echo` antes do dedup `out:{hash}`** — `is_echo` consome o fingerprint; um retry do gateway leria o eco do bot como resposta humana e pausaria a IA por engano.
 
 ## Schema das tabelas
 
@@ -213,6 +269,8 @@ bundle_enabled, bundle_window_seconds,
 skip_rules JSONB,            -- regras "se body bate X, ignora"
 handoff_config JSONB,
 session_config JSONB,
+handoff_pause_minutes INT,         -- duração da pausa pós-handoff/reply humano (default 240)
+human_handoff_detection JSONB,     -- {enabled, outbound_match{path,equals}, customer_phone_path} (mig 062)
 config_json JSONB
 ```
 

@@ -94,6 +94,8 @@ class IntegrationOut(BaseModel):
     skip_rules: list[dict] = Field(default_factory=list)
     handoff_config: dict = Field(default_factory=dict)
     session_config: dict = Field(default_factory=dict)
+    handoff_pause_minutes: int = 240
+    human_handoff_detection: dict = Field(default_factory=dict)
 
 
 class FlowConfigIn(BaseModel):
@@ -110,6 +112,8 @@ class FlowConfigIn(BaseModel):
     skip_rules: list[dict[str, Any]] = Field(default_factory=list)
     handoff_config: dict[str, Any] = Field(default_factory=dict)
     session_config: dict[str, Any] = Field(default_factory=dict)
+    handoff_pause_minutes: int = Field(default=240, ge=0, le=10080)
+    human_handoff_detection: dict[str, Any] = Field(default_factory=dict)
 
 
 class MappingIn(BaseModel):
@@ -294,6 +298,8 @@ def _integration_out(row: dict, ingest_url: str) -> IntegrationOut:
         skip_rules=_as_jsonb(row.get("skip_rules"), default=[]),
         handoff_config=_as_jsonb(row.get("handoff_config")),
         session_config=_as_jsonb(row.get("session_config")),
+        handoff_pause_minutes=row.get("handoff_pause_minutes") or 240,
+        human_handoff_detection=_as_jsonb(row.get("human_handoff_detection")),
         config_json=_as_jsonb(row.get("config_json")),
     )
 
@@ -413,6 +419,119 @@ async def ingest(
                     "skipped": True,
                     "reason": rule.get("comment") or f"Ignorado: {path} == {expected}",
                 }
+
+        # ── Detecção de resposta HUMANA → pausa a IA ─────────────────────────
+        # Gateways que ecoam mensagens de SAÍDA (TalkFarma/ClickMassa/WAHA/...)
+        # devolvem tanto as respostas do BOT quanto as do ATENDENTE pelo mesmo
+        # número. Quando o atendente humano responde, a IA deve calar a boca
+        # (janela rolante). Distinção bot×humano via fingerprint efêmero
+        # (services.bot_echo) — o cerne do "dilema do auto-eco". Ver SPEC 05.
+        hhd = integration.get("human_handoff_detection") or {}
+        if isinstance(hhd, str):
+            try:
+                hhd = json.loads(hhd) or {}
+            except Exception:
+                hhd = {}
+        om = hhd.get("outbound_match") or {}
+        om_path = om.get("path")
+        if hhd.get("enabled") and om_path and \
+                str(broker.resolve_path(payload, om_path)) == str(om.get("equals")):
+            # É mensagem de SAÍDA (do bot OU do atendente humano).
+            idem = broker.idempotency_hash(payload)
+            out_key = f"out:{idem}"
+            # Dedup: se já processamos este eco, NÃO reavaliar (is_echo consome o
+            # fingerprint; um retry do gateway leria o eco do bot como "humano").
+            existing_out = await conn.fetchrow(
+                "SELECT id FROM public.broker_raw_events "
+                "WHERE tenant_id=$1 AND integration_slug=$2 AND idempotency_key=$3",
+                tenant["id"], integration_slug, out_key,
+            )
+            if existing_out:
+                return {"accepted": True, "duplicate": True,
+                        "reason": "Evento de saída já processado"}
+
+            cust_path = hhd.get("customer_phone_path")
+            cust_raw = broker.resolve_path(payload, cust_path) if cust_path else None
+            customer_phone = "".join(c for c in str(cust_raw or "") if c.isdigit())[:20]
+            # Texto da msg: reaproveita o inbound_field_map do tenant (o corpo
+            # costuma estar no mesmo caminho em inbound e outbound).
+            try:
+                canon = broker.apply_mapping(integration.get("inbound_field_map") or {}, payload)
+                out_text = (canon.get("message") or "") if isinstance(canon, dict) else ""
+            except Exception:
+                out_text = ""
+
+            if not customer_phone:
+                log.warning("hooks.outbound.no_customer_phone",
+                            tenant=str(tenant["id"]), slug=integration_slug,
+                            cust_path=cust_path)
+                await conn.execute(
+                    """
+                    INSERT INTO public.broker_raw_events
+                      (tenant_id, integration_id, integration_slug, direction,
+                       payload, headers, idempotency_key, status, error,
+                       canonical_event, processed_at)
+                    VALUES ($1,$2,$3,'outbound',$4,$5,$6,'skipped',$7,'outbound.no_customer_phone',NOW())
+                    ON CONFLICT DO NOTHING
+                    """,
+                    tenant["id"], integration["id"], integration_slug,
+                    payload, {}, out_key, "Saída sem telefone do cliente",
+                )
+                return {"accepted": True, "skipped": True,
+                        "reason": "Mensagem de saída sem telefone do cliente"}
+
+            from services import bot_echo
+            if await bot_echo.is_echo(str(tenant["id"]), customer_phone, out_text):
+                # Eco da própria mensagem do bot → IA segue ativa.
+                log.info("hooks.outbound.bot_echo",
+                         tenant=str(tenant["id"]), slug=integration_slug,
+                         phone=customer_phone[:4])
+                await conn.execute(
+                    """
+                    INSERT INTO public.broker_raw_events
+                      (tenant_id, integration_id, integration_slug, direction,
+                       payload, headers, idempotency_key, status, error,
+                       canonical_event, processed_at)
+                    VALUES ($1,$2,$3,'outbound',$4,$5,$6,'skipped',$7,'outbound.bot_echo',NOW())
+                    ON CONFLICT DO NOTHING
+                    """,
+                    tenant["id"], integration["id"], integration_slug,
+                    payload, {}, out_key, "Eco da mensagem do próprio bot",
+                )
+                return {"accepted": True, "skipped": True,
+                        "reason": "Eco da mensagem do próprio bot (IA segue ativa)"}
+
+            # Atendente HUMANO respondeu → pausa a IA por handoff_pause_minutes.
+            # Cada msg do humano renova a janela (pause() faz UPSERT de paused_until).
+            try:
+                from services import conversation_state as cs
+                pause_min = int(integration["handoff_pause_minutes"] or 240)
+                await cs.pause(
+                    str(tenant["id"]), customer_phone,
+                    until_minutes=pause_min,
+                    by="auto:human_reply",
+                    reason="atendente humano respondeu",
+                )
+                log.info("broker.human_reply.ai_paused",
+                         tenant=str(tenant["id"]), slug=integration_slug,
+                         phone=customer_phone[:4], pause_minutes=pause_min)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("broker.human_reply.pause_failed",
+                            tenant=str(tenant["id"]), exc=str(exc))
+            await conn.execute(
+                """
+                INSERT INTO public.broker_raw_events
+                  (tenant_id, integration_id, integration_slug, direction,
+                   payload, headers, idempotency_key, status, error,
+                   canonical_event, processed_at)
+                VALUES ($1,$2,$3,'outbound',$4,$5,$6,'processed',NULL,'human_reply.ai_paused',NOW())
+                ON CONFLICT DO NOTHING
+                """,
+                tenant["id"], integration["id"], integration_slug,
+                payload, {}, out_key,
+            )
+            return {"accepted": True, "paused_ai": True,
+                    "reason": "Atendente humano respondeu — IA pausada"}
 
         log.info("hooks.persisting", tenant=str(tenant["id"]), slug=integration_slug)
 
@@ -906,6 +1025,8 @@ async def save_flow(
                 skip_rules             = $11,
                 handoff_config         = $12,
                 session_config         = $13,
+                handoff_pause_minutes  = $14,
+                human_handoff_detection = $15,
                 updated_at             = NOW()
             WHERE id = $1
             RETURNING *
@@ -923,6 +1044,8 @@ async def save_flow(
             body.skip_rules,
             body.handoff_config,
             body.session_config,
+            body.handoff_pause_minutes,
+            body.human_handoff_detection,
         )
         tenant = await conn.fetchrow(
             "SELECT api_key FROM public.tenants WHERE id = $1", user.tenant_id,

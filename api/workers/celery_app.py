@@ -296,6 +296,11 @@ async def _send_pre_handoff_offers(
         from services import channel_media as cm
 
         if not await cap_svc.is_enabled(tenant_id, "sales.pre_handoff_offers"):
+            # Skip explícito: capability desligada no tenant. Logar para o skip
+            # ser diagnosticável — handoff dispara em código (true/false), então
+            # "não saiu oferta" nunca deve ser um no-op silencioso.
+            log.info("pre_handoff_offers.skipped",
+                     tenant=tenant_id, reason="capability_disabled")
             return 0
 
         cfg = await cap_svc.get_config(tenant_id, "sales.pre_handoff_offers") or {}
@@ -304,6 +309,11 @@ async def _send_pre_handoff_offers(
 
         offers = await offers_svc.get_active_offers(tenant_id, limit=limit)
         if not offers:
+            # Skip explícito: capability ON mas nenhuma oferta vigente
+            # (active=FALSE ou fora da janela valid_from/valid_until). É a causa
+            # nº1 de "transferiu mas não mandou oferta" — antes era invisível.
+            log.info("pre_handoff_offers.skipped",
+                     tenant=tenant_id, reason="no_active_offers")
             return 0
 
         text_only = [o for o in offers if not (o.get("media_url") and o.get("media_type"))]
@@ -1107,7 +1117,10 @@ async def _run_broker_flow(
     # 2) Encerra agora se a msg casa com palavra-chave configurada no canal.
     async def _send_via_broker(text: str) -> None:
         """Envia texto pelo reply_url do gateway (mesmo caminho do reply normal)."""
-        from services import broker as broker_svc
+        from services import broker as broker_svc, bot_echo
+        # Fingerprint do que o BOT mandou: o eco de saída do gateway será
+        # reconhecido como "próprio bot" (não pausa a IA). Ver bot_echo.py.
+        await bot_echo.remember(tenant_id, phone_clean, text)
         ctx = {
             "input": canonical_input, "reply": text,
             "phone": phone, "message": message,
@@ -1124,6 +1137,33 @@ async def _run_broker_flow(
             async with httpx.AsyncClient(timeout=15) as client:
                 await client.request(method, integration["reply_url"],
                                      json=body, headers=headers)
+
+    # 0) Pausa da IA: se um humano assumiu a conversa (ai_paused + janela ativa),
+    #    o bot ignora 100% das mensagens — inclusive as picadas (bundled). Espelha
+    #    o curto-circuito que o webhook nativo já faz (routers/webhook.py:58).
+    #    SPEC 05 §"Não bypassar is_ai_paused". Sem este gate, o broker respondia
+    #    durante a janela de handoff e re-finalizava pedidos antigos (o histórico
+    #    Redis vazava de volta pro LLM porque o reset não roda enquanto pausado).
+    try:
+        from services.conversation_state import is_ai_paused
+        paused, pause_reason = await is_ai_paused(tenant_id, phone_clean)
+        if paused:
+            log.info("broker.flow.skipped.ai_paused",
+                     tenant=tenant_id, phone=phone_clean[:4], reason=pause_reason)
+            try:
+                async with get_db_conn() as conn:
+                    await conn.execute(
+                        "UPDATE public.broker_raw_events "
+                        "SET status='processed', canonical_event='skipped.ai_paused', "
+                        "    attempts=attempts+1, processed_at=NOW() "
+                        "WHERE id=$1",
+                        raw_event_id,
+                    )
+            except Exception:
+                pass
+            return
+    except Exception as exc:  # noqa: BLE001
+        log.warning("broker.flow.pause_check_failed", tenant=tenant_id, exc=str(exc))
 
     try:
         ended = await _maybe_close_or_reset_session(
@@ -1296,6 +1336,14 @@ async def _run_broker_flow(
                 reply_text = (handoff_cfg.get("transfer_message")
                               or "Estou te transferindo para um atendente agora. Um momento, por favor.")
             skill_used = "handoff"
+            # `transfer_to_human` já entregou `reply_text` ao cliente (POST direto
+            # no gateway). Fingerprint para que o eco dessa msg não seja lido como
+            # resposta humana e pause a IA indevidamente.
+            try:
+                from services import bot_echo
+                await bot_echo.remember(tenant_id, phone_clean, reply_text)
+            except Exception:
+                pass
             if not (handoff_result and handoff_result.get("ok")):
                 # Transferência externa falhou — finalizamos mesmo assim
                 # (decisão de produto): o atendimento é encerrado e a IA pausada.
@@ -1381,6 +1429,8 @@ async def _run_broker_flow(
         headers = {str(k): str(v) for k, v in
                    (integration.get("reply_headers") or {}).items() if k and v}
         try:
+            from services import bot_echo
+            await bot_echo.remember(tenant_id, phone_clean, reply_text)
             async with httpx.AsyncClient(timeout=15) as client:
                 resp = await client.request(
                     method, integration["reply_url"],
@@ -1411,6 +1461,8 @@ async def _run_broker_flow(
     # depois do reply principal já ter sido forward-eado.
     if handoff_was_executed and integration["reply_mode"] == "forward" and integration["reply_url"]:
         async def _send_text(text: str) -> None:
+            from services import bot_echo
+            await bot_echo.remember(tenant_id, phone_clean, text)
             ctx = {**reply_context, "reply": text, "_kind": "pre_handoff_offer"}
             body = (
                 broker_svc.apply_mapping(template, ctx) if template else {"reply": text}

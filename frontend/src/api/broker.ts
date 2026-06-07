@@ -22,7 +22,15 @@ export interface Integration {
   skip_rules: { path: string; equals: unknown; comment?: string }[];
   handoff_config: HandoffConfig;
   session_config: SessionConfig;
+  handoff_pause_minutes: number;
+  human_handoff_detection: HumanHandoffDetection;
   config_json: IntegrationConfig;
+}
+
+export interface HumanHandoffDetection {
+  enabled?: boolean;
+  outbound_match?: { path?: string; equals?: unknown };
+  customer_phone_path?: string;
 }
 
 export interface SessionConfig {
@@ -63,6 +71,8 @@ export interface FlowConfig {
   skip_rules?: { path: string; equals: unknown; comment?: string }[];
   handoff_config?: HandoffConfig;
   session_config?: SessionConfig;
+  handoff_pause_minutes?: number;
+  human_handoff_detection?: HumanHandoffDetection;
 }
 
 export interface IntegrationInput {

@@ -116,6 +116,7 @@ export interface Channel {
   active: boolean;
   config_json: Record<string, unknown>;
   handoff_config: HandoffConfig;
+  handoff_pause_minutes: number;
   webhook_url: string;
 }
 

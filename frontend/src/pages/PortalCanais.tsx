@@ -556,6 +556,7 @@ function TabConexao({
 
 function TabTransferencia({ channel, onChanged }: { channel: Channel; onChanged: (ch: Channel) => void }) {
   const [cfg, setCfg] = useState<HandoffConfig>(channel.handoff_config || {});
+  const [pauseMin, setPauseMin] = useState<number>(channel.handoff_pause_minutes ?? 240);
   const [busy, setBusy] = useState(false);
   const [info, setInfo] = useState("");
   const [err, setErr] = useState("");
@@ -568,7 +569,7 @@ function TabTransferencia({ channel, onChanged }: { channel: Channel; onChanged:
   async function save() {
     setBusy(true); setErr(""); setInfo("");
     try {
-      const updated = await updateChannel(channel.id, { handoff_config: cfg });
+      const updated = await updateChannel(channel.id, { handoff_config: cfg, handoff_pause_minutes: pauseMin });
       onChanged(updated);
       setInfo("Configuração salva.");
       setTimeout(() => setInfo(""), 2000);
@@ -686,6 +687,23 @@ function TabTransferencia({ channel, onChanged }: { channel: Channel; onChanged:
         </select>
         <small style={{ color: "#6b7280" }}>
           Define qual mensagem o cliente recebe primeiro após a transferência ao balcão.
+        </small>
+      </div>
+
+      <div className="drawer-row">
+        <label className="form-label">Tempo que a IA fica pausada após a transferência (minutos)</label>
+        <input
+          className="form-input"
+          type="number"
+          min={0}
+          max={10080}
+          value={pauseMin}
+          onChange={(e) => setPauseMin(Math.max(0, Math.min(10080, parseInt(e.target.value || "0", 10) || 0)))}
+        />
+        <small style={{ color: "#6b7280" }}>
+          Depois de transferir ao atendente, o robô fica em silêncio por este tempo
+          (padrão 240 = 4h). Quando o cliente volta a falar após a janela, a IA reassume.
+          Use <strong>0</strong> para a IA não pausar.
         </small>
       </div>
 

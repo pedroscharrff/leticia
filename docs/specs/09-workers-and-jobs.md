@@ -65,6 +65,22 @@ Sequência (`_run_graph`):
 
 Entrypoint do `/hooks/{tenant}/{slug}` (sem bundling).
 
+Tanto `process_broker_message` quanto `process_bundled_message` delegam ao
+helper compartilhado `_run_broker_flow`.
+
+> **Gate `is_ai_paused` (broker):** logo no início de `_run_broker_flow`, ANTES
+> de `_maybe_close_or_reset_session`, checamos `is_ai_paused(tenant, phone)`.
+> Se pausado → log `broker.flow.skipped.ai_paused`, marca o evento `processed`
+> e RETURN (não roda o agente). É o equivalente broker do gate que o webhook
+> nativo faz no ingest — mas aqui tem que ser no worker porque o bundling
+> processa depois do ingest. Sem isso, o bot respondia durante a janela de
+> handoff e re-finalizava pedidos antigos (Letícia 2026-06-07).
+>
+> **Fingerprint anti-auto-pausa:** `_run_broker_flow` chama `bot_echo.remember`
+> em todos os sends do bot (reply forward, `transfer_to_human`, ofertas/resumo).
+> A detecção de resposta humana (ingest, `routers/broker.py`) usa `bot_echo.is_echo`
+> pra não confundir o eco do próprio bot com o atendente. Ver SPEC 05.
+
 Diferenças vs `process_message`:
 - Carrega `tenant_integrations` row para `handoff_config`, `reply_body_template`, `reply_url`, `reply_method`, `reply_headers`
 - Aplica `reply_body_template` via `broker.apply_mapping(template, ctx)`
@@ -211,3 +227,5 @@ Criar task no estilo `process_*_message` + endpoint correspondente em `routers/`
 - **Não confiar em `prev_state` carregado fora do worker** — tudo tem que vir do args da task (tenant_id, schema_name, etc.).
 - **Não usar `Celery retry mechanism` (retries automáticos)** — duplica mensagem ao cliente. Falha = trace + log + segue.
 - **Não fazer broadcast em cima de Redis pra notificar UI em real-time** — sem essa feature hoje. Caminho seria WebSocket + pub/sub explicit (fora de escopo).
+- **Não remover o gate `is_ai_paused` no início de `_run_broker_flow`** — é o que cala o bot durante a janela de handoff no broker (webhook checa no ingest; broker NÃO pode, por causa do bundling). Removê-lo traz de volta o bug do bot re-finalizando pedido antigo.
+- **Não esquecer `bot_echo.remember` ao adicionar um novo caminho de envio do bot no broker** — sem o fingerprint, o eco daquela mensagem é lido como resposta humana e pausa a IA por engano.

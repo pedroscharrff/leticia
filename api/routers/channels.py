@@ -38,6 +38,7 @@ class ChannelOut(BaseModel):
     active: bool
     config_json: dict
     handoff_config: dict
+    handoff_pause_minutes: int = 240
     webhook_url: str  # constructed, not stored
 
 
@@ -55,6 +56,7 @@ class ChannelUpdate(BaseModel):
     active: bool | None = None
     config_json: dict | None = None
     handoff_config: dict | None = None
+    handoff_pause_minutes: int | None = Field(default=None, ge=0, le=10080)
 
 
 class HandoffTestIn(BaseModel):
@@ -75,6 +77,7 @@ def _row_to_out(tenant_id: str, r: Any) -> ChannelOut:
         active=r["active"],
         config_json=r["config_json"] or {},
         handoff_config=r["handoff_config"] or {},
+        handoff_pause_minutes=r["handoff_pause_minutes"] or 240,
         webhook_url=_webhook_url(tenant_id, r["channel_type"], str(r["id"])),
     )
 
@@ -223,6 +226,8 @@ async def update_channel(channel_id: str, body: ChannelUpdate, user: TenantUser)
         set_parts.append(f"config_json = ${idx}::jsonb"); vals.append(json.dumps(body.config_json)); idx += 1
     if body.handoff_config is not None:
         set_parts.append(f"handoff_config = ${idx}::jsonb"); vals.append(json.dumps(body.handoff_config)); idx += 1
+    if body.handoff_pause_minutes is not None:
+        set_parts.append(f"handoff_pause_minutes = ${idx}"); vals.append(body.handoff_pause_minutes); idx += 1
     set_parts.append("updated_at = NOW()")
 
     async with get_db_conn() as conn:
