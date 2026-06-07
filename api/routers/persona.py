@@ -43,6 +43,8 @@ class PersonaOut(BaseModel):
     formality: str
     emoji_usage: str
     response_length: str
+    vocabulary_level: str
+    explanation_depth: str
     language: str
     persona_bio: str | None
     greeting_template: str | None
@@ -68,6 +70,8 @@ class PersonaUpdate(BaseModel):
     formality: str | None = None
     emoji_usage: str | None = None
     response_length: str | None = None
+    vocabulary_level: str | None = None
+    explanation_depth: str | None = None
     language: str | None = None
     persona_bio: str | None = None
     greeting_template: str | None = None
@@ -107,6 +111,8 @@ ALLOWED = {
     "formality": {"tu", "voce", "senhor"},
     "emoji_usage": {"none", "light", "moderate", "heavy"},
     "response_length": {"short", "medium", "long"},
+    "vocabulary_level": {"leigo", "intermediario", "tecnico"},
+    "explanation_depth": {"minima", "equilibrada", "detalhada"},
 }
 
 

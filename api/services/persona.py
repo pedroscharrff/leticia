@@ -21,6 +21,8 @@ PERSONA_DEFAULTS: dict[str, Any] = {
     "formality": "voce",
     "emoji_usage": "light",
     "response_length": "medium",
+    "vocabulary_level": "intermediario",
+    "explanation_depth": "equilibrada",
     "language": "pt-BR",
     "persona_bio": None,
     "greeting_template": None,

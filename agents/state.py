@@ -48,6 +48,14 @@ class AgentState(TypedDict, total=False):
     # sem depender de close_keywords configuradas. Emitido pelo skill via [[END]].
     end_conversation: bool
 
+    # ── Sentiment (capability intelligence.sentiment_analysis, opt-in) ─────────
+    # Preenchidos pelo nó sentiment_analyzer quando a capability está ON.
+    # Ausentes quando OFF → comportamento atual intacto (total=False).
+    sentiment:           str    # rótulo classificado (ex.: frustrado)
+    sentiment_score:     float  # confiança 0–1
+    sentiment_directive: str    # bloco de adaptação VOLÁTIL injetado no run_skill
+    # A escalação por frustração reusa o flag `escalate` acima — sem campo novo.
+
     # ── Output ────────────────────────────────────────────────────────────────
     final_response:  str
 

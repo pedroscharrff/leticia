@@ -93,20 +93,30 @@ def _make_llm_factory(cfg: TenantConfig):
     - "orchestrator" | "analyst" | "skill"  → papéis fixos
     - nome de skill (ex: "farmaceutico")    → usa SkillOverride se disponível
     """
-    def _get(role: str) -> BaseChatModel:
+    def _get(role: str, provider: str | None = None, model: str | None = None) -> BaseChatModel:
+        """Retorna LLM para um role. `provider`/`model` opcionais permitem que
+        nodes (ex.: sentiment_analyzer com config própria) sobreponham o par
+        sem perder o caminho BYOK gerenciado aqui."""
         role_map = {
             "orchestrator": (cfg.orchestrator_provider, cfg.orchestrator_model),
             "analyst":      (cfg.analyst_provider,      cfg.analyst_model),
+            # Classificador de sentimento — reusa o modelo leve do orchestrator
+            # (Haiku). O nó pode sobrepor o modelo via config da capability.
+            "sentiment":    (cfg.orchestrator_provider, cfg.orchestrator_model),
             "skill":        (cfg.default_skill_provider, cfg.default_skill_model),
         }
 
         # Verifica se há override específico para este skill
         if role in cfg.skill_overrides:
             override = cfg.skill_overrides[role]
-            provider = override.llm_provider or cfg.default_skill_provider
-            model    = override.llm_model    or cfg.default_skill_model
+            base_provider = override.llm_provider or cfg.default_skill_provider
+            base_model    = override.llm_model    or cfg.default_skill_model
         else:
-            provider, model = role_map.get(role, role_map["skill"])
+            base_provider, base_model = role_map.get(role, role_map["skill"])
+
+        # Override ad-hoc do caller vence sobre o default do role
+        provider = provider or base_provider
+        model    = model    or base_model
 
         if cfg.llm_mode == "byok" and cfg.llm_api_key:
             from llm.providers import get_llm_for_tenant
@@ -140,6 +150,7 @@ def build_graph_for_tenant(cfg: TenantConfig, redis: Any = None):
     from agents.nodes.context       import load_context, save_context
     from agents.nodes.ingest_media  import ingest_media
     from agents.nodes.orchestrator import orchestrator
+    from agents.nodes.sentiment_analyzer import sentiment_analyzer
     from agents.nodes.analyst      import analyst
     from agents.nodes.safety_guard import safety_guard
     from agents.nodes.skills.farmaceutico    import farmaceutico_node
@@ -155,6 +166,7 @@ def build_graph_for_tenant(cfg: TenantConfig, redis: Any = None):
 
     # Bind llm_factory nos nodes via partial
     orch_node    = functools.partial(orchestrator,         llm_factory=llm_factory)
+    sentiment_node = functools.partial(sentiment_analyzer, llm_factory=llm_factory)
     analyst_node = functools.partial(analyst,              llm_factory=llm_factory, max_retries=max_retries)
     farm_node    = functools.partial(farmaceutico_node,    llm_factory=llm_factory)
     pa_node      = functools.partial(principio_ativo_node, llm_factory=llm_factory)
@@ -194,6 +206,9 @@ def build_graph_for_tenant(cfg: TenantConfig, redis: Any = None):
     graph.add_node("load_context", load_context)
     graph.add_node("ingest_media", ingest_media)
     graph.add_node("orchestrator", orch_node)
+    # Classificador de sentimento — sempre no grafo; faz early-return quando a
+    # capability intelligence.sentiment_analysis está OFF (gate runtime cacheado).
+    graph.add_node("sentiment_analyzer", sentiment_node)
     graph.add_node("analyst",      analyst_node)
     graph.add_node("save_context", save_context)
     graph.add_node("guardrails",   guard_node)   # sempre presente (safety net)
@@ -209,7 +224,10 @@ def build_graph_for_tenant(cfg: TenantConfig, redis: Any = None):
     # ── Arestas fixas ─────────────────────────────────────────────────────────
     graph.set_entry_point("load_context")
     graph.add_edge("load_context", "ingest_media")
-    graph.add_edge("ingest_media", "orchestrator")
+    # ingest_media → sentiment_analyzer → orchestrator
+    # (sentiment_analyzer é passthrough quando a capability está OFF)
+    graph.add_edge("ingest_media", "sentiment_analyzer")
+    graph.add_edge("sentiment_analyzer", "orchestrator")
 
     # orchestrator → skill (via route_to_skill)
     routing_map = {**{s: s for s in active_skills}, "guardrails": "guardrails"}

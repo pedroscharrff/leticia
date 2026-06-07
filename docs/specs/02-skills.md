@@ -130,6 +130,8 @@ Campos atualmente renderizados (estável → vão no prefixo cacheado):
 | `formality` (`tu`/`voce`/`senhor`) | "Trate o cliente por ..." |
 | `emoji_usage` (`none`/`light`/`moderate`/`heavy`) | Regra de uso de emoji |
 | `response_length` (`short`/`medium`/`long`) | Tamanho preferido |
+| `vocabulary_level` (`leigo`/`intermediario`/`tecnico`) | Registro de vocabulário (técnico↔leigo) — linha de estilo (mig 064) |
+| `explanation_depth` (`minima`/`equilibrada`/`detalhada`) | Profundidade da explicação — linha de estilo (mig 064) |
 | `catchphrases` (list[str]) | "Bordões da marca (use com moderação): ..." |
 | `greeting_template` | "Saudação preferida (use no PRIMEIRO contato): ..." |
 | `signature` | "Assinatura opcional (no fim de respostas longas): ..." |
@@ -139,6 +141,14 @@ Campos atualmente renderizados (estável → vão no prefixo cacheado):
 | `custom_instructions` | "Instruções extras do dono da farmácia: ..." |
 
 Para adicionar um campo novo de persona: migration adiciona a coluna em `public.tenant_persona` + entrada no `PERSONA_DEFAULTS` (`services/persona.py`) + render em `_persona_prefix`. Sem o render no `_persona_prefix`, o campo é só decoração no portal.
+
+### Precedência de voz (persona × prompt do skill)
+
+`_persona_prefix` emite, ao final do bloco de estilo, uma linha de **PRECEDÊNCIA DE ESTILO**: tom, registro, vocabulário, emojis e tamanho definidos na persona são prioritários sobre qualquer instrução de estilo nos `_SYSTEM` dos skills. Os prompts de skill tratam de **conteúdo/conduta** (regras clínicas, tools, handoff), não de COMO soar. Isso evita que o estilo hardcoded de um skill (ex.: `farmaceutico`) dilua os ajustes do dono. Não remova essa linha em refactors.
+
+### Bloco volátil de sentimento
+
+Quando a capability `intelligence.sentiment_analysis` está ON, o nó `sentiment_analyzer` (roda antes do orchestrator) grava `state["sentiment_directive"]`. `run_skill` injeta esse texto em `volatile_parts` (após o marker de cache → **não invalida o prefixo**), de modo que a resposta do próprio skill já nasce adaptada ao humor do cliente. Vazio quando a capability está OFF. Ver SPEC 04 e SPEC 01.
 
 ## Pontos de extensão
 

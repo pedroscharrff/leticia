@@ -61,12 +61,14 @@ def build_graph_for_tenant(cfg: TenantConfig, redis) -> CompiledGraph
 ### Fluxo principal (caminho feliz)
 
 ```
-START → load_context → ingest_media → orchestrator
+START → load_context → ingest_media → sentiment_analyzer → orchestrator
       → <skill>       (pode emitir [[HANDOFF:X]] → vai pro skill X)
       → safety_guard  (passthrough se track_stock=OFF, senão valida)
       → analyst       (aprova → save_context → END; reprova → volta pro skill)
       → save_context → END
 ```
+
+`sentiment_analyzer` (`agents/nodes/sentiment_analyzer.py`) é **passthrough quando a capability `intelligence.sentiment_analysis` está OFF** (early-return após 1 leitura cacheada de `is_enabled` — zero custo/latência). Quando ON: classifica o sentimento (Haiku), grava `sentiment`/`sentiment_score`/`sentiment_directive` (este último é injetado como bloco volátil nos skills) e, se `escalate_on_frustration` estiver ligado e o score passar do limiar, seta `escalate=True` (reusa o fluxo de escalação abaixo — NÃO cria caminho novo).
 
 ### Fluxo de handoff entre skills
 

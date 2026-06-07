@@ -1,3 +1,20 @@
+.persona-presets {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+.persona-presets-label {
+  font-size: 13px;
+  color: var(--text-secondary);
+  margin-right: 4px;
+}
+.btn-sm {
+  padding: 4px 12px;
+  font-size: 13px;
+}
+
 .persona-tabs {
   display: flex;
   gap: 8px;

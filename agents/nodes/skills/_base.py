@@ -126,6 +126,23 @@ _EMOJI_HINT = {
     "moderate": "Use até 2 emojis por mensagem para reforçar o tom.",
     "heavy":    "Use emojis livremente para tornar a conversa mais leve.",
 }
+# Nível de vocabulário (registro técnico↔leigo) e profundidade da explicação.
+# Migration 064. _persona_prefix é a única porta de entrada destes campos.
+_VOCABULARY_HINT = {
+    "leigo":         "Use linguagem simples e cotidiana; evite jargão e traduza "
+                     "termos técnicos quando precisar citá-los.",
+    "intermediario": "Use linguagem clara; explique o termo técnico na primeira "
+                     "vez que aparecer.",
+    "tecnico":       "Pode usar terminologia técnica/farmacológica apropriada, "
+                     "assumindo que o cliente entende o vocabulário da área.",
+}
+_DEPTH_HINT = {
+    "minima":      "Profundidade: responda o essencial, sem desdobrar detalhes "
+                   "não pedidos.",
+    "equilibrada": "Profundidade: dê o necessário para a decisão, sem alongar.",
+    "detalhada":   "Profundidade: pode detalhar mais quando o assunto exigir, "
+                   "mantendo a brevidade por turno.",
+}
 
 
 def _persona_prefix(persona: dict) -> str:
@@ -150,6 +167,8 @@ def _persona_prefix(persona: dict) -> str:
     formality = persona.get("formality") or ""
     emoji     = persona.get("emoji_usage") or ""
     response_length = persona.get("response_length") or "short"
+    vocabulary = persona.get("vocabulary_level") or ""
+    depth      = persona.get("explanation_depth") or ""
     greeting  = persona.get("greeting_template") or ""
     signature = persona.get("signature") or ""
     playbook  = persona.get("conversation_playbook") or ""
@@ -207,7 +226,25 @@ def _persona_prefix(persona: dict) -> str:
         style_bits.append("Tamanho preferido: respostas em até 2 parágrafos curtos.")
     elif response_length == "long":
         style_bits.append("Tamanho preferido: respostas detalhadas quando o assunto exigir.")
+    if vocabulary in _VOCABULARY_HINT:
+        style_bits.append(_VOCABULARY_HINT[vocabulary])
+    if depth in _DEPTH_HINT:
+        style_bits.append(_DEPTH_HINT[depth])
     parts.append(" ".join(style_bits))
+
+    # ── Precedência de voz ────────────────────────────────────────────────────
+    # A persona é a autoridade ÚNICA de voz (tom, registro, vocabulário, emojis,
+    # tamanho). Os blocos seguintes (prompt do skill) tratam de CONTEÚDO e
+    # CONDUTA (regras clínicas, uso de tools, handoff) — se houver conflito de
+    # ESTILO entre eles e a persona, a persona vence. Sem esta linha, o estilo
+    # hardcoded de cada skill (ex.: farmaceutico) competia e diluía os ajustes
+    # do dono da farmácia. Cf. docs/specs/02-skills.md §Persona — precedência.
+    parts.append(
+        "PRECEDÊNCIA DE ESTILO: as instruções de tom, registro, vocabulário, "
+        "uso de emojis e tamanho de resposta definidas ACIMA (persona) são "
+        "PRIORITÁRIAS. As seções seguintes definem o que fazer (conteúdo, "
+        "regras clínicas, ferramentas), não COMO soar."
+    )
 
     # ── Bordões / saudação / assinatura ──────────────────────────────────
     if isinstance(catch, (list, tuple)) and catch:
@@ -462,6 +499,14 @@ async def run_skill(
                 volatile_parts.append(time_block)
     except Exception as _exc:  # noqa: BLE001
         log.warning("skill.time_context_block.failed", exc=str(_exc))
+
+    # Orientação de adaptação por sentimento — produzida pelo nó
+    # sentiment_analyzer (capability intelligence.sentiment_analysis). É VOLÁTIL
+    # (muda a cada turno conforme o humor do cliente) → entra após o marker de
+    # cache, nunca invalida o prefixo. Vazia quando a capability está OFF.
+    sent_directive = (state.get("sentiment_directive") or "").strip()
+    if sent_directive:
+        volatile_parts.append(sent_directive)
 
     # Se este skill recebeu um handoff, injeta o contexto e a resposta anterior.
     # ESTE BLOCO É VOLÁTIL — depende do skill anterior e do conteúdo da resposta

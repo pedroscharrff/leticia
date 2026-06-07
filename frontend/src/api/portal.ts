@@ -449,6 +449,8 @@ export interface Persona {
   formality: "tu" | "voce" | "senhor";
   emoji_usage: "none" | "light" | "moderate" | "heavy";
   response_length: "short" | "medium" | "long";
+  vocabulary_level: "leigo" | "intermediario" | "tecnico";
+  explanation_depth: "minima" | "equilibrada" | "detalhada";
   language: string;
   persona_bio: string | null;
   greeting_template: string | null;

@@ -113,6 +113,8 @@ POST /portal/capabilities/{key}/toggle  → set_enabled(tenant, key, enabled, co
 | `payments.pix_asaas` | OFF | pro | Link PIX no chat via Asaas |
 | `attendance.customer_memory` | OFF | pro | Memória de longo prazo (allergies, continuous_meds, preferences) |
 | `attendance.interactive_buttons` | OFF | pro | Botões interativos (WhatsApp Cloud) |
+| `attendance.time_aware_greeting` | OFF | basic | Injeta hora/período (bloco volátil) p/ saudação correta (mig 061) |
+| `intelligence.sentiment_analysis` | OFF | pro | Nó `sentiment_analyzer` classifica o sentimento antes do orchestrator; injeta diretiva volátil de adaptação nos skills e, opcionalmente, escala para humano (reusa `escalate`). Config: `provider` (anthropic / openai / google / ollama), `model`, `labels`, `analyst_instructions`, `escalate_on_frustration`, `escalation_threshold`, `escalation_labels`, `history_turns` (mig 063). O override (provider, model) passa pelo `llm_factory` → respeita BYOK do tenant. |
 
 ## Pontos de extensão
 

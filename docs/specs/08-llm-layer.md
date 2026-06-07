@@ -118,6 +118,10 @@ Lista do que DEVE estar em volatile_parts (não exaustiva):
 - Memória do cliente (alergias, contínuos, preferências, segmento)
 - Bloco de continuação de handoff (`[CONTINUAÇÃO INTERNA]`)
 - Qualquer "[CONTEXTO DE HANDOFF]" do pré-atendimento
+- Bloco de contexto temporal (`time_aware_greeting`)
+- **Diretiva de sentimento** (`sentiment_directive`, capability `intelligence.sentiment_analysis`) — muda a cada turno conforme o humor do cliente. Injetada em `run_skill` via `state["sentiment_directive"]`. NUNCA no prefixo estável.
+
+> Persona (incluindo os campos novos `vocabulary_level`/`explanation_depth`) é **estável** → vai no prefixo cacheado via `_persona_prefix`. Editar persona = 1 cache miss e re-cache (esperado). Sentimento é **volátil** → não invalida o prefixo.
 
 ## Retry layer
 

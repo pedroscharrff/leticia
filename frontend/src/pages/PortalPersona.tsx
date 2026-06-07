@@ -40,6 +40,49 @@ const GENDER_OPTIONS = [
   { value: "masculino", label: "Masculino" },
   { value: "neutro",    label: "Neutro" },
 ];
+const VOCABULARY_OPTIONS = [
+  { value: "leigo",         label: "Leigo (simples, sem jargão)" },
+  { value: "intermediario", label: "Intermediário" },
+  { value: "tecnico",       label: "Técnico" },
+];
+const DEPTH_OPTIONS = [
+  { value: "minima",      label: "Mínima (só o essencial)" },
+  { value: "equilibrada", label: "Equilibrada" },
+  { value: "detalhada",   label: "Detalhada" },
+];
+
+// Presets de 1 clique — preenchem os campos de voz/estilo. O operador pode
+// ajustar depois e salvar normalmente (PUT /portal/persona).
+type PersonaPreset = Pick<
+  Persona,
+  "tone" | "formality" | "emoji_usage" | "response_length" | "vocabulary_level" | "explanation_depth"
+>;
+const PERSONA_PRESETS: { id: string; label: string; values: PersonaPreset }[] = [
+  {
+    id: "tecnico",
+    label: "Técnico",
+    values: {
+      tone: "profissional", formality: "voce", emoji_usage: "none",
+      response_length: "medium", vocabulary_level: "tecnico", explanation_depth: "detalhada",
+    },
+  },
+  {
+    id: "simples",
+    label: "Simples & acolhedor",
+    values: {
+      tone: "amigavel", formality: "voce", emoji_usage: "light",
+      response_length: "short", vocabulary_level: "leigo", explanation_depth: "minima",
+    },
+  },
+  {
+    id: "equilibrado",
+    label: "Equilibrado",
+    values: {
+      tone: "amigavel", formality: "voce", emoji_usage: "light",
+      response_length: "medium", vocabulary_level: "intermediario", explanation_depth: "equilibrada",
+    },
+  },
+];
 
 export function PortalPersona() {
   const [persona, setPersona] = useState<Persona | null>(null);
@@ -193,6 +236,19 @@ export function PortalPersona() {
 
           <section className="persona-section">
             <h2>Tom e estilo</h2>
+            <div className="persona-presets">
+              <span className="persona-presets-label">Presets:</span>
+              {PERSONA_PRESETS.map((preset) => (
+                <button
+                  key={preset.id}
+                  type="button"
+                  className="btn btn-secondary btn-sm"
+                  onClick={() => setPersona({ ...persona, ...preset.values })}
+                >
+                  {preset.label}
+                </button>
+              ))}
+            </div>
             <div className="persona-grid">
               <label>
                 Tom
@@ -232,6 +288,26 @@ export function PortalPersona() {
                   onChange={(e) => setPersona({ ...persona, response_length: e.target.value as Persona["response_length"] })}
                 >
                   {LENGTH_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+                </select>
+              </label>
+              <label>
+                Nível de vocabulário
+                <select
+                  className="form-select"
+                  value={persona.vocabulary_level}
+                  onChange={(e) => setPersona({ ...persona, vocabulary_level: e.target.value as Persona["vocabulary_level"] })}
+                >
+                  {VOCABULARY_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+                </select>
+              </label>
+              <label>
+                Profundidade das explicações
+                <select
+                  className="form-select"
+                  value={persona.explanation_depth}
+                  onChange={(e) => setPersona({ ...persona, explanation_depth: e.target.value as Persona["explanation_depth"] })}
+                >
+                  {DEPTH_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
                 </select>
               </label>
             </div>
