@@ -122,8 +122,16 @@ async def sentiment_analyzer(state: AgentState, llm_factory) -> AgentState:
         return state
 
     # ── Config ─────────────────────────────────────────────────────────────────
-    provider     = (config.get("provider") or "").strip().lower() or None
-    model        = (config.get("model") or "").strip() or None
+    # provider_model é um único dropdown no portal no formato "provider|model"
+    # (ex.: "anthropic|claude-haiku-4-5-20251001"). Eliminar a chance do
+    # operador combinar provider/model incompatíveis. Enum oficial vive no
+    # config_schema da capability (mig 063), espelhando llm/providers.py.
+    provider, model = None, None
+    pm = (config.get("provider_model") or "").strip()
+    if "|" in pm:
+        p, m = pm.split("|", 1)
+        provider = p.strip().lower() or None
+        model    = m.strip()         or None
     labels       = config.get("labels") or "positivo, neutro, negativo, frustrado, irritado"
     instructions = config.get("analyst_instructions") or ""
     try:
@@ -242,5 +250,10 @@ async def sentiment_analyzer(state: AgentState, llm_factory) -> AgentState:
         # Reusa o flag existente — os portões de handoff (handoff_config.enabled,
         # etc.) ainda valem downstream. NÃO criamos caminho de transferência novo.
         updates["escalate"] = True
+        # Rótulo da ORIGEM da escalação. O worker usa isso para escolher uma
+        # mensagem de transferência específica (config `transfer_message` desta
+        # capability) sem afetar os outros gatilhos (skill [[ESCALATE]], keyword,
+        # order_finalized continuam com o comportamento atual).
+        updates["escalate_reason"] = "sentiment"
 
     return {**state, **updates}

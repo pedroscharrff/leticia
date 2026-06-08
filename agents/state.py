@@ -55,6 +55,10 @@ class AgentState(TypedDict, total=False):
     sentiment_score:     float  # confiança 0–1
     sentiment_directive: str    # bloco de adaptação VOLÁTIL injetado no run_skill
     # A escalação por frustração reusa o flag `escalate` acima — sem campo novo.
+    # `escalate_reason` rotula a ORIGEM da escalação para o worker (que escolhe
+    # a mensagem de transferência). Valores conhecidos: "sentiment". Ausente =
+    # escalação por skill/[[ESCALATE]]/keyword/order_finalized (comportamento atual).
+    escalate_reason: str
 
     # ── Output ────────────────────────────────────────────────────────────────
     final_response:  str

@@ -23,6 +23,10 @@ export interface ConfigSchemaProperty {
   minimum?: number;
   maximum?: number;
   enum?: string[];
+  // Mapa { valor_do_enum: label_legível } para renderizar o <select> com texto
+  // amigável sem alterar o valor armazenado. Não-padrão JSON Schema, mas
+  // convenção comum (equivalente ao `enumNames` da OpenAPI).
+  enumLabels?: Record<string, string>;
   format?: "textarea" | string;
 }
 

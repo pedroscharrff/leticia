@@ -56,18 +56,38 @@ $md$,
  jsonb_build_object(
    'type', 'object',
    'properties', jsonb_build_object(
-     'provider', jsonb_build_object(
-       'type', 'string',
-       'title', 'Provider LLM do classificador',
-       'description', 'Qual provedor de LLM usar. Use o mesmo provider em que você tem chave configurada (Claude/Anthropic, OpenAI, Google ou Ollama local).',
-       'enum', jsonb_build_array('anthropic', 'openai', 'google', 'ollama'),
-       'default', 'anthropic'
-     ),
-     'model', jsonb_build_object(
+     -- Campo composto provider|model: um único dropdown com pares VÁLIDOS
+     -- garante que o operador nunca escolha um modelo de um provider em outro
+     -- (ex.: gpt-4o-mini sob anthropic). Catálogo espelha llm/providers.py
+     -- (canonical identifiers). Para adicionar modelo: edite o enum aqui E a
+     -- constante em llm/providers.py.
+     'provider_model', jsonb_build_object(
        'type', 'string',
        'title', 'Modelo do classificador',
-       'description', 'Nome do modelo no provider escolhido. Sugestões: anthropic→claude-haiku-4-5-20251001; openai→gpt-4o-mini ou gpt-4.1-mini; google→gemini-2.0-flash; ollama→nome do modelo local. Deixe em branco para usar o modelo leve padrão.',
-       'default', 'claude-haiku-4-5-20251001'
+       'description', 'Modelo de IA usado para classificar o sentimento. Cada opção já inclui o provedor — você não precisa escolher provider e modelo separadamente. Modelos menores (Haiku, mini, nano, flash) são mais baratos/rápidos e suficientes para classificação.',
+       'enum', jsonb_build_array(
+         'anthropic|claude-haiku-4-5-20251001',
+         'anthropic|claude-sonnet-4-6',
+         'openai|gpt-4o-mini',
+         'openai|gpt-4.1-mini',
+         'openai|gpt-4.1-nano',
+         'openai|gpt-5-mini',
+         'openai|gpt-5-nano',
+         'google|gemini-2.0-flash',
+         'ollama|llama3.2'
+       ),
+       'enumLabels', jsonb_build_object(
+         'anthropic|claude-haiku-4-5-20251001', 'Anthropic — Claude Haiku 4.5 (recomendado)',
+         'anthropic|claude-sonnet-4-6',         'Anthropic — Claude Sonnet 4.6 (mais caro)',
+         'openai|gpt-4o-mini',                  'OpenAI — GPT-4o mini',
+         'openai|gpt-4.1-mini',                 'OpenAI — GPT-4.1 mini',
+         'openai|gpt-4.1-nano',                 'OpenAI — GPT-4.1 nano',
+         'openai|gpt-5-mini',                   'OpenAI — GPT-5 mini',
+         'openai|gpt-5-nano',                   'OpenAI — GPT-5 nano',
+         'google|gemini-2.0-flash',             'Google — Gemini 2.0 Flash',
+         'ollama|llama3.2',                     'Ollama (local) — Llama 3.2'
+       ),
+       'default', 'anthropic|claude-haiku-4-5-20251001'
      ),
      'labels', jsonb_build_object(
        'type', 'string',
@@ -96,6 +116,13 @@ $md$,
        'minimum', 0,
        'maximum', 1
      ),
+     'transfer_message', jsonb_build_object(
+       'type', 'string',
+       'format', 'textarea',
+       'title', 'Mensagem de transferência quando o gatilho for sentimento',
+       'description', 'Texto enviado ao cliente quando a transferência for disparada pela detecção de frustração/irritação. Deixe em branco para usar a mensagem padrão do tenant (`transfer_message` do handoff). Não afeta os outros gatilhos (escalonamento explícito do agente, palavra-chave, fechamento de pedido).',
+       'default', ''
+     ),
      'escalation_labels', jsonb_build_object(
        'type', 'string',
        'title', 'Rótulos que disparam escalonamento',
@@ -112,13 +139,13 @@ $md$,
    )
  ),
  jsonb_build_object(
-   'provider', 'anthropic',
-   'model', 'claude-haiku-4-5-20251001',
+   'provider_model', 'anthropic|claude-haiku-4-5-20251001',
    'labels', 'positivo, neutro, negativo, frustrado, irritado',
    'analyst_instructions', '',
    'escalate_on_frustration', false,
    'escalation_threshold', 0.7,
    'escalation_labels', 'frustrado, irritado',
+   'transfer_message', '',
    'history_turns', 3
  ),
  FALSE, 'beta', 'heart-pulse', 80)

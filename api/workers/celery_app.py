@@ -271,6 +271,34 @@ def _offer_caption(o: dict) -> str:
     return title or desc
 
 
+async def _resolve_sentiment_transfer_message(
+    tenant_id: str,
+    final_state: dict | None,
+) -> str:
+    """Retorna a mensagem de transferência específica de sentimento, ou "".
+
+    Só retorna texto quando OS DOIS forem verdadeiros:
+      1. A escalação foi marcada como vindo do sentiment_analyzer
+         (`final_state["escalate_reason"] == "sentiment"`).
+      2. O tenant configurou `transfer_message` na capability
+         `intelligence.sentiment_analysis` (não-vazio).
+
+    Qualquer outro caminho (skill emitiu [[ESCALATE]], keyword bateu,
+    order_finalized, ou capability sem `transfer_message`) → retorna "" e o
+    chamador segue o comportamento atual. Tolerante a falha: erro = "".
+    """
+    try:
+        if not final_state or final_state.get("escalate_reason") != "sentiment":
+            return ""
+        from services import capabilities as cap_svc
+        cfg = await cap_svc.get_config(tenant_id, "intelligence.sentiment_analysis") or {}
+        return (cfg.get("transfer_message") or "").strip()
+    except Exception as exc:  # noqa: BLE001
+        log.warning("handoff.sentiment_transfer_message.failed",
+                    tenant=tenant_id, exc=str(exc))
+        return ""
+
+
 async def _send_pre_handoff_offers(
     tenant_id: str,
     *,
@@ -830,11 +858,23 @@ async def _run_graph(
                 # construído de despedida) OU (b) a tool de fechar pedido
                 # rodou (texto contém o recibo "✅ Pedido confirmado #...").
                 use_agent_reply = bool(response_text) and (agent_escalate or order_just_finalized)
+                # Mensagem específica por gatilho de SENTIMENTO (capability
+                # intelligence.sentiment_analysis → config `transfer_message`).
+                # Só aplica quando o sentiment_analyzer marcou a escalação
+                # como sua (escalate_reason == "sentiment") E o tenant
+                # configurou um texto. Caso contrário, comportamento atual
+                # intacto — não afeta [[ESCALATE]], keyword, order_finalized.
+                sentiment_msg = await _resolve_sentiment_transfer_message(
+                    tenant_id, final_state,
+                )
+                if sentiment_msg:
+                    response_text = sentiment_msg
+                    use_agent_reply = False
                 hresult = await transfer_to_human(
                     handoff_cfg, phone=phone_clean,
-                    custom_message=response_text if use_agent_reply else None,
+                    custom_message=(response_text if (use_agent_reply or sentiment_msg) else None),
                 )
-                if not use_agent_reply:
+                if not use_agent_reply and not sentiment_msg:
                     response_text = (
                         handoff_cfg.get("transfer_message")
                         or "Estou te transferindo para um atendente agora. Um momento, por favor."
@@ -1328,11 +1368,19 @@ async def _run_broker_flow(
             # (a) o agente escalou explicitamente OU
             # (b) a tool finalizar_pedido rodou (resposta = recibo do pedido).
             use_agent_reply = bool(reply_text) and (agent_escalate or order_just_finalized)
+            # Idem ao webhook flow: override apenas quando reason=sentiment
+            # E o tenant configurou `transfer_message` na capability.
+            sentiment_msg = await _resolve_sentiment_transfer_message(
+                tenant_id, final_state,
+            )
+            if sentiment_msg:
+                reply_text = sentiment_msg
+                use_agent_reply = False
             handoff_result = await transfer_to_human(
                 handoff_cfg, phone=phone_clean,
-                custom_message=reply_text if use_agent_reply else None,
+                custom_message=(reply_text if (use_agent_reply or sentiment_msg) else None),
             )
-            if not use_agent_reply:
+            if not use_agent_reply and not sentiment_msg:
                 reply_text = (handoff_cfg.get("transfer_message")
                               or "Estou te transferindo para um atendente agora. Um momento, por favor.")
             skill_used = "handoff"

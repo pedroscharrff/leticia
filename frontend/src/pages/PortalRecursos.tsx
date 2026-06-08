@@ -141,7 +141,9 @@ function SchemaForm({ schema, value, onChange, disabled }: SchemaFormProps) {
                 disabled={disabled}
               >
                 {prop.enum.map((opt) => (
-                  <option key={opt} value={opt}>{opt}</option>
+                  <option key={opt} value={opt}>
+                    {prop.enumLabels?.[opt] ?? opt}
+                  </option>
                 ))}
               </select>
             </div>
