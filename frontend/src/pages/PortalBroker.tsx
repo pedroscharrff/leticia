@@ -1204,6 +1204,11 @@ function HandoffTab({ integration, onSaved }: { integration: Integration; onSave
   );
   // Exemplo capturado (mostrar pro tenant: "Cliente identificado: 5511...")
   const [tldCapturedPhoneSample, setTldCapturedPhoneSample] = useState<string>("");
+  // Paths detectados no último evento capturado — alimentam datalists no modo
+  // "editar" pra o operador trocar de campo sem precisar conhecer JSONPath.
+  const [tldDetectedPaths, setTldDetectedPaths] = useState<DiscoveredPath[]>([]);
+  // Toggle "ver/editar campos detectados" no card de configurado
+  const [tldEditing, setTldEditing] = useState(false);
 
   // Wizard de captura
   const [tldListening, setTldListening] = useState(false);
@@ -1270,6 +1275,7 @@ function HandoffTab({ integration, onSaved }: { integration: Integration; onSave
           const full = await getRawEvent(fresh.id);
           if (full.payload) {
             const paths = await discoverPaths(full.payload);
+            setTldDetectedPaths(paths);
             const guess = detectFromPaths(paths);
             if (guess.eventPath && guess.eventValue && guess.phonePath) {
               setTldClosePath(guess.eventPath);
@@ -1309,6 +1315,14 @@ function HandoffTab({ integration, onSaved }: { integration: Integration; onSave
     setTldPhonePath("");
     setTldCapturedPhoneSample("");
     setTldListenMsg("");
+    setTldEditing(false);
+  }
+
+  // Quando o operador troca de path no modo edição, mostramos o sample
+  // (valor de exemplo) daquele path pra ele conferir se é o que esperava.
+  function tldSampleFor(path: string): string {
+    const hit = tldDetectedPaths.find((p) => p.path === path);
+    return hit ? String(hit.sample ?? "") : "";
   }
 
   // Considera "configurado" quando temos os 3 campos mínimos.
@@ -1396,6 +1410,8 @@ function HandoffTab({ integration, onSaved }: { integration: Integration; onSave
     setTldPhonePath(t.customer_phone_path ?? "");
     setTldFallbackMin(t.fallback_minutes != null ? Number(t.fallback_minutes) : 480);
     setTldCapturedPhoneSample("");
+    setTldDetectedPaths([]);
+    setTldEditing(false);
     setTldListenMsg("");
     const s = integration.session_config || {};
     setCloseKeywordsText((s.close_keywords && s.close_keywords.length
@@ -1833,35 +1849,132 @@ function HandoffTab({ integration, onSaved }: { integration: Integration; onSave
               </div>
             )}
 
-            {/* Estado B: configurado → mostrar resumo amigável */}
+            {/* Estado B: configurado → resumo amigável + edição opcional */}
             {tldConfigured && (
               <div style={{
-                background: "#f0fdf4", border: "1px solid #86efac",
+                background: tldEditing ? "#f8fafc" : "#f0fdf4",
+                border: `1px solid ${tldEditing ? "#cbd5e1" : "#86efac"}`,
                 borderRadius: 8, padding: 16, margin: "8px 0",
               }}>
-                <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 10, color: "#15803d" }}>
-                  ✓ Configurado
-                </div>
-                <div style={{ fontSize: 13, color: "#334155", lineHeight: 1.7 }}>
-                  Quando sua plataforma mandar um webhook com{" "}
-                  <code style={{ background: "white", padding: "1px 6px", borderRadius: 4 }}>
-                    {tldCloseEquals}
-                  </code>
-                  {" "}em{" "}
-                  <code style={{ background: "white", padding: "1px 6px", borderRadius: 4 }}>
-                    {tldClosePath}
-                  </code>
-                  , vamos entender como <strong>ticket fechado</strong> e liberar a IA.
-                  <br />
-                  O telefone do cliente é lido de{" "}
-                  <code style={{ background: "white", padding: "1px 6px", borderRadius: 4 }}>
-                    {tldPhonePath}
-                  </code>
-                  {tldCapturedPhoneSample && (
-                    <> — capturamos o exemplo <strong>{tldCapturedPhoneSample}</strong>.</>
-                  )}
-                </div>
+                {!tldEditing ? (
+                  <>
+                    <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 10, color: "#15803d" }}>
+                      ✓ Configurado
+                    </div>
+                    <div style={{ fontSize: 13, color: "#334155", lineHeight: 1.7 }}>
+                      Quando sua plataforma mandar um webhook com{" "}
+                      <code style={{ background: "white", padding: "1px 6px", borderRadius: 4 }}>
+                        {tldCloseEquals}
+                      </code>
+                      {" "}em{" "}
+                      <code style={{ background: "white", padding: "1px 6px", borderRadius: 4 }}>
+                        {tldClosePath}
+                      </code>
+                      , vamos entender como <strong>ticket fechado</strong> e liberar a IA.
+                      <br />
+                      O telefone do cliente é lido de{" "}
+                      <code style={{ background: "white", padding: "1px 6px", borderRadius: 4 }}>
+                        {tldPhonePath}
+                      </code>
+                      {tldCapturedPhoneSample && (
+                        <> — capturamos o exemplo <strong>{tldCapturedPhoneSample}</strong>.</>
+                      )}
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 10, color: "#0f172a" }}>
+                      ✏️ Editar campos detectados
+                    </div>
+                    <p style={{ fontSize: 12, color: "#475569", marginTop: 0, marginBottom: 12 }}>
+                      Se a detecção automática pegou o campo errado (ex.: o ID
+                      <code style={{ background: "white", padding: "0 4px", borderRadius: 3 }}>@lid</code>
+                      {" "}em vez do número real), troque aqui. Clique no campo
+                      pra ver as opções do último evento capturado.
+                      {tldDetectedPaths.length === 0 && (
+                        <> <em>Recapture um ticket pra ver sugestões.</em></>
+                      )}
+                    </p>
+
+                    <datalist id={`tld-path-${integration.id}`}>
+                      {tldDetectedPaths.map((p) => (
+                        <option
+                          key={p.path}
+                          value={p.path}
+                          label={`${p.type} · ex.: ${String(p.sample ?? "").slice(0, 50)}`}
+                        />
+                      ))}
+                    </datalist>
+                    <datalist id={`tld-close-equals-${integration.id}`}>
+                      {tldDetectedPaths
+                        .filter((p) => p.path === tldClosePath)
+                        .map((p, i) => (
+                          <option key={i} value={String(p.sample)} />
+                        ))}
+                    </datalist>
+
+                    <label className="broker-field">
+                      <span>Campo que identifica o tipo do evento</span>
+                      <input
+                        list={`tld-path-${integration.id}`}
+                        value={tldClosePath}
+                        onChange={(e) => setTldClosePath(e.target.value)}
+                        placeholder="$.event"
+                      />
+                      {tldSampleFor(tldClosePath) && (
+                        <small style={{ color: "#64748b", fontSize: 12 }}>
+                          Valor exemplo capturado: <strong>{tldSampleFor(tldClosePath)}</strong>
+                        </small>
+                      )}
+                    </label>
+                    <label className="broker-field">
+                      <span>Valor que indica TICKET FECHADO</span>
+                      <input
+                        list={`tld-close-equals-${integration.id}`}
+                        value={tldCloseEquals}
+                        onChange={(e) => setTldCloseEquals(e.target.value)}
+                        placeholder="FinishedTicket"
+                      />
+                    </label>
+                    <label className="broker-field">
+                      <span>Campo onde está o telefone do cliente</span>
+                      <input
+                        list={`tld-path-${integration.id}`}
+                        value={tldPhonePath}
+                        onChange={(e) => setTldPhonePath(e.target.value)}
+                        placeholder="$.message.ticket.contact.number"
+                      />
+                      {tldSampleFor(tldPhonePath) && (
+                        <small style={{ color: "#64748b", fontSize: 12 }}>
+                          Valor exemplo capturado: <strong>{tldSampleFor(tldPhonePath)}</strong>
+                          {(() => {
+                            const digits = tldSampleFor(tldPhonePath).replace(/\D/g, "");
+                            if (digits.length < 8 || digits.length > 15) {
+                              return (
+                                <span style={{ color: "#c2410c", marginLeft: 6 }}>
+                                  ⚠️ Não parece um telefone (tem que ter 8–15 dígitos).
+                                </span>
+                              );
+                            }
+                            return null;
+                          })()}
+                        </small>
+                      )}
+                    </label>
+                  </>
+                )}
+
                 <div style={{ marginTop: 12, display: "flex", gap: 8, flexWrap: "wrap" }}>
+                  <button
+                    type="button"
+                    onClick={() => setTldEditing((v) => !v)}
+                    style={{
+                      padding: "6px 12px", borderRadius: 6, border: "1px solid #d1d5db",
+                      background: "white", cursor: "pointer", fontSize: 13,
+                    }}
+                  >
+                    {tldEditing ? "✓ Pronto" : "✏️ Editar campos"}
+                  </button>
                   <button
                     type="button"
                     onClick={() => { tldClearCapture(); }}
