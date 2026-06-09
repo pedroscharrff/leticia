@@ -95,11 +95,13 @@ export function PortalPersona() {
     system_prompt: "",
     extras: "",
   });
+  const [catchphrasesRaw, setCatchphrasesRaw] = useState("");
 
   useEffect(() => {
     Promise.all([getPersona(), listAgentPrompts()])
       .then(([p, l]) => {
         setPersona(p);
+        setCatchphrasesRaw((p.catchphrases ?? []).join(", "));
         setPrompts(l);
       })
       .finally(() => setLoading(false));
@@ -336,12 +338,15 @@ export function PortalPersona() {
               <input
                 type="text"
                 className="form-input"
-                value={(persona.catchphrases ?? []).join(", ")}
+                value={catchphrasesRaw}
                 placeholder="Ex.: Cuidar de você é o nosso remédio favorito"
-                onChange={(e) => setPersona({
-                  ...persona,
-                  catchphrases: e.target.value.split(",").map((s) => s.trim()).filter(Boolean),
-                })}
+                onChange={(e) => {
+                  setCatchphrasesRaw(e.target.value);
+                  setPersona({
+                    ...persona,
+                    catchphrases: e.target.value.split(",").map((s) => s.trim()).filter(Boolean),
+                  });
+                }}
               />
             </label>
           </section>
