@@ -1203,6 +1203,94 @@ function HandoffTab({ integration, onSaved }: { integration: Integration; onSave
     tld.fallback_minutes != null ? Number(tld.fallback_minutes) : 480
   );
 
+  // ── Escuta dedicada para eventos de ticket (lifecycle) ───────────────────
+  // Polla broker_raw_events à procura do PRÓXIMO evento que chegar no /hooks
+  // (qualquer direction), extrai os paths via discoverPaths e pré-preenche os
+  // campos com palpites razoáveis. O tenant clica em "Ativar" e dispara um
+  // ticket de teste na plataforma de atendimento (abrir/fechar) — a UI captura.
+  const [tldListening, setTldListening] = useState(false);
+  const [tldListenMsg, setTldListenMsg] = useState<string>("");
+  const [tldDetectedPaths, setTldDetectedPaths] = useState<DiscoveredPath[]>([]);
+
+  async function startTicketListening() {
+    const startedAt = new Date();
+    setTldListening(true);
+    setTldListenMsg(
+      "Aguardando... abra ou feche um ticket de teste na sua plataforma agora. (até 5 min)"
+    );
+    setTldDetectedPaths([]);
+
+    let found = false;
+    for (let attempt = 0; attempt < 150 && !found; attempt++) {
+      try {
+        const events = await listRawEvents(undefined, 20);
+        const fresh = events.find(
+          (e) =>
+            e.integration_slug === integration.slug &&
+            new Date(e.created_at) > startedAt
+        );
+        if (fresh) {
+          const full = await getRawEvent(fresh.id);
+          if (full.payload) {
+            const paths = await discoverPaths(full.payload);
+            setTldDetectedPaths(paths);
+            // Heurística: procurar um path cujo valor de exemplo contenha
+            // "ticket" / "close" / "open" — sugere de imediato.
+            const pickByKeyword = (kw: string) =>
+              paths.find(
+                (p) =>
+                  /string/i.test(p.type) &&
+                  String(p.sample ?? "").toLowerCase().includes(kw)
+              );
+            const eventTypePath = paths.find((p) =>
+              /(\.event(Type)?|\.type|\.kind|\.action)$/i.test(p.path)
+            );
+            if (eventTypePath) {
+              setTldClosePath(eventTypePath.path);
+              const sample = String(eventTypePath.sample ?? "").toLowerCase();
+              if (sample.includes("clos") || sample.includes("end")
+                  || sample.includes("fech")) {
+                setTldCloseEquals(String(eventTypePath.sample));
+              } else if (sample.includes("open") || sample.includes("abert")
+                         || sample.includes("start") || sample.includes("creat")) {
+                setTldOpenPath(eventTypePath.path);
+                setTldOpenEquals(String(eventTypePath.sample));
+              }
+            } else {
+              const closeHint = pickByKeyword("clos") || pickByKeyword("fech");
+              if (closeHint) {
+                setTldClosePath(closeHint.path);
+                setTldCloseEquals(String(closeHint.sample));
+              }
+            }
+            // Telefone do cliente: primeiro path que parece telefone.
+            const phoneHint = paths.find(
+              (p) =>
+                /(phone|telefone|whatsapp|contact|number|msisdn)/i.test(p.path)
+            );
+            if (phoneHint) setTldPhonePath(phoneHint.path);
+
+            setTldListenMsg(
+              `✓ Evento capturado! ${paths.length} campo(s) detectado(s). ` +
+              `Confira os palpites abaixo e ajuste se necessário.`
+            );
+            found = true;
+          }
+        }
+      } catch (e) {
+        console.error("[broker] Ticket lifecycle poll error:", e);
+      }
+      if (!found) await new Promise((r) => setTimeout(r, 2000));
+    }
+    if (!found) {
+      setTldListenMsg(
+        "⏱ Timeout. Nenhum evento recebido em 5 min. Verifique se a plataforma " +
+        "está apontando para a URL do /hooks deste integrador."
+      );
+    }
+    setTldListening(false);
+  }
+
   // Sugestões de paths a partir dos últimos eventos reais (raw_events).
   // Evita o tenant ter que decorar "$.fromMe"/"$.to" — ele clica e escolhe.
   const [discovered, setDiscovered] = useState<DiscoveredFieldFromHistory[]>([]);
@@ -1694,21 +1782,138 @@ function HandoffTab({ integration, onSaved }: { integration: Integration; onSave
               evento). A fonte da verdade passa a ser o ticket na sua plataforma.
             </small>
 
+            {/* Escuta de eventos de ticket — descobre paths automaticamente */}
+            <div style={{
+              background: "#f8fafc", border: "1px solid #e5e7eb",
+              borderRadius: 8, padding: 12, margin: "8px 0 16px",
+            }}>
+              <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 6 }}>
+                Não sabe quais são os campos do payload?
+              </div>
+              <p style={{ fontSize: 12, color: "#475569", marginTop: 0, marginBottom: 8 }}>
+                Ative a escuta abaixo e, na sua plataforma de atendimento,{" "}
+                <strong>abra ou feche 1 ticket de teste</strong>. Vamos capturar o
+                webhook, sugerir os caminhos certos e pré-preencher os campos.
+              </p>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                <button
+                  type="button"
+                  className={`broker-primary ${tldListening ? "is-listening" : ""}`}
+                  onClick={startTicketListening}
+                  disabled={tldListening}
+                  style={{ minWidth: 220 }}
+                >
+                  {tldListening
+                    ? "🔴 Aguardando evento de ticket..."
+                    : "▶ Ativar escuta (5 min)"}
+                </button>
+                <button
+                  type="button"
+                  onClick={loadSuggestions}
+                  disabled={discBusy}
+                  style={{
+                    padding: "6px 12px", borderRadius: 6, border: "1px solid #d1d5db",
+                    background: discBusy ? "#f3f4f6" : "white",
+                    cursor: discBusy ? "wait" : "pointer", fontSize: 13,
+                  }}
+                  title="Lê os ÚLTIMOS eventos já recebidos no /hooks (sem precisar mandar de novo)"
+                >
+                  {discBusy ? "Buscando..." : "🔎 Usar eventos já recebidos"}
+                </button>
+              </div>
+              {tldListenMsg && (
+                <small style={{
+                  display: "block", marginTop: 8, fontSize: 12,
+                  color: tldListenMsg.startsWith("✓") ? "#2e7d32"
+                       : tldListenMsg.startsWith("⏱") ? "#c62828" : "#475569",
+                }}>
+                  {tldListenMsg}
+                </small>
+              )}
+              {!tldListenMsg && discMeta && (
+                <small style={{ display: "block", marginTop: 8, fontSize: 12, color: "#475569" }}>
+                  Analisados {discMeta.event_count} evento(s) do histórico
+                  ({discMeta.inbound_count} entrada, {discMeta.outbound_count} saída).
+                </small>
+              )}
+              {tldDetectedPaths.length > 0 && (
+                <details style={{ marginTop: 8 }}>
+                  <summary style={{ cursor: "pointer", fontSize: 12, color: "#475569" }}>
+                    Ver todos os {tldDetectedPaths.length} campos detectados no último evento
+                  </summary>
+                  <div style={{
+                    display: "flex", flexWrap: "wrap", gap: 4, marginTop: 6,
+                    maxHeight: 160, overflowY: "auto",
+                  }}>
+                    {tldDetectedPaths.map((p) => (
+                      <code key={p.path} style={{
+                        background: "white", border: "1px solid #e5e7eb",
+                        borderRadius: 4, padding: "2px 6px", fontSize: 11,
+                      }} title={`Tipo: ${p.type} · Exemplo: ${p.sample}`}>
+                        {p.path}
+                      </code>
+                    ))}
+                  </div>
+                </details>
+              )}
+            </div>
+
+            {/* Datalists alimentados pelas duas fontes (escuta dedicada + histórico) */}
+            <datalist id={`tld-path-${integration.id}`}>
+              {tldDetectedPaths.map((p) => (
+                <option
+                  key={`d-${p.path}`}
+                  value={p.path}
+                  label={`${p.type} · ex.: ${String(p.sample ?? "").slice(0, 40)}`}
+                />
+              ))}
+              {discovered.map((p) => (
+                <option
+                  key={`h-${p.path}`}
+                  value={p.path}
+                  label={`${p.type} · ex.: ${(p.samples[0] ?? "").toString().slice(0, 40)}`}
+                />
+              ))}
+            </datalist>
+            <datalist id={`tld-close-equals-${integration.id}`}>
+              {tldDetectedPaths
+                .filter((p) => p.path === tldClosePath)
+                .map((p, i) => (
+                  <option key={i} value={String(p.sample)} />
+                ))}
+              {(discovered.find((p) => p.path === tldClosePath)?.samples ?? []).map((s, i) => (
+                <option key={`h-${i}`} value={String(s)} />
+              ))}
+            </datalist>
+            <datalist id={`tld-open-equals-${integration.id}`}>
+              {tldDetectedPaths
+                .filter((p) => p.path === tldOpenPath)
+                .map((p, i) => (
+                  <option key={i} value={String(p.sample)} />
+                ))}
+              {(discovered.find((p) => p.path === tldOpenPath)?.samples ?? []).map((s, i) => (
+                <option key={`h-${i}`} value={String(s)} />
+              ))}
+            </datalist>
+
             <label className="broker-field">
               <span>Caminho do tipo do evento (path)</span>
               <input
+                list={`tld-path-${integration.id}`}
                 value={tldClosePath}
                 onChange={(e) => setTldClosePath(e.target.value)}
                 placeholder="$.event"
               />
               <small style={{ color: "#86868b", fontSize: 12 }}>
-                Onde, no payload do webhook, está o nome do evento. Ex.:{" "}
-                <code>$.event</code>, <code>$.type</code>, <code>$.eventType</code>.
+                Onde, no payload do webhook, está o nome do evento. Clique no campo
+                para ver as sugestões detectadas. Ex.: <code>$.event</code>,{" "}
+                <code>$.type</code>, <code>$.eventType</code>.
               </small>
             </label>
             <label className="broker-field">
               <span>Valor que indica TICKET FECHADO</span>
               <input
+                list={`tld-close-equals-${integration.id}`}
                 value={tldCloseEquals}
                 onChange={(e) => setTldCloseEquals(e.target.value)}
                 placeholder="ticket.closed"
@@ -1721,10 +1926,15 @@ function HandoffTab({ integration, onSaved }: { integration: Integration; onSave
             <label className="broker-field">
               <span>Caminho do telefone do cliente no payload do evento</span>
               <input
+                list={`tld-path-${integration.id}`}
                 value={tldPhonePath}
                 onChange={(e) => setTldPhonePath(e.target.value)}
                 placeholder="$.contact.phone"
               />
+              <small style={{ color: "#86868b", fontSize: 12 }}>
+                Geralmente está em <code>$.contact.phone</code>, <code>$.customer.phone</code>{" "}
+                ou <code>$.ticket.contact.number</code>.
+              </small>
             </label>
 
             <details style={{ marginTop: 8 }}>
@@ -1740,6 +1950,7 @@ function HandoffTab({ integration, onSaved }: { integration: Integration; onSave
                 <label className="broker-field">
                   <span>Caminho do tipo do evento (path)</span>
                   <input
+                    list={`tld-path-${integration.id}`}
                     value={tldOpenPath}
                     onChange={(e) => setTldOpenPath(e.target.value)}
                     placeholder="$.event"
@@ -1748,6 +1959,7 @@ function HandoffTab({ integration, onSaved }: { integration: Integration; onSave
                 <label className="broker-field">
                   <span>Valor que indica TICKET ABERTO</span>
                   <input
+                    list={`tld-open-equals-${integration.id}`}
                     value={tldOpenEquals}
                     onChange={(e) => setTldOpenEquals(e.target.value)}
                     placeholder="ticket.opened"
