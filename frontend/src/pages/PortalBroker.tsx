@@ -1188,37 +1188,74 @@ function HandoffTab({ integration, onSaved }: { integration: Integration; onSave
   const [hhdPhonePath, setHhdPhonePath] = useState<string>(hhd.customer_phone_path ?? "$.to");
 
   // ── Detecção de fechamento de ticket externo (event-driven resume) ────────
+  // UX em 1 passo: o operador NÃO digita path/JSON. Ele clica em "Capturar"
+  // e fecha 1 ticket de teste na plataforma. A UI detecta sozinha qual campo
+  // identifica o tipo do evento e onde está o telefone do cliente, e mostra
+  // só uma confirmação amigável.
   const tld = integration.ticket_lifecycle_detection || {};
   const [tldEnabled, setTldEnabled] = useState<boolean>(!!tld.enabled);
-  const [tldClosePath, setTldClosePath] = useState<string>(tld.close_match?.path ?? "$.event");
+  const [tldClosePath, setTldClosePath] = useState<string>(tld.close_match?.path ?? "");
   const [tldCloseEquals, setTldCloseEquals] = useState<string>(
-    tld.close_match?.equals != null ? String(tld.close_match.equals) : "ticket.closed"
+    tld.close_match?.equals != null ? String(tld.close_match.equals) : ""
   );
-  const [tldOpenPath, setTldOpenPath] = useState<string>(tld.open_match?.path ?? "");
-  const [tldOpenEquals, setTldOpenEquals] = useState<string>(
-    tld.open_match?.equals != null ? String(tld.open_match.equals) : ""
-  );
-  const [tldPhonePath, setTldPhonePath] = useState<string>(tld.customer_phone_path ?? "$.contact.phone");
+  const [tldPhonePath, setTldPhonePath] = useState<string>(tld.customer_phone_path ?? "");
   const [tldFallbackMin, setTldFallbackMin] = useState<number>(
     tld.fallback_minutes != null ? Number(tld.fallback_minutes) : 480
   );
+  // Exemplo capturado (mostrar pro tenant: "Cliente identificado: 5511...")
+  const [tldCapturedPhoneSample, setTldCapturedPhoneSample] = useState<string>("");
 
-  // ── Escuta dedicada para eventos de ticket (lifecycle) ───────────────────
-  // Polla broker_raw_events à procura do PRÓXIMO evento que chegar no /hooks
-  // (qualquer direction), extrai os paths via discoverPaths e pré-preenche os
-  // campos com palpites razoáveis. O tenant clica em "Ativar" e dispara um
-  // ticket de teste na plataforma de atendimento (abrir/fechar) — a UI captura.
+  // Wizard de captura
   const [tldListening, setTldListening] = useState(false);
   const [tldListenMsg, setTldListenMsg] = useState<string>("");
-  const [tldDetectedPaths, setTldDetectedPaths] = useState<DiscoveredPath[]>([]);
+
+  function detectFromPaths(paths: DiscoveredPath[]): {
+    eventPath?: string; eventValue?: string;
+    phonePath?: string; phoneSample?: string;
+  } {
+    // 1) Tipo do evento: prioriza paths nomeados como event/type/eventType/etc.
+    const eventTypePath = paths.find((p) =>
+      /(^|\.)(event(Type|_type)?|type|kind|action|eventName)$/i.test(p.path)
+    );
+    // Se não achou pelo nome, pega o primeiro path string de profundidade 1
+    // cujo valor parece um identificador (sem espaços, com letra).
+    const fallbackEvent = paths.find((p) =>
+      /string/i.test(p.type) &&
+      p.path.split(".").length <= 2 &&
+      /^[A-Za-z][A-Za-z0-9_.\-]{2,40}$/.test(String(p.sample ?? ""))
+    );
+    const eventPick = eventTypePath ?? fallbackEvent;
+
+    // 2) Telefone: path com "phone"/"contact"/"whatsapp"/etc cujo VALOR seja
+    // numérico longo (8–15 dígitos quando limpamos não-dígitos).
+    const looksLikePhone = (s: unknown) => {
+      const digits = String(s ?? "").replace(/\D/g, "");
+      return digits.length >= 8 && digits.length <= 15;
+    };
+    const phoneCandidates = paths.filter(
+      (p) =>
+        /(phone|telefone|whatsapp|contact|number|msisdn|cellphone|celular|wid)/i.test(p.path)
+    );
+    let phonePick = phoneCandidates.find((p) => looksLikePhone(p.sample));
+    if (!phonePick) {
+      // Último recurso: qualquer string/number do payload que pareça telefone.
+      phonePick = paths.find((p) => looksLikePhone(p.sample));
+    }
+
+    return {
+      eventPath: eventPick?.path,
+      eventValue: eventPick != null ? String(eventPick.sample ?? "") : undefined,
+      phonePath: phonePick?.path,
+      phoneSample: phonePick != null ? String(phonePick.sample ?? "") : undefined,
+    };
+  }
 
   async function startTicketListening() {
     const startedAt = new Date();
     setTldListening(true);
     setTldListenMsg(
-      "Aguardando... abra ou feche um ticket de teste na sua plataforma agora. (até 5 min)"
+      "Aguardando... feche um ticket de teste na sua plataforma agora. (até 5 min)"
     );
-    setTldDetectedPaths([]);
 
     let found = false;
     for (let attempt = 0; attempt < 150 && !found; attempt++) {
@@ -1233,48 +1270,22 @@ function HandoffTab({ integration, onSaved }: { integration: Integration; onSave
           const full = await getRawEvent(fresh.id);
           if (full.payload) {
             const paths = await discoverPaths(full.payload);
-            setTldDetectedPaths(paths);
-            // Heurística: procurar um path cujo valor de exemplo contenha
-            // "ticket" / "close" / "open" — sugere de imediato.
-            const pickByKeyword = (kw: string) =>
-              paths.find(
-                (p) =>
-                  /string/i.test(p.type) &&
-                  String(p.sample ?? "").toLowerCase().includes(kw)
-              );
-            const eventTypePath = paths.find((p) =>
-              /(\.event(Type)?|\.type|\.kind|\.action)$/i.test(p.path)
-            );
-            if (eventTypePath) {
-              setTldClosePath(eventTypePath.path);
-              const sample = String(eventTypePath.sample ?? "").toLowerCase();
-              if (sample.includes("clos") || sample.includes("end")
-                  || sample.includes("fech")) {
-                setTldCloseEquals(String(eventTypePath.sample));
-              } else if (sample.includes("open") || sample.includes("abert")
-                         || sample.includes("start") || sample.includes("creat")) {
-                setTldOpenPath(eventTypePath.path);
-                setTldOpenEquals(String(eventTypePath.sample));
-              }
+            const guess = detectFromPaths(paths);
+            if (guess.eventPath && guess.eventValue && guess.phonePath) {
+              setTldClosePath(guess.eventPath);
+              setTldCloseEquals(guess.eventValue);
+              setTldPhonePath(guess.phonePath);
+              setTldCapturedPhoneSample(guess.phoneSample ?? "");
+              setTldListenMsg("");
+              found = true;
             } else {
-              const closeHint = pickByKeyword("clos") || pickByKeyword("fech");
-              if (closeHint) {
-                setTldClosePath(closeHint.path);
-                setTldCloseEquals(String(closeHint.sample));
-              }
+              setTldListenMsg(
+                "Recebemos um evento, mas não conseguimos identificar o " +
+                "telefone do cliente sozinhos. Tente fechar outro ticket " +
+                "que tenha conversa de cliente associada."
+              );
+              found = true;
             }
-            // Telefone do cliente: primeiro path que parece telefone.
-            const phoneHint = paths.find(
-              (p) =>
-                /(phone|telefone|whatsapp|contact|number|msisdn)/i.test(p.path)
-            );
-            if (phoneHint) setTldPhonePath(phoneHint.path);
-
-            setTldListenMsg(
-              `✓ Evento capturado! ${paths.length} campo(s) detectado(s). ` +
-              `Confira os palpites abaixo e ajuste se necessário.`
-            );
-            found = true;
           }
         }
       } catch (e) {
@@ -1284,12 +1295,26 @@ function HandoffTab({ integration, onSaved }: { integration: Integration; onSave
     }
     if (!found) {
       setTldListenMsg(
-        "⏱ Timeout. Nenhum evento recebido em 5 min. Verifique se a plataforma " +
-        "está apontando para a URL do /hooks deste integrador."
+        "⏱ Não recebemos nenhum evento em 5 minutos. Confirme que a sua " +
+        "plataforma de atendimento está mandando o webhook de fechamento " +
+        "para esta integração."
       );
     }
     setTldListening(false);
   }
+
+  function tldClearCapture() {
+    setTldClosePath("");
+    setTldCloseEquals("");
+    setTldPhonePath("");
+    setTldCapturedPhoneSample("");
+    setTldListenMsg("");
+  }
+
+  // Considera "configurado" quando temos os 3 campos mínimos.
+  const tldConfigured = Boolean(
+    tldClosePath && tldCloseEquals && tldPhonePath
+  );
 
   // Sugestões de paths a partir dos últimos eventos reais (raw_events).
   // Evita o tenant ter que decorar "$.fromMe"/"$.to" — ele clica e escolhe.
@@ -1366,12 +1391,12 @@ function HandoffTab({ integration, onSaved }: { integration: Integration; onSave
     setHhdPhonePath(h.customer_phone_path ?? "$.to");
     const t = integration.ticket_lifecycle_detection || {};
     setTldEnabled(!!t.enabled);
-    setTldClosePath(t.close_match?.path ?? "$.event");
-    setTldCloseEquals(t.close_match?.equals != null ? String(t.close_match.equals) : "ticket.closed");
-    setTldOpenPath(t.open_match?.path ?? "");
-    setTldOpenEquals(t.open_match?.equals != null ? String(t.open_match.equals) : "");
-    setTldPhonePath(t.customer_phone_path ?? "$.contact.phone");
+    setTldClosePath(t.close_match?.path ?? "");
+    setTldCloseEquals(t.close_match?.equals != null ? String(t.close_match.equals) : "");
+    setTldPhonePath(t.customer_phone_path ?? "");
     setTldFallbackMin(t.fallback_minutes != null ? Number(t.fallback_minutes) : 480);
+    setTldCapturedPhoneSample("");
+    setTldListenMsg("");
     const s = integration.session_config || {};
     setCloseKeywordsText((s.close_keywords && s.close_keywords.length
       ? s.close_keywords
@@ -1421,6 +1446,8 @@ function HandoffTab({ integration, onSaved }: { integration: Integration; onSave
       if (v !== "" && !isNaN(Number(v))) return Number(v);
       return v;
     };
+    // Salva SEM open_match — produto: "abertura entende-se que já está aberto
+    // quando chegaram mensagens". Só o fechamento libera a IA.
     const ticket_lifecycle_detection: Record<string, unknown> = {
       enabled: tldEnabled,
       close_match: {
@@ -1430,12 +1457,6 @@ function HandoffTab({ integration, onSaved }: { integration: Integration; onSave
       customer_phone_path: tldPhonePath.trim(),
       fallback_minutes: Number.isFinite(tldFallbackMin) ? tldFallbackMin : 0,
     };
-    if (tldOpenPath.trim() && tldOpenEquals.trim()) {
-      ticket_lifecycle_detection.open_match = {
-        path: tldOpenPath.trim(),
-        equals: coerceMatchValue(tldOpenEquals),
-      };
-    }
     try {
       // Reaproveita o saveFlow — passa os demais campos da integração sem alteração
       await saveFlow(integration.id, {
@@ -1758,11 +1779,10 @@ function HandoffTab({ integration, onSaved }: { integration: Integration; onSave
       <div className="broker-card">
         <h3 className="broker-card-title">Pausar a IA até o ticket fechar na plataforma</h3>
         <p className="broker-card-sub">
-          Quando o seu sistema de multiatendimento envia webhooks de
-          {" "}<strong>ticket aberto</strong> e <strong>ticket fechado</strong>{" "}
-          no mesmo endpoint <code>/hooks</code>, podemos usar o evento de fechamento
-          como gatilho para a IA voltar — em vez de um timer. Isso evita que a IA
-          retome o atendimento no meio de uma conversa humana, mesmo que demore horas.
+          Em vez de a IA voltar por timer (tempo de pausa em minutos), ela pode
+          voltar exatamente quando o atendente <strong>fecha o ticket</strong> na
+          sua plataforma. Mais natural, evita que o bot reapareça no meio do
+          atendimento e funciona mesmo quando o humano leva horas.
         </p>
 
         <label className="broker-field" style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -1776,213 +1796,109 @@ function HandoffTab({ integration, onSaved }: { integration: Integration; onSave
 
         {tldEnabled && (
           <>
-            <small style={{ color: "#92400e", fontSize: 12, display: "block", margin: "8px 0" }}>
-              ⚠️ Ao ligar isso, o tempo de pausa em minutos acima vira apenas{" "}
-              <strong>safety net</strong> (caso o sistema externo esqueça de mandar o
-              evento). A fonte da verdade passa a ser o ticket na sua plataforma.
-            </small>
-
-            {/* Escuta de eventos de ticket — descobre paths automaticamente */}
-            <div style={{
-              background: "#f8fafc", border: "1px solid #e5e7eb",
-              borderRadius: 8, padding: 12, margin: "8px 0 16px",
-            }}>
-              <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 6 }}>
-                Não sabe quais são os campos do payload?
-              </div>
-              <p style={{ fontSize: 12, color: "#475569", marginTop: 0, marginBottom: 8 }}>
-                Ative a escuta abaixo e, na sua plataforma de atendimento,{" "}
-                <strong>abra ou feche 1 ticket de teste</strong>. Vamos capturar o
-                webhook, sugerir os caminhos certos e pré-preencher os campos.
-              </p>
-              <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+            {/* Estado A: ainda NÃO configurado → mostrar wizard de captura */}
+            {!tldConfigured && (
+              <div style={{
+                background: "#f8fafc", border: "1px solid #e5e7eb",
+                borderRadius: 8, padding: 16, margin: "8px 0",
+              }}>
+                <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 6 }}>
+                  Vamos configurar isso em 1 passo
+                </div>
+                <ol style={{ paddingLeft: 18, margin: "0 0 12px 0", fontSize: 13, color: "#334155", lineHeight: 1.6 }}>
+                  <li>Clique em <strong>"Capturar fechamento de ticket"</strong> aqui embaixo.</li>
+                  <li>Vá na sua plataforma de atendimento e <strong>feche um ticket de teste</strong>{" "}
+                    (pode ser qualquer ticket que tenha uma conversa associada).</li>
+                  <li>A gente reconhece o evento sozinho e te mostra o resultado.</li>
+                </ol>
                 <button
                   type="button"
                   className={`broker-primary ${tldListening ? "is-listening" : ""}`}
                   onClick={startTicketListening}
                   disabled={tldListening}
-                  style={{ minWidth: 220 }}
+                  style={{ width: "100%" }}
                 >
                   {tldListening
-                    ? "🔴 Aguardando evento de ticket..."
-                    : "▶ Ativar escuta (5 min)"}
+                    ? "🔴 Aguardando você fechar um ticket... (até 5 min)"
+                    : "▶ Capturar fechamento de ticket"}
                 </button>
-                <button
-                  type="button"
-                  onClick={loadSuggestions}
-                  disabled={discBusy}
-                  style={{
-                    padding: "6px 12px", borderRadius: 6, border: "1px solid #d1d5db",
-                    background: discBusy ? "#f3f4f6" : "white",
-                    cursor: discBusy ? "wait" : "pointer", fontSize: 13,
-                  }}
-                  title="Lê os ÚLTIMOS eventos já recebidos no /hooks (sem precisar mandar de novo)"
-                >
-                  {discBusy ? "Buscando..." : "🔎 Usar eventos já recebidos"}
-                </button>
-              </div>
-              {tldListenMsg && (
-                <small style={{
-                  display: "block", marginTop: 8, fontSize: 12,
-                  color: tldListenMsg.startsWith("✓") ? "#2e7d32"
-                       : tldListenMsg.startsWith("⏱") ? "#c62828" : "#475569",
-                }}>
-                  {tldListenMsg}
-                </small>
-              )}
-              {!tldListenMsg && discMeta && (
-                <small style={{ display: "block", marginTop: 8, fontSize: 12, color: "#475569" }}>
-                  Analisados {discMeta.event_count} evento(s) do histórico
-                  ({discMeta.inbound_count} entrada, {discMeta.outbound_count} saída).
-                </small>
-              )}
-              {tldDetectedPaths.length > 0 && (
-                <details style={{ marginTop: 8 }}>
-                  <summary style={{ cursor: "pointer", fontSize: 12, color: "#475569" }}>
-                    Ver todos os {tldDetectedPaths.length} campos detectados no último evento
-                  </summary>
-                  <div style={{
-                    display: "flex", flexWrap: "wrap", gap: 4, marginTop: 6,
-                    maxHeight: 160, overflowY: "auto",
+                {tldListenMsg && (
+                  <small style={{
+                    display: "block", marginTop: 8, fontSize: 12,
+                    color: tldListenMsg.startsWith("⏱") ? "#c62828" : "#475569",
                   }}>
-                    {tldDetectedPaths.map((p) => (
-                      <code key={p.path} style={{
-                        background: "white", border: "1px solid #e5e7eb",
-                        borderRadius: 4, padding: "2px 6px", fontSize: 11,
-                      }} title={`Tipo: ${p.type} · Exemplo: ${p.sample}`}>
-                        {p.path}
-                      </code>
-                    ))}
-                  </div>
-                </details>
-              )}
-            </div>
+                    {tldListenMsg}
+                  </small>
+                )}
+              </div>
+            )}
 
-            {/* Datalists alimentados pelas duas fontes (escuta dedicada + histórico) */}
-            <datalist id={`tld-path-${integration.id}`}>
-              {tldDetectedPaths.map((p) => (
-                <option
-                  key={`d-${p.path}`}
-                  value={p.path}
-                  label={`${p.type} · ex.: ${String(p.sample ?? "").slice(0, 40)}`}
-                />
-              ))}
-              {discovered.map((p) => (
-                <option
-                  key={`h-${p.path}`}
-                  value={p.path}
-                  label={`${p.type} · ex.: ${(p.samples[0] ?? "").toString().slice(0, 40)}`}
-                />
-              ))}
-            </datalist>
-            <datalist id={`tld-close-equals-${integration.id}`}>
-              {tldDetectedPaths
-                .filter((p) => p.path === tldClosePath)
-                .map((p, i) => (
-                  <option key={i} value={String(p.sample)} />
-                ))}
-              {(discovered.find((p) => p.path === tldClosePath)?.samples ?? []).map((s, i) => (
-                <option key={`h-${i}`} value={String(s)} />
-              ))}
-            </datalist>
-            <datalist id={`tld-open-equals-${integration.id}`}>
-              {tldDetectedPaths
-                .filter((p) => p.path === tldOpenPath)
-                .map((p, i) => (
-                  <option key={i} value={String(p.sample)} />
-                ))}
-              {(discovered.find((p) => p.path === tldOpenPath)?.samples ?? []).map((s, i) => (
-                <option key={`h-${i}`} value={String(s)} />
-              ))}
-            </datalist>
+            {/* Estado B: configurado → mostrar resumo amigável */}
+            {tldConfigured && (
+              <div style={{
+                background: "#f0fdf4", border: "1px solid #86efac",
+                borderRadius: 8, padding: 16, margin: "8px 0",
+              }}>
+                <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 10, color: "#15803d" }}>
+                  ✓ Configurado
+                </div>
+                <div style={{ fontSize: 13, color: "#334155", lineHeight: 1.7 }}>
+                  Quando sua plataforma mandar um webhook com{" "}
+                  <code style={{ background: "white", padding: "1px 6px", borderRadius: 4 }}>
+                    {tldCloseEquals}
+                  </code>
+                  {" "}em{" "}
+                  <code style={{ background: "white", padding: "1px 6px", borderRadius: 4 }}>
+                    {tldClosePath}
+                  </code>
+                  , vamos entender como <strong>ticket fechado</strong> e liberar a IA.
+                  <br />
+                  O telefone do cliente é lido de{" "}
+                  <code style={{ background: "white", padding: "1px 6px", borderRadius: 4 }}>
+                    {tldPhonePath}
+                  </code>
+                  {tldCapturedPhoneSample && (
+                    <> — capturamos o exemplo <strong>{tldCapturedPhoneSample}</strong>.</>
+                  )}
+                </div>
+                <div style={{ marginTop: 12, display: "flex", gap: 8, flexWrap: "wrap" }}>
+                  <button
+                    type="button"
+                    onClick={() => { tldClearCapture(); }}
+                    style={{
+                      padding: "6px 12px", borderRadius: 6, border: "1px solid #d1d5db",
+                      background: "white", cursor: "pointer", fontSize: 13,
+                    }}
+                  >
+                    ↻ Recapturar (se a plataforma mudou)
+                  </button>
+                </div>
+              </div>
+            )}
 
-            <label className="broker-field">
-              <span>Caminho do tipo do evento (path)</span>
-              <input
-                list={`tld-path-${integration.id}`}
-                value={tldClosePath}
-                onChange={(e) => setTldClosePath(e.target.value)}
-                placeholder="$.event"
-              />
-              <small style={{ color: "#86868b", fontSize: 12 }}>
-                Onde, no payload do webhook, está o nome do evento. Clique no campo
-                para ver as sugestões detectadas. Ex.: <code>$.event</code>,{" "}
-                <code>$.type</code>, <code>$.eventType</code>.
-              </small>
-            </label>
-            <label className="broker-field">
-              <span>Valor que indica TICKET FECHADO</span>
-              <input
-                list={`tld-close-equals-${integration.id}`}
-                value={tldCloseEquals}
-                onChange={(e) => setTldCloseEquals(e.target.value)}
-                placeholder="ticket.closed"
-              />
-              <small style={{ color: "#86868b", fontSize: 12 }}>
-                Quando o campo acima for igual a este valor, a IA é liberada e o
-                histórico zerado para o próximo atendimento começar do zero.
-              </small>
-            </label>
-            <label className="broker-field">
-              <span>Caminho do telefone do cliente no payload do evento</span>
-              <input
-                list={`tld-path-${integration.id}`}
-                value={tldPhonePath}
-                onChange={(e) => setTldPhonePath(e.target.value)}
-                placeholder="$.contact.phone"
-              />
-              <small style={{ color: "#86868b", fontSize: 12 }}>
-                Geralmente está em <code>$.contact.phone</code>, <code>$.customer.phone</code>{" "}
-                ou <code>$.ticket.contact.number</code>.
-              </small>
-            </label>
-
-            <details style={{ marginTop: 8 }}>
-              <summary style={{ cursor: "pointer", fontSize: 13 }}>
-                Opcional: também pausar a IA quando o ticket é aberto na plataforma
+            <details style={{ marginTop: 12 }}>
+              <summary style={{ cursor: "pointer", fontSize: 13, color: "#475569" }}>
+                Opções avançadas
               </summary>
-              <div style={{ marginTop: 8, paddingLeft: 8, borderLeft: "2px solid #e5e7eb" }}>
-                <p style={{ fontSize: 12, color: "#86868b", marginTop: 0 }}>
-                  Útil quando o atendente abre o ticket antes mesmo de o bot mandar
-                  para o handoff (ex.: cliente cai direto na fila). Deixe em branco
-                  para ignorar.
-                </p>
+              <div style={{ marginTop: 10, paddingLeft: 8, borderLeft: "2px solid #e5e7eb" }}>
                 <label className="broker-field">
-                  <span>Caminho do tipo do evento (path)</span>
+                  <span>Tempo limite de segurança (minutos)</span>
                   <input
-                    list={`tld-path-${integration.id}`}
-                    value={tldOpenPath}
-                    onChange={(e) => setTldOpenPath(e.target.value)}
-                    placeholder="$.event"
+                    type="number"
+                    min={0}
+                    max={43200}
+                    value={tldFallbackMin}
+                    onChange={(e) => setTldFallbackMin(Number(e.target.value) || 0)}
                   />
-                </label>
-                <label className="broker-field">
-                  <span>Valor que indica TICKET ABERTO</span>
-                  <input
-                    list={`tld-open-equals-${integration.id}`}
-                    value={tldOpenEquals}
-                    onChange={(e) => setTldOpenEquals(e.target.value)}
-                    placeholder="ticket.opened"
-                  />
+                  <small style={{ color: "#86868b", fontSize: 12 }}>
+                    Se a plataforma esquecer de mandar o evento de fechamento, a
+                    IA reassume sozinha após esse tempo. Padrão: <strong>480</strong>{" "}
+                    (8 horas). Coloque <strong>0</strong> para deixar a IA pausada
+                    indefinidamente até o evento chegar.
+                  </small>
                 </label>
               </div>
             </details>
-
-            <label className="broker-field">
-              <span>Safety net — pausa máxima em minutos (0 = nunca expira)</span>
-              <input
-                type="number"
-                min={0}
-                max={43200}
-                value={tldFallbackMin}
-                onChange={(e) => setTldFallbackMin(Number(e.target.value) || 0)}
-              />
-              <small style={{ color: "#86868b", fontSize: 12 }}>
-                Se o evento de fechamento não chegar nesse tempo, a IA reassume
-                sozinha (útil para não deixar cliente esperando se a plataforma
-                falhar). <strong>0</strong> = pausa indefinida até o evento chegar.
-              </small>
-            </label>
           </>
         )}
       </div>

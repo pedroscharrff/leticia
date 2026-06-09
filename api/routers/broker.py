@@ -446,8 +446,25 @@ async def ingest(
                 return False
             return str(broker.resolve_path(payload, p)) == str(m.get("equals"))
 
-        tld_close = _tld_matches(tld.get("close_match") or {}) if tld.get("enabled") else False
-        tld_open = _tld_matches(tld.get("open_match") or {}) if tld.get("enabled") else False
+        tld_close_cfg = tld.get("close_match") or {}
+        tld_open_cfg = tld.get("open_match") or {}
+        # Guarda contra config ambígua: open_match igual ao close_match (ou vazio
+        # / sem path / equals) é ignorado — evita que o mesmo evento seja
+        # interpretado como abrir E fechar simultaneamente.
+        tld_open_valid = bool(
+            tld_open_cfg.get("path")
+            and tld_open_cfg.get("equals") not in (None, "")
+            and (
+                tld_open_cfg.get("path") != tld_close_cfg.get("path")
+                or str(tld_open_cfg.get("equals")) != str(tld_close_cfg.get("equals"))
+            )
+        )
+        tld_close = _tld_matches(tld_close_cfg) if tld.get("enabled") else False
+        tld_open = _tld_matches(tld_open_cfg) if (tld.get("enabled") and tld_open_valid) else False
+        # Se ambos casarem (config sobreposta), close ganha — é o evento mais
+        # importante (libera o cliente, não bloqueia).
+        if tld_close and tld_open:
+            tld_open = False
         if tld_close or tld_open:
             # Idempotência separada do bot_echo (`out:{hash}`) e da regular
             # — `is_echo` consome fingerprint; não reusar prefixo.
@@ -466,9 +483,16 @@ async def ingest(
             cust_raw = broker.resolve_path(payload, cust_path) if cust_path else None
             customer_phone = "".join(c for c in str(cust_raw or "") if c.isdigit())[:20]
             if not customer_phone:
+                # FAIL-SAFE: telefone do cliente não localizado no payload.
+                # NÃO bloquear o pipeline — só registrar e cair pro fluxo normal
+                # (inbound). Se o tenant configurou `customer_phone_path` errado
+                # ou se um evento `NewMessage` ficou casando por engano com
+                # `open_match`, ainda assim a mensagem do cliente é processada
+                # pelo agente.
                 log.warning("hooks.ticket_lifecycle.no_customer_phone",
                             tenant=str(tenant["id"]), slug=integration_slug,
-                            cust_path=cust_path)
+                            cust_path=cust_path,
+                            matched=("close" if tld_close else "open"))
                 await conn.execute(
                     """
                     INSERT INTO public.broker_raw_events
@@ -479,69 +503,69 @@ async def ingest(
                     ON CONFLICT DO NOTHING
                     """,
                     tenant["id"], integration["id"], integration_slug,
-                    payload, {}, tlc_key, "Evento de ticket sem telefone do cliente",
+                    payload, {}, tlc_key,
+                    "customer_phone_path não localizou telefone — caindo pro fluxo normal",
                 )
-                return {"accepted": True, "skipped": True,
-                        "reason": "Evento de ticket sem telefone do cliente"}
-
-            from services import conversation_state as cs
-            if tld_close:
-                # IA volta. reset_session limpa closed_at + histórico Redis,
-                # evitando o "lembrar do atendimento antigo"
-                # (ver [[broker-skips-ai-pause]]).
-                try:
-                    await cs.reset_session(
-                        str(tenant["id"]), customer_phone,
-                        by="auto:ticket_closed",
-                        reason="ticket_fechado_externo",
-                    )
-                    log.info("broker.ticket_closed.ai_resumed",
-                             tenant=str(tenant["id"]), slug=integration_slug,
-                             phone=customer_phone[:4])
-                except Exception as exc:  # noqa: BLE001
-                    log.warning("broker.ticket_closed.resume_failed",
-                                tenant=str(tenant["id"]), exc=str(exc))
-                canonical_event = "ticket_lifecycle.ai_resumed"
+                # Cai pro fluxo normal abaixo (NÃO retorna).
             else:
-                # Pausa event-driven. fallback_minutes>0 ainda gera paused_until
-                # como safety net (caso a plataforma esqueça do close); 0/None
-                # = pausa indefinida até chegar o close.
-                fb = tld.get("fallback_minutes")
-                try:
-                    fb_int = int(fb) if fb not in (None, "") else None
-                except Exception:
-                    fb_int = None
-                until_minutes = fb_int if (fb_int and fb_int > 0) else None
-                try:
-                    await cs.pause(
-                        str(tenant["id"]), customer_phone,
-                        until_minutes=until_minutes,
-                        by="auto:ticket_opened",
-                        reason="ticket_aberto_externo",
-                    )
-                    log.info("broker.ticket_opened.ai_paused",
-                             tenant=str(tenant["id"]), slug=integration_slug,
-                             phone=customer_phone[:4],
-                             fallback_minutes=until_minutes)
-                except Exception as exc:  # noqa: BLE001
-                    log.warning("broker.ticket_opened.pause_failed",
-                                tenant=str(tenant["id"]), exc=str(exc))
-                canonical_event = "ticket_lifecycle.ai_paused"
+                from services import conversation_state as cs
+                if tld_close:
+                    # IA volta. reset_session limpa closed_at + histórico Redis,
+                    # evitando o "lembrar do atendimento antigo"
+                    # (ver [[broker-skips-ai-pause]]).
+                    try:
+                        await cs.reset_session(
+                            str(tenant["id"]), customer_phone,
+                            by="auto:ticket_closed",
+                            reason="ticket_fechado_externo",
+                        )
+                        log.info("broker.ticket_closed.ai_resumed",
+                                 tenant=str(tenant["id"]), slug=integration_slug,
+                                 phone=customer_phone[:4])
+                    except Exception as exc:  # noqa: BLE001
+                        log.warning("broker.ticket_closed.resume_failed",
+                                    tenant=str(tenant["id"]), exc=str(exc))
+                    canonical_event = "ticket_lifecycle.ai_resumed"
+                else:
+                    # Pausa event-driven. fallback_minutes>0 ainda gera paused_until
+                    # como safety net (caso a plataforma esqueça do close); 0/None
+                    # = pausa indefinida até chegar o close.
+                    fb = tld.get("fallback_minutes")
+                    try:
+                        fb_int = int(fb) if fb not in (None, "") else None
+                    except Exception:
+                        fb_int = None
+                    until_minutes = fb_int if (fb_int and fb_int > 0) else None
+                    try:
+                        await cs.pause(
+                            str(tenant["id"]), customer_phone,
+                            until_minutes=until_minutes,
+                            by="auto:ticket_opened",
+                            reason="ticket_aberto_externo",
+                        )
+                        log.info("broker.ticket_opened.ai_paused",
+                                 tenant=str(tenant["id"]), slug=integration_slug,
+                                 phone=customer_phone[:4],
+                                 fallback_minutes=until_minutes)
+                    except Exception as exc:  # noqa: BLE001
+                        log.warning("broker.ticket_opened.pause_failed",
+                                    tenant=str(tenant["id"]), exc=str(exc))
+                    canonical_event = "ticket_lifecycle.ai_paused"
 
-            await conn.execute(
-                """
-                INSERT INTO public.broker_raw_events
-                  (tenant_id, integration_id, integration_slug, direction,
-                   payload, headers, idempotency_key, status, error,
-                   canonical_event, processed_at)
-                VALUES ($1,$2,$3,'inbound',$4,$5,$6,'processed',NULL,$7,NOW())
-                ON CONFLICT DO NOTHING
-                """,
-                tenant["id"], integration["id"], integration_slug,
-                payload, {}, tlc_key, canonical_event,
-            )
-            return {"accepted": True, "ticket_event": True,
-                    "canonical_event": canonical_event}
+                await conn.execute(
+                    """
+                    INSERT INTO public.broker_raw_events
+                      (tenant_id, integration_id, integration_slug, direction,
+                       payload, headers, idempotency_key, status, error,
+                       canonical_event, processed_at)
+                    VALUES ($1,$2,$3,'inbound',$4,$5,$6,'processed',NULL,$7,NOW())
+                    ON CONFLICT DO NOTHING
+                    """,
+                    tenant["id"], integration["id"], integration_slug,
+                    payload, {}, tlc_key, canonical_event,
+                )
+                return {"accepted": True, "ticket_event": True,
+                        "canonical_event": canonical_event}
 
         # ── Detecção de resposta HUMANA → pausa a IA ─────────────────────────
         # Gateways que ecoam mensagens de SAÍDA (TalkFarma/ClickMassa/WAHA/...)
