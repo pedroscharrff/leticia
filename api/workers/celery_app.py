@@ -1403,7 +1403,25 @@ async def _run_broker_flow(
             # handoff, independente do sucesso da API externa.
             try:
                 from services.conversation_state import auto_pause_after_handoff
-                pause_min = int(integration.get("handoff_pause_minutes") or 240)
+                # Modo event-driven: ticket_lifecycle_detection define a janela.
+                # fallback_minutes>0 = safety net; vazio/0 = pausa indefinida até
+                # o evento ticket.closed chegar pelo /hooks.
+                tld_cfg = integration.get("ticket_lifecycle_detection") or {}
+                if isinstance(tld_cfg, str):
+                    try:
+                        tld_cfg = json.loads(tld_cfg) or {}
+                    except Exception:
+                        tld_cfg = {}
+                if tld_cfg.get("enabled"):
+                    fb = tld_cfg.get("fallback_minutes")
+                    try:
+                        fb_int = int(fb) if fb not in (None, "") else 0
+                    except Exception:
+                        fb_int = 0
+                    # None = pausa indefinida; fb>0 = safety net temporário.
+                    pause_min: int | None = fb_int if fb_int > 0 else None
+                else:
+                    pause_min = int(integration.get("handoff_pause_minutes") or 240)
                 await auto_pause_after_handoff(
                     tenant_id, phone_clean,
                     pause_minutes=pause_min,

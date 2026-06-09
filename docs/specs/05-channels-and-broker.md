@@ -104,6 +104,9 @@ class ChannelAdapter(ABC):
 POST /hooks/{tenant_token}/{integration_slug}
   ├─ valida tenant + integration (active, enabled)
   ├─ skip_rules? → marca 'skipped' e retorna (evita loop bot↔gateway)
+  ├─ ticket_lifecycle_detection? (evento de ticket externo — ver seção dedicada)
+  │     ├─ close_match casa → conversation_state.reset_session, retorna 'ticket_lifecycle.ai_resumed'
+  │     └─ open_match casa  → conversation_state.pause(indefinida ou fallback_minutes), retorna
   ├─ human_handoff_detection? (mensagem de SAÍDA — ver seção dedicada)
   │     ├─ eco do próprio bot (bot_echo.is_echo) → 'skipped', IA segue ativa
   │     └─ atendente humano → conversation_state.pause(handoff_pause_minutes), retorna
@@ -159,6 +162,52 @@ fingerprint) — senão um retry do gateway leria o eco do bot como "humano".
 **Escopo:** SÓ gateways broker que ecoam saída. Z-API/Meta (canais nativos) não
 reenviam o outbound do atendente — fora de escopo (precisaria de echo mode).
 **Mídia** (ofertas) não tem texto casável → tratada conservadoramente como bot.
+
+### Detecção de fechamento de ticket externo (event-driven resume)
+
+**Problema:** plataformas de multiatendimento (TalkFarma, ClickMassa, ...) já têm
+o conceito explícito de **ticket**. Hoje a IA reassume por timer
+(`handoff_pause_minutes`), o que é chute — se o atendente humano demorar mais que
+a janela, o bot volta no meio do atendimento; se terminar antes, o cliente espera
+o timer estourar pra IA voltar. Quando essas plataformas emitem webhooks de
+`ticket.opened` e `ticket.closed` no mesmo endpoint `/hooks`, podemos usar o
+evento de fechamento como gatilho.
+
+**Solução (config `tenant_integrations.ticket_lifecycle_detection`, jsonb, mig 065):**
+```jsonc
+{
+  "enabled": true,
+  "close_match": { "path": "$.event", "equals": "ticket.closed" },
+  "open_match":  { "path": "$.event", "equals": "ticket.opened" }, // opcional
+  "customer_phone_path": "$.contact.phone",
+  "fallback_minutes": 480   // safety net (0/null = pausa indefinida até o close)
+}
+```
+
+1. **AVALIADO ANTES do `human_handoff_detection`** — um payload de
+   `ticket.closed` da plataforma pode coincidir com `fromMe=true` e ser
+   confundido com resposta humana.
+2. `close_match` casa → `conversation_state.reset_session(by="auto:ticket_closed")`.
+   Limpa `closed_at`, `ai_paused`, `paused_until` E o histórico Redis
+   (`hist:{tenant}:{phone}`) — alinhado ao fix de [[broker-skips-ai-pause]]:
+   atendimento novo do zero, sem o bot "lembrar" do anterior.
+3. `open_match` casa (opcional) → `conversation_state.pause(until_minutes=fallback_minutes or None,
+   by="auto:ticket_opened")`. Útil quando o cliente entra direto na fila sem
+   passar pelo handoff do bot.
+4. **Quando ligado, muda também a pausa pós-handoff e a pausa por reply humano:**
+   - `_run_broker_flow` chama `auto_pause_after_handoff(pause_minutes=fallback_minutes or None)` —
+     `None` = pausa indefinida (`ai_paused=TRUE`, `paused_until=NULL`).
+   - O ramo de `human_handoff_detection` também usa `fallback_minutes` ou `None`
+     em vez de `handoff_pause_minutes`.
+5. **Idempotência separada (`tlc:{hash}`)** — não compartilhar prefixo com
+   `out:{hash}` do bot_echo, que consome o fingerprint.
+6. **Fallback obrigatório por segurança:** default sugerido na UI é
+   `fallback_minutes=480` (8h). Quem confia 100% na plataforma seta `0`.
+
+**Escopo:** SÓ broker (`/hooks`). Canais nativos (Z-API/Meta) não recebem
+eventos de ticket. Se a config estiver ligada e a plataforma esquecer de mandar
+o close, o `fallback_minutes` (ou intervenção manual no portal de conversas)
+liberam a IA.
 
 ### Tempo de pausa configurável
 
@@ -250,6 +299,9 @@ Para mídia (ofertas pré-handoff): `services.channel_media.send_media(provider,
 - **Não pausar a IA em todo eco de saída sem checar `bot_echo.is_echo` primeiro** — o gateway ecoa as próprias respostas do bot; sem o fingerprint, a IA se auto-pausa a cada mensagem (o "dilema do auto-eco").
 - **Não reusar o `phone` do `inbound_field_map` em mensagem de SAÍDA** — ali ele é o número do bot. Use `customer_phone_path` (destinatário).
 - **Não rodar `is_echo` antes do dedup `out:{hash}`** — `is_echo` consome o fingerprint; um retry do gateway leria o eco do bot como resposta humana e pausaria a IA por engano.
+- **Não avaliar `ticket_lifecycle_detection` DEPOIS de `human_handoff_detection`** — um payload de `ticket.closed` pode coincidir com `fromMe=true` e ser confundido com resposta humana. Ordem correta: skip_rules → ticket_lifecycle → human_handoff → inbound.
+- **Não reusar o prefixo `out:{hash}` para idempotência do ticket lifecycle** — `is_echo` consome esse fingerprint. Use `tlc:{hash}` separado.
+- **Não esquecer que, em modo event-driven (`ticket_lifecycle_detection.enabled`), `handoff_pause_minutes` deixa de governar a janela** — a fonte da verdade vira o ticket externo + `fallback_minutes`. Mudar `handoff_pause_minutes` no portal sem desligar o event-driven não tem efeito.
 
 ## Schema das tabelas
 
@@ -271,6 +323,7 @@ handoff_config JSONB,
 session_config JSONB,
 handoff_pause_minutes INT,         -- duração da pausa pós-handoff/reply humano (default 240)
 human_handoff_detection JSONB,     -- {enabled, outbound_match{path,equals}, customer_phone_path} (mig 062)
+ticket_lifecycle_detection JSONB,  -- {enabled, close_match{path,equals}, open_match?, customer_phone_path, fallback_minutes} (mig 065)
 config_json JSONB
 ```
 

@@ -96,6 +96,7 @@ class IntegrationOut(BaseModel):
     session_config: dict = Field(default_factory=dict)
     handoff_pause_minutes: int = 240
     human_handoff_detection: dict = Field(default_factory=dict)
+    ticket_lifecycle_detection: dict = Field(default_factory=dict)
 
 
 class FlowConfigIn(BaseModel):
@@ -114,6 +115,7 @@ class FlowConfigIn(BaseModel):
     session_config: dict[str, Any] = Field(default_factory=dict)
     handoff_pause_minutes: int = Field(default=240, ge=0, le=10080)
     human_handoff_detection: dict[str, Any] = Field(default_factory=dict)
+    ticket_lifecycle_detection: dict[str, Any] = Field(default_factory=dict)
 
 
 class MappingIn(BaseModel):
@@ -300,6 +302,7 @@ def _integration_out(row: dict, ingest_url: str) -> IntegrationOut:
         session_config=_as_jsonb(row.get("session_config")),
         handoff_pause_minutes=row.get("handoff_pause_minutes") or 240,
         human_handoff_detection=_as_jsonb(row.get("human_handoff_detection")),
+        ticket_lifecycle_detection=_as_jsonb(row.get("ticket_lifecycle_detection")),
         config_json=_as_jsonb(row.get("config_json")),
     )
 
@@ -420,12 +423,133 @@ async def ingest(
                     "reason": rule.get("comment") or f"Ignorado: {path} == {expected}",
                 }
 
+        # ── Detecção de eventos de ticket externos (event-driven resume) ─────
+        # Plataformas de multiatendimento emitem webhooks de "ticket aberto" e
+        # "ticket fechado" no mesmo endpoint /hooks, distinguindo pelo tipo do
+        # evento. Quando ligado, esse recurso transforma a pausa pós-handoff
+        # em event-driven: a IA volta SOMENTE quando o ticket fecha. AVALIADO
+        # ANTES do human_handoff_detection — um payload de ticket.closed
+        # enviado pela plataforma pode coincidir com fromMe=true e ser
+        # confundido com resposta humana. Ver SPEC 05.
+        tld = integration.get("ticket_lifecycle_detection") or {}
+        if isinstance(tld, str):
+            try:
+                tld = json.loads(tld) or {}
+            except Exception:
+                tld = {}
+
+        def _tld_matches(m: dict | None) -> bool:
+            if not m:
+                return False
+            p = m.get("path")
+            if not p:
+                return False
+            return str(broker.resolve_path(payload, p)) == str(m.get("equals"))
+
+        tld_close = _tld_matches(tld.get("close_match") or {}) if tld.get("enabled") else False
+        tld_open = _tld_matches(tld.get("open_match") or {}) if tld.get("enabled") else False
+        if tld_close or tld_open:
+            # Idempotência separada do bot_echo (`out:{hash}`) e da regular
+            # — `is_echo` consome fingerprint; não reusar prefixo.
+            idem = broker.idempotency_hash(payload)
+            tlc_key = f"tlc:{idem}"
+            existing_tlc = await conn.fetchrow(
+                "SELECT id FROM public.broker_raw_events "
+                "WHERE tenant_id=$1 AND integration_slug=$2 AND idempotency_key=$3",
+                tenant["id"], integration_slug, tlc_key,
+            )
+            if existing_tlc:
+                return {"accepted": True, "duplicate": True,
+                        "reason": "Evento de ticket já processado"}
+
+            cust_path = tld.get("customer_phone_path")
+            cust_raw = broker.resolve_path(payload, cust_path) if cust_path else None
+            customer_phone = "".join(c for c in str(cust_raw or "") if c.isdigit())[:20]
+            if not customer_phone:
+                log.warning("hooks.ticket_lifecycle.no_customer_phone",
+                            tenant=str(tenant["id"]), slug=integration_slug,
+                            cust_path=cust_path)
+                await conn.execute(
+                    """
+                    INSERT INTO public.broker_raw_events
+                      (tenant_id, integration_id, integration_slug, direction,
+                       payload, headers, idempotency_key, status, error,
+                       canonical_event, processed_at)
+                    VALUES ($1,$2,$3,'inbound',$4,$5,$6,'skipped',$7,'ticket_lifecycle.no_customer_phone',NOW())
+                    ON CONFLICT DO NOTHING
+                    """,
+                    tenant["id"], integration["id"], integration_slug,
+                    payload, {}, tlc_key, "Evento de ticket sem telefone do cliente",
+                )
+                return {"accepted": True, "skipped": True,
+                        "reason": "Evento de ticket sem telefone do cliente"}
+
+            from services import conversation_state as cs
+            if tld_close:
+                # IA volta. reset_session limpa closed_at + histórico Redis,
+                # evitando o "lembrar do atendimento antigo"
+                # (ver [[broker-skips-ai-pause]]).
+                try:
+                    await cs.reset_session(
+                        str(tenant["id"]), customer_phone,
+                        by="auto:ticket_closed",
+                        reason="ticket_fechado_externo",
+                    )
+                    log.info("broker.ticket_closed.ai_resumed",
+                             tenant=str(tenant["id"]), slug=integration_slug,
+                             phone=customer_phone[:4])
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("broker.ticket_closed.resume_failed",
+                                tenant=str(tenant["id"]), exc=str(exc))
+                canonical_event = "ticket_lifecycle.ai_resumed"
+            else:
+                # Pausa event-driven. fallback_minutes>0 ainda gera paused_until
+                # como safety net (caso a plataforma esqueça do close); 0/None
+                # = pausa indefinida até chegar o close.
+                fb = tld.get("fallback_minutes")
+                try:
+                    fb_int = int(fb) if fb not in (None, "") else None
+                except Exception:
+                    fb_int = None
+                until_minutes = fb_int if (fb_int and fb_int > 0) else None
+                try:
+                    await cs.pause(
+                        str(tenant["id"]), customer_phone,
+                        until_minutes=until_minutes,
+                        by="auto:ticket_opened",
+                        reason="ticket_aberto_externo",
+                    )
+                    log.info("broker.ticket_opened.ai_paused",
+                             tenant=str(tenant["id"]), slug=integration_slug,
+                             phone=customer_phone[:4],
+                             fallback_minutes=until_minutes)
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("broker.ticket_opened.pause_failed",
+                                tenant=str(tenant["id"]), exc=str(exc))
+                canonical_event = "ticket_lifecycle.ai_paused"
+
+            await conn.execute(
+                """
+                INSERT INTO public.broker_raw_events
+                  (tenant_id, integration_id, integration_slug, direction,
+                   payload, headers, idempotency_key, status, error,
+                   canonical_event, processed_at)
+                VALUES ($1,$2,$3,'inbound',$4,$5,$6,'processed',NULL,$7,NOW())
+                ON CONFLICT DO NOTHING
+                """,
+                tenant["id"], integration["id"], integration_slug,
+                payload, {}, tlc_key, canonical_event,
+            )
+            return {"accepted": True, "ticket_event": True,
+                    "canonical_event": canonical_event}
+
         # ── Detecção de resposta HUMANA → pausa a IA ─────────────────────────
         # Gateways que ecoam mensagens de SAÍDA (TalkFarma/ClickMassa/WAHA/...)
         # devolvem tanto as respostas do BOT quanto as do ATENDENTE pelo mesmo
         # número. Quando o atendente humano responde, a IA deve calar a boca
-        # (janela rolante). Distinção bot×humano via fingerprint efêmero
-        # (services.bot_echo) — o cerne do "dilema do auto-eco". Ver SPEC 05.
+        # (janela rolante OU indefinida se ticket_lifecycle_detection ligado).
+        # Distinção bot×humano via fingerprint efêmero (services.bot_echo) —
+        # o cerne do "dilema do auto-eco". Ver SPEC 05.
         hhd = integration.get("human_handoff_detection") or {}
         if isinstance(hhd, str):
             try:
@@ -501,20 +625,34 @@ async def ingest(
                 return {"accepted": True, "skipped": True,
                         "reason": "Eco da mensagem do próprio bot (IA segue ativa)"}
 
-            # Atendente HUMANO respondeu → pausa a IA por handoff_pause_minutes.
-            # Cada msg do humano renova a janela (pause() faz UPSERT de paused_until).
+            # Atendente HUMANO respondeu → pausa a IA.
+            # • Modo timer (default): pausa por handoff_pause_minutes (rolante).
+            # • Modo event-driven (ticket_lifecycle_detection.enabled): pausa
+            #   por `fallback_minutes` (safety net) ou indefinida (None) até o
+            #   evento ticket.closed liberar via reset_session.
             try:
                 from services import conversation_state as cs
-                pause_min = int(integration["handoff_pause_minutes"] or 240)
+                if tld.get("enabled"):
+                    fb = tld.get("fallback_minutes")
+                    try:
+                        fb_int = int(fb) if fb not in (None, "") else None
+                    except Exception:
+                        fb_int = None
+                    pause_min: int | None = fb_int if (fb_int and fb_int > 0) else None
+                    pause_reason = "atendente humano respondeu (event-driven)"
+                else:
+                    pause_min = int(integration["handoff_pause_minutes"] or 240)
+                    pause_reason = "atendente humano respondeu"
                 await cs.pause(
                     str(tenant["id"]), customer_phone,
                     until_minutes=pause_min,
                     by="auto:human_reply",
-                    reason="atendente humano respondeu",
+                    reason=pause_reason,
                 )
                 log.info("broker.human_reply.ai_paused",
                          tenant=str(tenant["id"]), slug=integration_slug,
-                         phone=customer_phone[:4], pause_minutes=pause_min)
+                         phone=customer_phone[:4], pause_minutes=pause_min,
+                         event_driven=bool(tld.get("enabled")))
             except Exception as exc:  # noqa: BLE001
                 log.warning("broker.human_reply.pause_failed",
                             tenant=str(tenant["id"]), exc=str(exc))
@@ -1027,6 +1165,7 @@ async def save_flow(
                 session_config         = $13,
                 handoff_pause_minutes  = $14,
                 human_handoff_detection = $15,
+                ticket_lifecycle_detection = $16,
                 updated_at             = NOW()
             WHERE id = $1
             RETURNING *
@@ -1046,6 +1185,7 @@ async def save_flow(
             body.session_config,
             body.handoff_pause_minutes,
             body.human_handoff_detection,
+            body.ticket_lifecycle_detection,
         )
         tenant = await conn.fetchrow(
             "SELECT api_key FROM public.tenants WHERE id = $1", user.tenant_id,

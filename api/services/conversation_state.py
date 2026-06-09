@@ -300,7 +300,7 @@ async def auto_pause_after_handoff(
     tenant_id: str,
     phone: str,
     *,
-    pause_minutes: int,
+    pause_minutes: int | None,
 ) -> None:
     """Finaliza o atendimento após um handoff p/ atendente humano.
 
@@ -309,14 +309,19 @@ async def auto_pause_after_handoff(
     sempre que decide transferir; se a API externa falhou, o atendimento ainda
     é dado por encerrado — decisão de produto.)
 
-    Pausa a IA (`ai_paused` + `paused_until`) somente quando `pause_minutes > 0`.
-    Com `pause_minutes <= 0` o tenant optou por NÃO pausar, mas o ticket ainda
-    é finalizado (closed_at). Quando o cliente voltar a falar depois da janela,
-    o worker detecta o marker e abre um novo atendimento (reset_session).
+    Pausa a IA conforme `pause_minutes`:
+      • > 0  → janela temporária (`paused_until = NOW + N`). Timer-driven.
+      • None → pausa INDEFINIDA (ai_paused=TRUE, paused_until=NULL). Usado pelo
+               modo event-driven (`ticket_lifecycle_detection`): a IA só volta
+               quando chegar o evento `ticket.closed` pelo /hooks.
+      • <= 0 → não pausa (apenas finaliza); próximo contato reseta sessão.
     """
     try:
         from datetime import timedelta
-        if pause_minutes and pause_minutes > 0:
+        if pause_minutes is None:
+            ai_paused = True
+            paused_until = None
+        elif pause_minutes > 0:
             ai_paused = True
             paused_until = datetime.now(timezone.utc) + timedelta(minutes=pause_minutes)
         else:

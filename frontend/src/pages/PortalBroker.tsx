@@ -437,6 +437,7 @@ function FlowTab({ integration, onSaved }: { integration: Integration; onSaved: 
         session_config: integration.session_config || {},
         handoff_pause_minutes: integration.handoff_pause_minutes ?? 240,
         human_handoff_detection: integration.human_handoff_detection || {},
+        ticket_lifecycle_detection: integration.ticket_lifecycle_detection || {},
       });
       setSaveMsg("✓ Configuração salva!");
       onSaved();
@@ -1186,6 +1187,22 @@ function HandoffTab({ integration, onSaved }: { integration: Integration; onSave
   );
   const [hhdPhonePath, setHhdPhonePath] = useState<string>(hhd.customer_phone_path ?? "$.to");
 
+  // ── Detecção de fechamento de ticket externo (event-driven resume) ────────
+  const tld = integration.ticket_lifecycle_detection || {};
+  const [tldEnabled, setTldEnabled] = useState<boolean>(!!tld.enabled);
+  const [tldClosePath, setTldClosePath] = useState<string>(tld.close_match?.path ?? "$.event");
+  const [tldCloseEquals, setTldCloseEquals] = useState<string>(
+    tld.close_match?.equals != null ? String(tld.close_match.equals) : "ticket.closed"
+  );
+  const [tldOpenPath, setTldOpenPath] = useState<string>(tld.open_match?.path ?? "");
+  const [tldOpenEquals, setTldOpenEquals] = useState<string>(
+    tld.open_match?.equals != null ? String(tld.open_match.equals) : ""
+  );
+  const [tldPhonePath, setTldPhonePath] = useState<string>(tld.customer_phone_path ?? "$.contact.phone");
+  const [tldFallbackMin, setTldFallbackMin] = useState<number>(
+    tld.fallback_minutes != null ? Number(tld.fallback_minutes) : 480
+  );
+
   // Sugestões de paths a partir dos últimos eventos reais (raw_events).
   // Evita o tenant ter que decorar "$.fromMe"/"$.to" — ele clica e escolhe.
   const [discovered, setDiscovered] = useState<DiscoveredFieldFromHistory[]>([]);
@@ -1259,6 +1276,14 @@ function HandoffTab({ integration, onSaved }: { integration: Integration; onSave
     setHhdOutPath(h.outbound_match?.path ?? "$.fromMe");
     setHhdOutEquals(h.outbound_match?.equals != null ? String(h.outbound_match.equals) : "true");
     setHhdPhonePath(h.customer_phone_path ?? "$.to");
+    const t = integration.ticket_lifecycle_detection || {};
+    setTldEnabled(!!t.enabled);
+    setTldClosePath(t.close_match?.path ?? "$.event");
+    setTldCloseEquals(t.close_match?.equals != null ? String(t.close_match.equals) : "ticket.closed");
+    setTldOpenPath(t.open_match?.path ?? "");
+    setTldOpenEquals(t.open_match?.equals != null ? String(t.open_match.equals) : "");
+    setTldPhonePath(t.customer_phone_path ?? "$.contact.phone");
+    setTldFallbackMin(t.fallback_minutes != null ? Number(t.fallback_minutes) : 480);
     const s = integration.session_config || {};
     setCloseKeywordsText((s.close_keywords && s.close_keywords.length
       ? s.close_keywords
@@ -1300,6 +1325,29 @@ function HandoffTab({ integration, onSaved }: { integration: Integration; onSave
       outbound_match: { path: hhdOutPath.trim(), equals: equalsCoerced },
       customer_phone_path: hhdPhonePath.trim(),
     };
+    // Mesma coerção para os matches do ciclo de vida do ticket
+    const coerceMatchValue = (raw: string): unknown => {
+      const v = raw.trim();
+      if (v === "true") return true;
+      if (v === "false") return false;
+      if (v !== "" && !isNaN(Number(v))) return Number(v);
+      return v;
+    };
+    const ticket_lifecycle_detection: Record<string, unknown> = {
+      enabled: tldEnabled,
+      close_match: {
+        path: tldClosePath.trim(),
+        equals: coerceMatchValue(tldCloseEquals),
+      },
+      customer_phone_path: tldPhonePath.trim(),
+      fallback_minutes: Number.isFinite(tldFallbackMin) ? tldFallbackMin : 0,
+    };
+    if (tldOpenPath.trim() && tldOpenEquals.trim()) {
+      ticket_lifecycle_detection.open_match = {
+        path: tldOpenPath.trim(),
+        equals: coerceMatchValue(tldOpenEquals),
+      };
+    }
     try {
       // Reaproveita o saveFlow — passa os demais campos da integração sem alteração
       await saveFlow(integration.id, {
@@ -1320,6 +1368,7 @@ function HandoffTab({ integration, onSaved }: { integration: Integration; onSave
         },
         handoff_pause_minutes: pauseMin,
         human_handoff_detection,
+        ticket_lifecycle_detection,
       });
       setSaveMsg("✓ Configuração de transferência salva!");
       onSaved();
@@ -1611,6 +1660,115 @@ function HandoffTab({ integration, onSaved }: { integration: Integration; onSave
               <small style={{ color: "#86868b", fontSize: 12 }}>
                 Na saída, o telefone do cliente é o <strong>destinatário</strong> (não o
                 número do bot). Ex.: <code>$.to</code>, <code>$.message.to</code>.
+              </small>
+            </label>
+          </>
+        )}
+      </div>
+
+      {/* Bloco 3d: detecção de fechamento de ticket externo (event-driven) */}
+      <div className="broker-card">
+        <h3 className="broker-card-title">Pausar a IA até o ticket fechar na plataforma</h3>
+        <p className="broker-card-sub">
+          Quando o seu sistema de multiatendimento envia webhooks de
+          {" "}<strong>ticket aberto</strong> e <strong>ticket fechado</strong>{" "}
+          no mesmo endpoint <code>/hooks</code>, podemos usar o evento de fechamento
+          como gatilho para a IA voltar — em vez de um timer. Isso evita que a IA
+          retome o atendimento no meio de uma conversa humana, mesmo que demore horas.
+        </p>
+
+        <label className="broker-field" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <input
+            type="checkbox"
+            checked={tldEnabled}
+            onChange={(e) => setTldEnabled(e.target.checked)}
+          />
+          <span>Ativar — IA só volta após o evento de fechamento</span>
+        </label>
+
+        {tldEnabled && (
+          <>
+            <small style={{ color: "#92400e", fontSize: 12, display: "block", margin: "8px 0" }}>
+              ⚠️ Ao ligar isso, o tempo de pausa em minutos acima vira apenas{" "}
+              <strong>safety net</strong> (caso o sistema externo esqueça de mandar o
+              evento). A fonte da verdade passa a ser o ticket na sua plataforma.
+            </small>
+
+            <label className="broker-field">
+              <span>Caminho do tipo do evento (path)</span>
+              <input
+                value={tldClosePath}
+                onChange={(e) => setTldClosePath(e.target.value)}
+                placeholder="$.event"
+              />
+              <small style={{ color: "#86868b", fontSize: 12 }}>
+                Onde, no payload do webhook, está o nome do evento. Ex.:{" "}
+                <code>$.event</code>, <code>$.type</code>, <code>$.eventType</code>.
+              </small>
+            </label>
+            <label className="broker-field">
+              <span>Valor que indica TICKET FECHADO</span>
+              <input
+                value={tldCloseEquals}
+                onChange={(e) => setTldCloseEquals(e.target.value)}
+                placeholder="ticket.closed"
+              />
+              <small style={{ color: "#86868b", fontSize: 12 }}>
+                Quando o campo acima for igual a este valor, a IA é liberada e o
+                histórico zerado para o próximo atendimento começar do zero.
+              </small>
+            </label>
+            <label className="broker-field">
+              <span>Caminho do telefone do cliente no payload do evento</span>
+              <input
+                value={tldPhonePath}
+                onChange={(e) => setTldPhonePath(e.target.value)}
+                placeholder="$.contact.phone"
+              />
+            </label>
+
+            <details style={{ marginTop: 8 }}>
+              <summary style={{ cursor: "pointer", fontSize: 13 }}>
+                Opcional: também pausar a IA quando o ticket é aberto na plataforma
+              </summary>
+              <div style={{ marginTop: 8, paddingLeft: 8, borderLeft: "2px solid #e5e7eb" }}>
+                <p style={{ fontSize: 12, color: "#86868b", marginTop: 0 }}>
+                  Útil quando o atendente abre o ticket antes mesmo de o bot mandar
+                  para o handoff (ex.: cliente cai direto na fila). Deixe em branco
+                  para ignorar.
+                </p>
+                <label className="broker-field">
+                  <span>Caminho do tipo do evento (path)</span>
+                  <input
+                    value={tldOpenPath}
+                    onChange={(e) => setTldOpenPath(e.target.value)}
+                    placeholder="$.event"
+                  />
+                </label>
+                <label className="broker-field">
+                  <span>Valor que indica TICKET ABERTO</span>
+                  <input
+                    value={tldOpenEquals}
+                    onChange={(e) => setTldOpenEquals(e.target.value)}
+                    placeholder="ticket.opened"
+                  />
+                </label>
+              </div>
+            </details>
+
+            <label className="broker-field">
+              <span>Safety net — pausa máxima em minutos (0 = nunca expira)</span>
+              <input
+                type="number"
+                min={0}
+                max={43200}
+                value={tldFallbackMin}
+                onChange={(e) => setTldFallbackMin(Number(e.target.value) || 0)}
+              />
+              <small style={{ color: "#86868b", fontSize: 12 }}>
+                Se o evento de fechamento não chegar nesse tempo, a IA reassume
+                sozinha (útil para não deixar cliente esperando se a plataforma
+                falhar). <strong>0</strong> = pausa indefinida até o evento chegar.
               </small>
             </label>
           </>

@@ -24,6 +24,7 @@ export interface Integration {
   session_config: SessionConfig;
   handoff_pause_minutes: number;
   human_handoff_detection: HumanHandoffDetection;
+  ticket_lifecycle_detection: TicketLifecycleDetection;
   config_json: IntegrationConfig;
 }
 
@@ -31,6 +32,14 @@ export interface HumanHandoffDetection {
   enabled?: boolean;
   outbound_match?: { path?: string; equals?: unknown };
   customer_phone_path?: string;
+}
+
+export interface TicketLifecycleDetection {
+  enabled?: boolean;
+  close_match?: { path?: string; equals?: unknown };
+  open_match?: { path?: string; equals?: unknown };
+  customer_phone_path?: string;
+  fallback_minutes?: number;
 }
 
 export interface SessionConfig {
@@ -73,6 +82,7 @@ export interface FlowConfig {
   session_config?: SessionConfig;
   handoff_pause_minutes?: number;
   human_handoff_detection?: HumanHandoffDetection;
+  ticket_lifecycle_detection?: TicketLifecycleDetection;
 }
 
 export interface IntegrationInput {
