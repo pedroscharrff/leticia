@@ -35,6 +35,7 @@ import { PortalPagamentos }     from "./pages/PortalPagamentos";
 import { PortalRecuperacao }    from "./pages/PortalRecuperacao";
 import { PortalResumoPedido }   from "./pages/PortalResumoPedido";
 import { AdminPersona }    from "./pages/AdminPersona";
+import { AdminTraining }   from "./pages/AdminTraining";
 import { Signup }           from "./pages/Signup";
 
 function AdminRoute({ children }: { children: React.ReactNode }) {
@@ -61,6 +62,7 @@ export function App() {
       <Route path="/tenants/:id" element={<AdminRoute><TenantDetail /></AdminRoute>} />
       <Route path="/settings"    element={<AdminRoute><Settings /></AdminRoute>} />
       <Route path="/chat-test"   element={<AdminRoute><ChatTest /></AdminRoute>} />
+      <Route path="/training"    element={<AdminRoute><AdminTraining /></AdminRoute>} />
 
       {/* ── Onboarding ───────────────────────────────────────────────── */}
       <Route path="/signup" element={<Signup />} />

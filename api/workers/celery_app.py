@@ -162,6 +162,19 @@ def process_recovery_batch_task(self, batch_id: str) -> dict:
         return {"error": str(exc)}
 
 
+# Ingestão da base de conhecimento (admin geral) — on-demand, disparado pelo
+# router /admin/training/documents (upload e reindex). Não tem retry: erros
+# vão pra coluna `error` em training_documents pelo próprio pipeline.
+@celery_app.task(name="jobs.training_ingest_document", bind=True, max_retries=0)
+def training_ingest_document_task(self, doc_id: str) -> dict:
+    from services.training_kb import ingest_document
+    try:
+        return asyncio.run(ingest_document(doc_id))
+    except Exception as exc:  # noqa: BLE001
+        log.warning("celery.training_ingest_failed", doc_id=doc_id, exc=str(exc))
+        return {"error": str(exc)}
+
+
 # ── Prometheus metrics ────────────────────────────────────────────────────────
 
 CONV_TOTAL = Counter(

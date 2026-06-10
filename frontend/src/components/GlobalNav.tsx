@@ -19,6 +19,7 @@ export function GlobalNav() {
         <ul className="global-nav__links">
           <li><button onClick={() => navigate("/dashboard")}>Dashboard</button></li>
           <li><button onClick={() => navigate("/tenants")}>Farmácias</button></li>
+          <li><button onClick={() => navigate("/training")}>Treinamentos</button></li>
           <li><button onClick={() => navigate("/chat-test")}>Chat de Teste</button></li>
           <li><button onClick={() => navigate("/settings")}>Configurações</button></li>
         </ul>

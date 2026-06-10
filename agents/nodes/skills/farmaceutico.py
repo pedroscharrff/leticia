@@ -11,6 +11,7 @@ import structlog
 from agents.state import AgentState
 from agents.nodes.skills._base import run_skill
 from agents.tools.bulario import make_consultar_bula_tool, make_consultar_bula_secao_tool
+from agents.tools.conhecimento import make_consultar_base_conhecimento_tool
 from agents.tools.inventory import make_inventory_tool
 
 log = structlog.get_logger()
@@ -166,6 +167,27 @@ FERRAMENTAS DA BULA ANVISA — use SEMPRE antes de afirmar dados clínicos
    Cite o trecho retornado VERBATIM (entre aspas se ajudar). NÃO complemente
    com informação que não veio da tool — se a bula não diz, você não diz.
 
+3) `consultar_base_conhecimento(consulta, categoria?)` — BASE CURADA DA FARMÁCIA.
+   Literatura técnica que a farmácia carregou (sítios de ligação, interações
+   complexas, farmacologia, dosagem em populações especiais). É BUSCA SEMÂNTICA
+   (não precisa nome exato).
+
+   USE ANTES de afirmar qualquer coisa em:
+   • Interação entre 2+ medicamentos (sempre — não confie só no seu treino).
+   • Sítio de ligação / mecanismo molecular.
+   • Dose em pediatria/geriatria/insuficiência renal/hepática quando NÃO está
+     coberta pela bula da ANVISA.
+   • Pergunta de farmacologia avançada.
+
+   Cite o trecho retornado VERBATIM. Se a base não tiver, diga que não tem
+   referência confiável e sugira que o cliente consulte um médico/farmacêutico.
+
+ORDEM DE PRIORIDADE quando há sobreposição:
+   • Produto específico (composição, fabricante) → `consultar_bula`.
+   • Pergunta de seção da bula desse produto → `consultar_bula_secao`.
+   • Interação entre fármacos OU farmacologia avançada →
+     `consultar_base_conhecimento` (vem ANTES de qualquer afirmação).
+
 NÃO USE bula quando:
 • Pergunta puramente conceitual sem medicamento citado ("o que é AINE?").
 • Cliente só descreveu sintoma — peça o nome do produto primeiro.
@@ -288,6 +310,10 @@ async def farmaceutico_node(state: AgentState, llm_factory) -> AgentState:
     tools = [
         make_consultar_bula_tool(not_found_message=not_found_message),
         make_consultar_bula_secao_tool(),
+        # Base de conhecimento curada pelo admin geral (RAG global). Sem
+        # capability gate — sempre disponível; a tool retorna "sem resultado"
+        # quando a base está vazia, e o LLM segue sem ela.
+        make_consultar_base_conhecimento_tool(),
     ]
 
     if track_stock and schema_name:

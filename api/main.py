@@ -54,6 +54,7 @@ from routers.offers import router as offers_router
 from routers.payments_webhook import router as payments_webhook_router
 from routers.payments import payments_router, recovery_router, order_summary_router
 from routers.conversations import router as conversations_router
+from routers.training import admin_router as training_admin_router
 from middleware.usage import UsageEnforcementMiddleware
 from services import metrics_collector
 
@@ -177,6 +178,7 @@ app.include_router(payments_router)
 app.include_router(recovery_router)
 app.include_router(order_summary_router)
 app.include_router(conversations_router)
+app.include_router(training_admin_router)
 
 
 @app.get("/health", tags=["infra"])

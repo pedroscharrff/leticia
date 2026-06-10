@@ -68,3 +68,9 @@ pypdf>=4.0.0
 
 # ─── Object storage (mídia de ofertas em MinIO/S3) ──────────────────────────
 minio>=7.2.0
+
+# ─── RAG / Base de conhecimento (admin geral) ───────────────────────────────
+# pgvector: client Python para a coluna `vector` (codec asyncpg) — usado em
+# services/training_kb.py. tiktoken: contagem de tokens p/ chunking.
+pgvector>=0.3.0
+tiktoken>=0.7.0
