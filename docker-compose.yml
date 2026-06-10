@@ -233,7 +233,11 @@ services:
 
   # ── PostgreSQL 16 ────────────────────────────────────────────────────────────
   postgres:
-    image: postgres:16-alpine
+    # pgvector/pgvector:pg16 = Postgres 16 oficial + extensão `vector` já
+    # instalada no sistema (necessária pela migration 066 — base de
+    # conhecimento dos agentes). Mantém todos os dados existentes; é
+    # compatível binário com postgres:16-alpine para o volume `postgres_data`.
+    image: pgvector/pgvector:pg16
     # max_connections=200: o PgBouncer usa até ~25 (default_pool_size) +
     # reserve_pool_size=10 + algumas adm; sobra folga para psql manual,
     # migrations e ferramentas (pg_dump, etc) sem competir com o app.

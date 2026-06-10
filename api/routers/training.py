@@ -272,7 +272,11 @@ async def patch_document(
     return _row_to_out(row)
 
 
-@admin_router.delete("/documents/{doc_id}", status_code=status.HTTP_204_NO_CONTENT)
+@admin_router.delete(
+    "/documents/{doc_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    response_model=None,
+)
 async def delete_document(doc_id: str, _admin: AdminUser) -> None:
     _validate_uuid(doc_id)
     async with get_db_conn() as conn:
