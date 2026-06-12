@@ -109,7 +109,7 @@ Capability-gated dentro do job. Para cada tenant com `sales.abandoned_cart` ON:
 2. Para cada: envia mensagem de re-engajamento (template do tenant + items do cart) pelo path de outbound proativo.
 3. Marca `sent_recovery_at`/`recovery_attempts` pra não re-spammar.
 
-**Fonte de carts inclui pré-atendimento:** no modo `sales.stock_check` OFF, o cart só existe porque o vendedor chama `registrar_itens_interesse` (rascunho, sem `just_finalized`) durante a coleta — ver SPEC 02 §vendedor. Sem essa tool, o pré-atendimento nunca gera cart recuperável. Pedidos já confirmados via `anotar_pedido_balcao` ficam fora (cart limpo + guard de orders).
+**Fonte de carts inclui pré-atendimento:** no modo `sales.stock_check` OFF, o cart só existe porque o vendedor chama `registrar_itens_interesse` (rascunho, sem `just_finalized`) durante a coleta — ver SPEC 02 §vendedor. Sem essa tool, o pré-atendimento nunca gera cart recuperável. Pedidos já confirmados via `anotar_pedido_balcao` ficam fora (cart limpo + guard de orders). **Fallback determinístico (2026-06-10):** como o LLM frequentemente ignora `registrar_itens_interesse`, o `vendedor_node` extrai itens via Haiku no fim do turno e grava no cart quando nenhuma tool de cart rodou mas a resposta enumera itens — ver SPEC 02 §vendedor. Métrica: `preattend_draft_fallback_total`.
 
 ### `nudge_continuous_refill_task` (beat daily)
 

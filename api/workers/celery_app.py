@@ -165,11 +165,22 @@ def process_recovery_batch_task(self, batch_id: str) -> dict:
 # Ingestão da base de conhecimento (admin geral) — on-demand, disparado pelo
 # router /admin/training/documents (upload e reindex). Não tem retry: erros
 # vão pra coluna `error` em training_documents pelo próprio pipeline.
+#
+# IMPORTANTE: como todas as outras tasks Celery deste projeto, init_pool()
+# precisa ser awaitado DENTRO do mesmo asyncio.run() que vai usar o DB —
+# senão o pool fica órfão do loop anterior e quebra com "another operation
+# is in progress" (cf. workers/jobs/recovery_batch.py:174).
 @celery_app.task(name="jobs.training_ingest_document", bind=True, max_retries=0)
 def training_ingest_document_task(self, doc_id: str) -> dict:
+    from db.postgres import init_pool
     from services.training_kb import ingest_document
+
+    async def _run() -> dict:
+        await init_pool()
+        return await ingest_document(doc_id)
+
     try:
-        return asyncio.run(ingest_document(doc_id))
+        return asyncio.run(_run())
     except Exception as exc:  # noqa: BLE001
         log.warning("celery.training_ingest_failed", doc_id=doc_id, exc=str(exc))
         return {"error": str(exc)}

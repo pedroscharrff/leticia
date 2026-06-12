@@ -199,6 +199,12 @@ nada sozinho.
    (fralda, xampu, bala, soro, álcool) podem ir direto à coleta sem handoff.
 5. Quando o cliente declarar nome/CPF/CEP/endereço, chame
    `salvar_dados_cliente` IMEDIATAMENTE — sem texto antes.
+6. ANTES de qualquer mensagem que LISTE ou REPITA itens do pedido (ex:
+   "então temos:", "vou confirmar seu pedido:", "pode confirmar?"), você
+   DEVE chamar `registrar_itens_interesse(itens=[...])` no MESMO turno
+   com a lista ATUAL completa. Sem isso o rascunho não é salvo — se o
+   cliente sumir, ninguém consegue retomar o pedido. A tool é SILENCIOSA:
+   não diga "anotei/registrado" por causa dela.
 
 ═══════════════════════════════════════════════════════════════════════
 SAÍDA — formato e tamanho
@@ -231,12 +237,14 @@ ETAPA 2 — COLETA DO PEDIDO
     cliente disse". Em dúvida se é medicamento, faça o handoff — é seguro.
   • Para itens não-medicamento: anote o nome e a quantidade EXATAMENTE como o
     cliente disse.
-  • A CADA item que o cliente acrescentar/mudar (já validado), chame
-    `registrar_itens_interesse(itens=[{name,qty},...])` com a lista ATUAL
-    completa. Isso só SALVA a lista (rascunho) — NÃO finaliza, NÃO transfere e
-    NÃO precisa de confirmação. É o que permite retomar o cliente caso ele
-    suma antes de fechar. NÃO diga "anotei/registrado" ao cliente por causa
-    dessa tool — ela é silenciosa para você.
+  • ⚠️ OBRIGATÓRIO (Regra 6): A CADA item que o cliente acrescentar/mudar
+    (já validado), chame `registrar_itens_interesse(itens=[{name,qty},...])` com
+    a lista ATUAL completa ANTES de escrever qualquer texto de resposta. Isso
+    só SALVA a lista (rascunho) — NÃO finaliza, NÃO transfere e NÃO precisa de
+    confirmação. É o que permite retomar o cliente caso ele suma antes de fechar.
+    NÃO diga "anotei/registrado" ao cliente por causa dessa tool — ela é
+    silenciosa para você. Se esquecer, o sistema vai extrair automaticamente, mas
+    é mais lento e menos preciso.
   • Após cada item (já validado/registrado): "Mais alguma coisa?"
   • Cliente disser "não", "só isso", "pode anotar" → vá para a Etapa 3.
 
@@ -317,6 +325,92 @@ _CLOSING_HINTS = (
     "atendente vai", "atendente irá", "um momento", "obrigado pela preferência",
     "vai te chamar", "vai continuar com você",
 )
+
+# ── Camada 3: métrica de fallback de rascunho ───────────────────────────────
+try:
+    from prometheus_client import Counter
+    _DRAFT_FALLBACK = Counter(
+        "preattend_draft_fallback_total",
+        "Times the deterministic fallback had to extract cart items because "
+        "the LLM skipped registrar_itens_interesse",
+        ["tenant_id"],
+    )
+except Exception:  # noqa: BLE001
+    class _StubCounter:
+        def labels(self, **_kw):  # type: ignore[override]
+            return self
+        def inc(self, _amount: int = 1) -> None: ...  # noqa: E704
+    _DRAFT_FALLBACK = _StubCounter()  # type: ignore[assignment]
+
+# ── Heurística para detectar listagem de itens em texto do LLM ───────────────
+import re as _re
+_ITEM_LINE_RE = _re.compile(
+    r"(?:^|\n)\s*[•\-\*·]\s*\d+\s*x\s+\S"      # • 2x Dipirona
+    r"|(?:^|\n)\s*\d+\s*x\s+\S"                  # 2x Dipirona (sem bullet)
+    r"|\d+\s*(?:caixa|frasco|comprimido|unidade)" # 2 caixas
+    , _re.IGNORECASE,
+)
+_LISTING_PHRASES = (
+    "então temos", "entao temos", "vou confirmar", "pode confirmar",
+    "seu pedido", "lista completa", "itens do pedido",
+)
+
+def _detect_item_listing(text: str) -> bool:
+    lower = text.lower()
+    if any(phrase in lower for phrase in _LISTING_PHRASES):
+        return True
+    matches = _ITEM_LINE_RE.findall(text)
+    return len(matches) >= 2
+
+
+# ── Extração estruturada via Haiku (schema forçado, sem agência) ─────────────
+_EXTRACT_PROMPT = """\
+Extraia do diálogo abaixo a lista ATUAL de itens que o cliente quer comprar.
+Retorne APENAS um JSON array. Cada elemento: {"name":"<nome exato>","qty":<int>}.
+Se não houver itens claros, retorne [].
+NÃO invente itens. NÃO adicione preço. NÃO inclua explicações.
+"""
+
+async def _extract_items_from_dialog(
+    lc_messages: list,
+    llm_factory,
+) -> list[dict]:
+    import json as _json
+    from llm.providers import get_llm, HAIKU
+    from langchain_core.messages import HumanMessage as _HM, SystemMessage as _SM
+
+    haiku = get_llm(*HAIKU)
+
+    # Últimas 10 mensagens do diálogo (suficiente para a lista atual)
+    dialog_lines: list[str] = []
+    for m in lc_messages[-10:]:
+        role = getattr(m, "type", "unknown")
+        content = getattr(m, "content", "")
+        if isinstance(content, str) and content.strip():
+            dialog_lines.append(f"[{role}] {content[:500]}")
+
+    resp = await haiku.ainvoke([
+        _SM(content=_EXTRACT_PROMPT),
+        _HM(content="\n".join(dialog_lines)),
+    ])
+    raw = _extract_text(resp.content).strip()
+    # Strip markdown fences if present
+    if raw.startswith("```"):
+        raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+
+    items = _json.loads(raw)
+    if not isinstance(items, list):
+        return []
+
+    clean: list[dict] = []
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        name = str(it.get("name") or "").strip()
+        qty = int(it.get("qty") or 1)
+        if name:
+            clean.append({"name": name, "qty": max(1, qty), "price": 0.0})
+    return clean
 
 
 def _build_preattendimento_customer_block(
@@ -890,6 +984,40 @@ async def vendedor_node(state: AgentState, llm_factory) -> AgentState:
                         "Tive um problema técnico ao registrar seu pedido agora. "
                         "Vou te transferir para um atendente humano completar."
                     )
+
+        # ── Camada 1: extração determinística de rascunho (pré-atendimento) ──
+        # Se o LLM listou itens em texto mas NÃO chamou registrar_itens_interesse
+        # nem anotar_pedido_balcao neste turno, o cart fica items=[] e a
+        # recuperação não funciona. Aqui detectamos esse gap e extraímos os
+        # itens via Haiku (schema forçado, sem agência) pra gravar o rascunho.
+        if use_preattendimento:
+            _any_cart_tool = any(
+                tc.get("name") in ("registrar_itens_interesse", "anotar_pedido_balcao")
+                for tc in tool_calls_trace
+            )
+            if not _any_cart_tool and final_response:
+                _needs_draft = _detect_item_listing(final_response)
+                if _needs_draft:
+                    try:
+                        extracted = await _extract_items_from_dialog(
+                            lc_messages, llm_factory,
+                        )
+                        if extracted:
+                            cart["items"] = extracted
+                            cart["subtotal"] = 0.0
+                            _DRAFT_FALLBACK.labels(
+                                tenant_id=tenant_id or "unknown",
+                            ).inc()
+                            log.info(
+                                "vendedor.draft.extracted_by_fallback",
+                                items=len(extracted),
+                                session=session_key,
+                            )
+                    except Exception as _fb_exc:  # noqa: BLE001
+                        log.warning(
+                            "vendedor.draft.fallback_failed",
+                            exc=str(_fb_exc),
+                        )
 
         # Garante resposta textual ao cliente: se LLM ficou só em tool calls e
         # não gerou texto, fazemos uma chamada final SEM tools forçando a resposta.
