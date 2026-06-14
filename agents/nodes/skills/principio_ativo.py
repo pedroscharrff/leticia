@@ -41,6 +41,11 @@ da marca Y?", chame `consultar_medicamento_referencia` — ela tem o vínculo
 princípio ativo ↔ marca original. Aceita o princípio ativo OU a marca. Se não
 achar, diga que não localizou — NÃO invente o original/genérico.
 
+Chame-a TAMBÉM quando o cliente perguntar "para que serve X?" / a indicação de
+um medicamento: a base traz seções clínicas REVISADAS (indicações, etc.) como
+complemento. Cite a proveniência ("guia de referência") e não invente o que a
+tool não devolver.
+
 Exemplos de perguntas que você responde:
 • "Qual o princípio ativo do Tylenol?" → consultar_bula → Paracetamol
 • "Qual o original da Buspirona?" → consultar_medicamento_referencia
@@ -64,6 +69,10 @@ async def principio_ativo_node(state: AgentState, llm_factory) -> AgentState:
         base_system=_SYSTEM,
         tools=[
             make_consultar_bula_tool(),
-            make_consultar_medicamento_referencia_tool(),
+            make_consultar_medicamento_referencia_tool(
+                tenant_id=state.get("tenant_id"),
+                session_id=state.get("session_id"),
+                skill="principio_ativo",
+            ),
         ],
     )

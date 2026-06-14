@@ -57,10 +57,18 @@ def _format_mapping(r: dict) -> str:
     return linha
 
 
-def make_consultar_medicamento_referencia_tool():
+def make_consultar_medicamento_referencia_tool(
+    *,
+    tenant_id: str | None = None,
+    session_id: str | None = None,
+    skill: str | None = None,
+):
     """
-    Factory — retorna a tool. Sem closure de tenant porque a base é global
-    (compartilhada por todas as farmácias).
+    Factory — retorna a tool. A BASE é global (compartilhada por todas as
+    farmácias), mas o contexto opcional (tenant_id/session_id/skill) é usado só
+    para TELEMETRIA: cada consulta é logada em
+    `public.medicamentos_referencia_consultas` (painel "Consultas" do superadmin).
+    O log é defensivo — nunca quebra o turno.
     """
     @tool
     async def consultar_medicamento_referencia(termo: str) -> str:
@@ -70,11 +78,14 @@ def make_consultar_medicamento_referencia_tool():
         • "qual o medicamento de referência / o original de <genérico>?"
         • "qual o genérico de <marca>?"
         • para confirmar o vínculo princípio ativo ↔ marca original.
+        • "para que serve <medicamento>?" / indicações / posologia / outras
+          dúvidas clínicas — a base traz seções REVISADAS (indicações,
+          posologia, contraindicações, etc.) como complemento.
 
-        Pode trazer também informação clínica REVISADA (indicações, posologia,
-        etc.) como complemento — só virá conteúdo já validado pela farmácia.
-        Para dúvida clínica detalhada e atual, prefira `consultar_bula_secao`
-        (bula da ANVISA).
+        A informação clínica que vier aqui já foi validada pela farmácia. Para
+        dúvida clínica detalhada e atual, consulte também `consultar_bula_secao`
+        (bula da ANVISA) — ela é a fonte autoritativa; esta é complemento e
+        cobre quando a ANVISA não trouxe a seção.
 
         Args:
             termo: nome do princípio ativo OU da marca. Ex: "buspirona",
@@ -90,6 +101,17 @@ def make_consultar_medicamento_referencia_tool():
                 "Não consegui consultar a base de medicamentos de referência "
                 "agora. Não afirme qual é o original/genérico sem confirmar."
             )
+
+        # Telemetria da consulta (defensiva — não quebra o turno).
+        try:
+            from services.referencia_repo import log_consulta
+            await log_consulta(
+                termo=termo, rows=rows, tenant_id=tenant_id,
+                session_id=session_id, skill=skill,
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.warning("tool.consultar_medicamento_referencia.log_failed",
+                        termo=termo, exc=str(exc))
 
         if not rows:
             return (

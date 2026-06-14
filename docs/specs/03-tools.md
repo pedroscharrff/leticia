@@ -104,6 +104,23 @@ Genéricos* (2001) via `scripts/ingest_guia_genericos.py`. Bindada em `farmaceut
 superadmin (`/admin/medicamentos`). A info clínica é COMPLEMENTO da bula ANVISA,
 nunca a substitui; o prompt do farmacêutico fixa essa hierarquia.
 
+⚠️ **Roteamento (regressão 2026-06-14):** os prompts das 3 skills posicionavam a
+tool SÓ como mapeamento original↔genérico, então perguntas de **indicação**
+("para que serve X?") nunca a invocavam — seções `indicacoes` ativas ficavam
+inalcançáveis mesmo curadas. Corrigido: os prompts (e as docstrings de
+`consultar_medicamento_referencia` e `consultar_bula_secao`) agora listam
+indicação/"para que serve" como gatilho. Para dúvida clínica, ANVISA
+(`consultar_bula_secao`) vem primeiro; a referência cobre como complemento.
+
+**Telemetria (monitoramento):** cada chamada de `consultar_medicamento_referencia`
+grava 1 linha em `public.medicamentos_referencia_consultas` via
+`referencia_repo.log_consulta` (termo, medicamento casado, seções ATIVAS
+devolvidas, tenant/skill — contexto threadado no factory só p/ telemetria). Log
+defensivo: nunca quebra o turno. Exposto no painel superadmin `/admin/medicamentos`
+aba **Consultas** (`GET /referencia/consultas` + `/referencia/consultas/stats`).
+Complementa o Counter `saas_reference_clinical_used_total{secao}` (agregado) com
+detalhe por consulta — auditável: termos sem match e "achou mas sem seção ativa".
+
 ### `sales_extras.py` — Tools opcionais por capability
 
 | Tool | Capability | Args | Retorna |

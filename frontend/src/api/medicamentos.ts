@@ -171,3 +171,67 @@ export async function bulkSetAllSecoes(body: {
   );
   return data;
 }
+
+// ── Consultas (log de uso da base pelo agente) ──────────────────────────────
+
+export interface ConsultaMedicamento {
+  principio_ativo: string | null;
+  nome_referencia: string | null;
+}
+
+export interface ConsultaItem {
+  id: number;
+  tenant_id: string | null;
+  session_id: string | null;
+  skill: string | null;
+  termo: string;
+  encontrado: boolean;
+  num_resultados: number;
+  medicamentos: ConsultaMedicamento[];
+  secoes: string[];
+  created_at: string;
+}
+
+export interface ConsultasStats {
+  total: number;
+  encontrados: number;
+  nao_encontrados: number;
+  sem_secao_ativa: number;
+  por_secao: Record<string, number>;
+}
+
+export async function listConsultas(params: {
+  q?: string;
+  tenant_id?: string;
+  skill?: string;
+  encontrado?: boolean;
+  secao?: string;
+  limit?: number;
+  offset?: number;
+} = {}): Promise<ConsultaItem[]> {
+  const search = new URLSearchParams();
+  if (params.q) search.set("q", params.q);
+  if (params.tenant_id) search.set("tenant_id", params.tenant_id);
+  if (params.skill) search.set("skill", params.skill);
+  if (params.encontrado !== undefined) search.set("encontrado", String(params.encontrado));
+  if (params.secao) search.set("secao", params.secao);
+  if (params.limit) search.set("limit", String(params.limit));
+  if (params.offset) search.set("offset", String(params.offset));
+  const qs = search.toString();
+  const { data } = await api.get<ConsultaItem[]>(
+    `/admin/medicamentos/referencia/consultas${qs ? `?${qs}` : ""}`,
+  );
+  return data;
+}
+
+export async function getConsultasStats(
+  params: { tenant_id?: string } = {},
+): Promise<ConsultasStats> {
+  const search = new URLSearchParams();
+  if (params.tenant_id) search.set("tenant_id", params.tenant_id);
+  const qs = search.toString();
+  const { data } = await api.get<ConsultasStats>(
+    `/admin/medicamentos/referencia/consultas/stats${qs ? `?${qs}` : ""}`,
+  );
+  return data;
+}

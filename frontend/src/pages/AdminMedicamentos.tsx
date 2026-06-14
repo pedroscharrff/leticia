@@ -31,15 +31,19 @@ import {
   patchSecao,
   bulkSetMedSecoes,
   bulkSetAllSecoes,
+  listConsultas,
+  getConsultasStats,
   type BularioItem,
   type ReferenciaListItem,
   type ReferenciaDetail,
   type ReferenciaStats,
   type SecaoStatus,
+  type ConsultaItem,
+  type ConsultasStats,
 } from "../api/medicamentos";
 import "./AdminMedicamentos.css";
 
-type Tab = "bulario" | "referencia";
+type Tab = "bulario" | "referencia" | "consultas";
 
 const SECAO_LABEL: Record<string, string> = {
   indicacoes: "Indicações",
@@ -77,6 +81,12 @@ export function AdminMedicamentos() {
               Medicamentos de Referência
             </button>
             <button
+              className={`meds__tab ${tab === "consultas" ? "meds__tab--on" : ""}`}
+              onClick={() => setTab("consultas")}
+            >
+              Consultas
+            </button>
+            <button
               className={`meds__tab ${tab === "bulario" ? "meds__tab--on" : ""}`}
               onClick={() => setTab("bulario")}
             >
@@ -84,7 +94,9 @@ export function AdminMedicamentos() {
             </button>
           </div>
 
-          {tab === "referencia" ? <ReferenciaPanel /> : <BularioPanel />}
+          {tab === "referencia" && <ReferenciaPanel />}
+          {tab === "consultas" && <ConsultasPanel />}
+          {tab === "bulario" && <BularioPanel />}
         </div>
       </main>
     </>
@@ -143,6 +155,167 @@ function BularioPanel() {
                   <td className="meds-table__muted">{m.razao_social ?? "—"}</td>
                   <td className="meds-table__muted">{m.classes_terapeuticas.slice(0, 2).join(", ") || "—"}</td>
                   <td>{m.has_detail ? "✓" : "—"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </section>
+  );
+}
+
+// ── Consultas (log de uso da base pelo agente) ──────────────────────────────
+
+const SKILL_LABEL: Record<string, string> = {
+  farmaceutico: "Farmacêutico",
+  principio_ativo: "Princípio ativo",
+  genericos: "Genéricos",
+};
+
+function ConsultasPanel() {
+  const [items, setItems] = useState<ConsultaItem[]>([]);
+  const [stats, setStats] = useState<ConsultasStats | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [q, setQ] = useState("");
+  const [skill, setSkill] = useState("");
+  const [encontrado, setEncontrado] = useState("");
+  const [secao, setSecao] = useState("");
+
+  const refresh = async () => {
+    setLoading(true);
+    try {
+      const [list, st] = await Promise.all([
+        listConsultas({
+          q: q || undefined,
+          skill: skill || undefined,
+          encontrado: encontrado === "" ? undefined : encontrado === "sim",
+          secao: secao || undefined,
+          limit: 300,
+        }),
+        getConsultasStats(),
+      ]);
+      setItems(list);
+      setStats(st);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => { void refresh(); /* eslint-disable-next-line */ }, [skill, encontrado, secao]);
+
+  const taxa = stats && stats.total > 0
+    ? Math.round((stats.encontrados / stats.total) * 100) : 0;
+
+  return (
+    <section>
+      <p className="meds__intro">
+        Cada vez que um agente consulta a base de referência (tool{" "}
+        <code>consultar_medicamento_referencia</code>), registramos o termo
+        buscado, o medicamento que casou e as seções <strong>ativas</strong>{" "}
+        efetivamente devolvidas. Use isto para ver o que está sendo consumido e o
+        que falha (termos sem match, ou achou o medicamento mas nenhuma seção
+        ativa = curadoria pendente).
+      </p>
+
+      {/* Stats */}
+      <div className="meds__stats">
+        <Stat label="Consultas" value={stats?.total ?? "—"} />
+        <Stat label="Com match" value={stats ? `${taxa}%` : "—"} variant="active" />
+        <Stat label="Sem match" value={stats?.nao_encontrados ?? "—"} variant="disabled" />
+        <Stat label="Achou s/ seção ativa" value={stats?.sem_secao_ativa ?? "—"} variant="pending" />
+      </div>
+
+      {/* Consumo por seção */}
+      {stats && Object.keys(stats.por_secao).length > 0 && (
+        <div className="meds__progress">
+          <div className="meds__progress-head">
+            <strong>Consumo por seção</strong>
+            <span>quantas consultas devolveram cada seção ativa</span>
+          </div>
+          <div className="meds-secao-chips">
+            {Object.entries(stats.por_secao)
+              .sort((a, b) => b[1] - a[1])
+              .map(([slug, n]) => (
+                <span key={slug} className="meds-chip meds-chip--active">
+                  {SECAO_LABEL[slug] ?? slug}: <strong>{n}</strong>
+                </span>
+              ))}
+          </div>
+        </div>
+      )}
+
+      {/* Toolbar */}
+      <div className="meds__toolbar">
+        <SearchBox value={q} onChange={setQ} onSubmit={() => void refresh()}
+          placeholder="Buscar termo consultado…" />
+        <select className="meds-select" value={skill} onChange={(e) => setSkill(e.target.value)}>
+          <option value="">Todas as skills</option>
+          <option value="farmaceutico">Farmacêutico</option>
+          <option value="principio_ativo">Princípio ativo</option>
+          <option value="genericos">Genéricos</option>
+        </select>
+        <select className="meds-select" value={encontrado} onChange={(e) => setEncontrado(e.target.value)}>
+          <option value="">Match: todos</option>
+          <option value="sim">Só com match</option>
+          <option value="nao">Só sem match</option>
+        </select>
+        <select className="meds-select" value={secao} onChange={(e) => setSecao(e.target.value)}>
+          <option value="">Qualquer seção</option>
+          {Object.entries(SECAO_LABEL).map(([slug, label]) => (
+            <option key={slug} value={slug}>{label}</option>
+          ))}
+        </select>
+        <button className="meds-btn" onClick={() => void refresh()}>Filtrar</button>
+      </div>
+
+      {loading ? <Spinner size={28} /> : items.length === 0 ? (
+        <div className="meds__empty">Nenhuma consulta registrada ainda.</div>
+      ) : (
+        <div className="meds__table-wrap">
+          <table className="meds-table">
+            <thead>
+              <tr>
+                <th>Quando</th>
+                <th>Termo</th>
+                <th>Skill</th>
+                <th>Resultado</th>
+                <th>Seções devolvidas</th>
+              </tr>
+            </thead>
+            <tbody>
+              {items.map((c) => (
+                <tr key={c.id}>
+                  <td className="meds-table__muted">
+                    {new Date(c.created_at).toLocaleString("pt-BR")}
+                  </td>
+                  <td className="meds-table__pa">{c.termo}</td>
+                  <td className="meds-table__muted">{c.skill ? (SKILL_LABEL[c.skill] ?? c.skill) : "—"}</td>
+                  <td>
+                    {!c.encontrado ? (
+                      <span className="meds-chip meds-chip--disabled">Sem match</span>
+                    ) : (
+                      <span title={c.medicamentos.map((m) => m.principio_ativo).filter(Boolean).join(", ")}>
+                        {c.medicamentos[0]?.principio_ativo ?? "—"}
+                        {c.num_resultados > 1 && (
+                          <span className="meds-table__muted"> +{c.num_resultados - 1}</span>
+                        )}
+                      </span>
+                    )}
+                  </td>
+                  <td>
+                    {c.secoes.length === 0 ? (
+                      <span className="meds-table__muted">—</span>
+                    ) : (
+                      <div className="meds-secao-chips">
+                        {c.secoes.map((s) => (
+                          <span key={s} className="meds-chip meds-chip--active">
+                            {SECAO_LABEL[s] ?? s}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                  </td>
                 </tr>
               ))}
             </tbody>

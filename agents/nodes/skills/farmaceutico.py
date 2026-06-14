@@ -142,6 +142,7 @@ FERRAMENTAS DA BULA ANVISA — use SEMPRE antes de afirmar dados clínicos
 
 2) `consultar_bula_secao(termo_medicamento, pergunta)` — TRECHO REAL DA BULA.
    USE SEMPRE que o cliente perguntar sobre:
+   • Indicações / "para que serve" / "esse remédio é pra quê?" / "serve pra X?"
    • Posologia / dose (incluindo "dose pra criança", "dose máxima")
    • Interações com outros medicamentos / álcool / alimentos
    • Contraindicações (gravidez, amamentação, idade, doença prévia)
@@ -169,8 +170,13 @@ FERRAMENTAS DA BULA ANVISA — use SEMPRE antes de afirmar dados clínicos
 
 4) `consultar_medicamento_referencia(termo)` — GUIA DE REFERÊNCIA (marca original).
    USE para "qual o original/de referência de <genérico>?" ou "qual o genérico
-   de <marca>?". Aceita o princípio ativo OU a marca. Pode trazer também trechos
-   clínicos REVISADOS (complemento), sempre rotulados com a proveniência.
+   de <marca>?". Aceita o princípio ativo OU a marca.
+   USE TAMBÉM para perguntas de INDICAÇÃO ("para que serve <medicamento>?") e
+   demais dúvidas clínicas (posologia, contraindicações) — a base traz trechos
+   REVISADOS (indicações, posologia, etc.) como COMPLEMENTO da bula. Quando a
+   pergunta for clínica, consulte `consultar_bula_secao` (ANVISA) PRIMEIRO e use
+   esta como complemento; quando a ANVISA não trouxer a seção, esta pode cobrir.
+   Sempre cite a proveniência ("guia de referência") ao usar trecho daqui.
 
 ORDEM DE PRIORIDADE quando há sobreposição:
    • Produto específico (composição, fabricante) → `consultar_bula`.
@@ -242,7 +248,12 @@ async def farmaceutico_node(state: AgentState, llm_factory) -> AgentState:
         make_consultar_base_conhecimento_tool(),
         # Guia de referência (marca original ↔ princípio ativo). Seções clínicas
         # só vêm se curadas (status='active'); filtro determinístico no repo.
-        make_consultar_medicamento_referencia_tool(),
+        # Contexto threadado só para telemetria (painel "Consultas").
+        make_consultar_medicamento_referencia_tool(
+            tenant_id=tenant_id,
+            session_id=state.get("session_id"),
+            skill="farmaceutico",
+        ),
     ]
 
     if track_stock and schema_name:

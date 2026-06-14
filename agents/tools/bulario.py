@@ -121,8 +121,9 @@ def make_consultar_bula_secao_tool():
         """
         Busca trechos REAIS da bula da ANVISA sobre uma pergunta específica
         de um medicamento. Use SEMPRE que o cliente perguntar sobre:
-        posologia/dose, interações, contraindicações, gravidez/amamentação,
-        efeitos colaterais, armazenamento, ou qualquer detalhe clínico.
+        indicações ("para que serve"), posologia/dose, interações,
+        contraindicações, gravidez/amamentação, efeitos colaterais,
+        armazenamento, ou qualquer detalhe clínico.
 
         Sempre cite o trecho que a tool retornou — não invente.
 
