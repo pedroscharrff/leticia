@@ -1,3 +1,20 @@
+/**
+ * Admin · Medicamentos (superadmin, painel GLOBAL — vale p/ todos os tenants).
+ *
+ * Duas abas:
+ *  • Bulário ANVISA  — somente leitura (cache populado sob demanda pelos agentes).
+ *  • Medicamentos de Referência — guia curado (marca ↔ princípio ativo). As seções
+ *    clínicas nascem `pending` e SÓ chegam ao agente quando marcadas `active`.
+ *
+ * Curadoria por seção: `patchSecao(id, secao, {conteudo,status})`.
+ * Curadoria em massa (este painel):
+ *  • Por medicamento (no modal): `bulkSetMedSecoes(id, {status})` — "Ativar todas".
+ *  • Global (na toolbar):        `bulkSetAllSecoes({status})`    — "Ativar tudo".
+ *  Toda ação destrutiva/ampla pede confirm(); ativar expõe conteúdo de 2001 ao agente.
+ *
+ * Stats do header: `getReferenciaStats()`. Estilos em AdminMedicamentos.css.
+ * Backend: api/routers/medicamentos.py. Gate determinístico real: api/services/referencia_repo.py.
+ */
 import { useEffect, useState } from "react";
 import { GlobalNav } from "../components/GlobalNav";
 import { SubNav } from "../components/SubNav";
@@ -7,15 +24,20 @@ import {
   listBulario,
   listReferencia,
   getReferencia,
+  getReferenciaStats,
   createReferencia,
   patchReferencia,
   deleteReferencia,
   patchSecao,
+  bulkSetMedSecoes,
+  bulkSetAllSecoes,
   type BularioItem,
   type ReferenciaListItem,
   type ReferenciaDetail,
+  type ReferenciaStats,
   type SecaoStatus,
 } from "../api/medicamentos";
+import "./AdminMedicamentos.css";
 
 type Tab = "bulario" | "referencia";
 
@@ -34,6 +56,10 @@ const STATUS_LABEL: Record<SecaoStatus, string> = {
   disabled: "Desativada",
 };
 
+function StatusChip({ status }: { status: SecaoStatus }) {
+  return <span className={`meds-chip meds-chip--${status}`}>{STATUS_LABEL[status]}</span>;
+}
+
 export function AdminMedicamentos() {
   const [tab, setTab] = useState<Tab>("referencia");
 
@@ -42,22 +68,24 @@ export function AdminMedicamentos() {
       <GlobalNav />
       <SubNav title="Medicamentos" />
       <main className="page-content">
-        <div style={{ display: "flex", gap: 12, marginBottom: 16 }}>
-          <button
-            className={tab === "referencia" ? "btn btn--primary" : "btn"}
-            onClick={() => setTab("referencia")}
-          >
-            Medicamentos de Referência
-          </button>
-          <button
-            className={tab === "bulario" ? "btn btn--primary" : "btn"}
-            onClick={() => setTab("bulario")}
-          >
-            Bulário ANVISA
-          </button>
-        </div>
+        <div className="meds">
+          <div className="meds__tabs">
+            <button
+              className={`meds__tab ${tab === "referencia" ? "meds__tab--on" : ""}`}
+              onClick={() => setTab("referencia")}
+            >
+              Medicamentos de Referência
+            </button>
+            <button
+              className={`meds__tab ${tab === "bulario" ? "meds__tab--on" : ""}`}
+              onClick={() => setTab("bulario")}
+            >
+              Bulário ANVISA
+            </button>
+          </div>
 
-        {tab === "referencia" ? <ReferenciaPanel /> : <BularioPanel />}
+          {tab === "referencia" ? <ReferenciaPanel /> : <BularioPanel />}
+        </div>
       </main>
     </>
   );
@@ -83,46 +111,43 @@ function BularioPanel() {
 
   return (
     <section>
-      <p style={{ color: "var(--color-ink-muted-48)", marginBottom: 12 }}>
+      <p className="meds__intro">
         Catálogo da ANVISA cacheado localmente (somente leitura). É populado sob
         demanda conforme os agentes consultam o bulário.
       </p>
-      <header style={{ display: "flex", gap: 12, marginBottom: 16 }}>
-        <input
-          placeholder="Buscar por nome ou princípio ativo…"
-          value={q}
-          onChange={(e) => setQ(e.target.value)}
-          onKeyDown={(e) => { if (e.key === "Enter") void refresh(); }}
-          style={{ flex: 1, padding: 8 }}
-        />
-        <button className="btn" onClick={() => void refresh()}>Filtrar</button>
-      </header>
+      <div className="meds__toolbar">
+        <SearchBox value={q} onChange={setQ} onSubmit={() => void refresh()}
+          placeholder="Buscar por nome ou princípio ativo…" />
+        <button className="meds-btn" onClick={() => void refresh()}>Filtrar</button>
+      </div>
 
       {loading ? <Spinner size={28} /> : items.length === 0 ? (
-        <p style={{ color: "var(--color-ink-muted-48)" }}>Nenhum medicamento.</p>
+        <div className="meds__empty">Nenhum medicamento no cache.</div>
       ) : (
-        <table style={{ width: "100%", borderCollapse: "collapse" }}>
-          <thead>
-            <tr style={{ textAlign: "left", borderBottom: "1px solid var(--color-hairline)" }}>
-              <th>Produto</th>
-              <th>Princípio ativo</th>
-              <th>Fabricante</th>
-              <th>Classe</th>
-              <th>Bula</th>
-            </tr>
-          </thead>
-          <tbody>
-            {items.map((m) => (
-              <tr key={m.num_processo} style={{ borderBottom: "1px solid var(--color-divider-soft)" }}>
-                <td style={{ fontWeight: 500 }}>{m.nome_produto}</td>
-                <td>{m.principio_ativo ?? "—"}</td>
-                <td>{m.razao_social ?? "—"}</td>
-                <td>{m.classes_terapeuticas.slice(0, 2).join(", ") || "—"}</td>
-                <td>{m.has_detail ? "✓" : "—"}</td>
+        <div className="meds__table-wrap">
+          <table className="meds-table">
+            <thead>
+              <tr>
+                <th>Produto</th>
+                <th>Princípio ativo</th>
+                <th>Fabricante</th>
+                <th>Classe</th>
+                <th>Bula</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {items.map((m) => (
+                <tr key={m.num_processo}>
+                  <td className="meds-table__pa">{m.nome_produto}</td>
+                  <td>{m.principio_ativo ?? "—"}</td>
+                  <td className="meds-table__muted">{m.razao_social ?? "—"}</td>
+                  <td className="meds-table__muted">{m.classes_terapeuticas.slice(0, 2).join(", ") || "—"}</td>
+                  <td>{m.has_detail ? "✓" : "—"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
     </section>
   );
@@ -132,16 +157,23 @@ function BularioPanel() {
 
 function ReferenciaPanel() {
   const [items, setItems] = useState<ReferenciaListItem[]>([]);
+  const [stats, setStats] = useState<ReferenciaStats | null>(null);
   const [loading, setLoading] = useState(true);
   const [q, setQ] = useState("");
   const [pendentes, setPendentes] = useState(false);
   const [editId, setEditId] = useState<number | null>(null);
   const [creating, setCreating] = useState(false);
+  const [bulkBusy, setBulkBusy] = useState(false);
 
   const refresh = async () => {
     setLoading(true);
     try {
-      setItems(await listReferencia({ q: q || undefined, pendentes, limit: 200 }));
+      const [list, st] = await Promise.all([
+        listReferencia({ q: q || undefined, pendentes, limit: 500 }),
+        getReferenciaStats(),
+      ]);
+      setItems(list);
+      setStats(st);
     } finally {
       setLoading(false);
     }
@@ -155,84 +187,139 @@ function ReferenciaPanel() {
     await refresh();
   };
 
+  const handleBulkAll = async (status: SecaoStatus) => {
+    const verbo = status === "active" ? "ATIVAR" : status === "pending" ? "redefinir para PENDENTE" : "DESATIVAR";
+    const n = stats?.secoes_total ?? 0;
+    if (!confirm(
+      `Isso vai ${verbo} TODAS as ${n} seções clínicas de TODOS os medicamentos.\n\n` +
+      (status === "active"
+        ? "Atenção: conteúdo clínico é de 2001 e passa a ser exposto ao agente. Confirma?"
+        : "Confirma?")
+    )) return;
+    setBulkBusy(true);
+    try {
+      const { updated } = await bulkSetAllSecoes({ status });
+      await refresh();
+      alert(`${updated} seções atualizadas.`);
+    } finally {
+      setBulkBusy(false);
+    }
+  };
+
+  const pct = stats && stats.secoes_total > 0
+    ? Math.round((stats.secoes_active / stats.secoes_total) * 100) : 0;
+  const pctDisabled = stats && stats.secoes_total > 0
+    ? Math.round((stats.secoes_disabled / stats.secoes_total) * 100) : 0;
+
   return (
     <section>
-      <p style={{ color: "var(--color-ink-muted-48)", marginBottom: 12 }}>
+      <p className="meds__intro">
         Guia curado (marca original ↔ princípio ativo). As seções clínicas só
-        ficam visíveis ao agente quando você as marca como <strong>Ativa</strong>
-        — a fonte é antiga, revise antes de ativar.
+        ficam visíveis ao agente quando marcadas como <strong>Ativa</strong> — a
+        fonte é antiga, revise antes de ativar.
       </p>
-      <header style={{ display: "flex", gap: 12, alignItems: "center", marginBottom: 16 }}>
-        <input
-          placeholder="Buscar por princípio ativo ou marca…"
-          value={q}
-          onChange={(e) => setQ(e.target.value)}
-          onKeyDown={(e) => { if (e.key === "Enter") void refresh(); }}
-          style={{ flex: 1, padding: 8 }}
-        />
-        <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 14 }}>
-          <input
-            type="checkbox"
-            checked={pendentes}
-            onChange={(e) => setPendentes(e.target.checked)}
-          />
+
+      {/* Stats */}
+      <div className="meds__stats">
+        <Stat label="Medicamentos" value={stats?.medicamentos ?? "—"} />
+        <Stat label="Seções ativas" value={stats?.secoes_active ?? "—"} variant="active" />
+        <Stat label="Pendentes" value={stats?.secoes_pending ?? "—"} variant="pending" />
+        <Stat label="Desativadas" value={stats?.secoes_disabled ?? "—"} variant="disabled" />
+      </div>
+
+      {/* Curation progress */}
+      {stats && stats.secoes_total > 0 && (
+        <div className="meds__progress">
+          <div className="meds__progress-head">
+            <strong>Curadoria: {pct}% ativas</strong>
+            <span>{stats.secoes_active} de {stats.secoes_total} seções liberadas ao agente</span>
+          </div>
+          <div className="meds__bar">
+            <div className="meds__bar-fill meds__bar-fill--active" style={{ width: `${pct}%` }} />
+            <div className="meds__bar-fill meds__bar-fill--disabled" style={{ width: `${pctDisabled}%` }} />
+          </div>
+        </div>
+      )}
+
+      {/* Toolbar */}
+      <div className="meds__toolbar">
+        <SearchBox value={q} onChange={setQ} onSubmit={() => void refresh()}
+          placeholder="Buscar por princípio ativo ou marca…" />
+        <label className="meds__filter">
+          <input type="checkbox" checked={pendentes} onChange={(e) => setPendentes(e.target.checked)} />
           Só com seção pendente
         </label>
-        <button className="btn" onClick={() => void refresh()}>Filtrar</button>
-        <button className="btn btn--primary" onClick={() => setCreating(true)}>
+        <button className="meds-btn" onClick={() => void refresh()}>Filtrar</button>
+        <span className="meds__spacer" />
+        <button className="meds-btn meds-btn--success" disabled={bulkBusy}
+          onClick={() => void handleBulkAll("active")} title="Ativar todas as seções de todos os medicamentos">
+          {bulkBusy ? "Processando…" : "✓ Ativar tudo"}
+        </button>
+        <button className="meds-btn" disabled={bulkBusy}
+          onClick={() => void handleBulkAll("pending")} title="Redefinir todas as seções para pendente">
+          Redefinir p/ pendente
+        </button>
+        <button className="meds-btn meds-btn--primary" onClick={() => setCreating(true)}>
           + Adicionar
         </button>
-      </header>
+      </div>
 
       {loading ? <Spinner size={28} /> : items.length === 0 ? (
-        <p style={{ color: "var(--color-ink-muted-48)" }}>
+        <div className="meds__empty">
           Nenhum medicamento de referência. Rode a ingestão do guia ou adicione manualmente.
-        </p>
+        </div>
       ) : (
-        <table style={{ width: "100%", borderCollapse: "collapse" }}>
-          <thead>
-            <tr style={{ textAlign: "left", borderBottom: "1px solid var(--color-hairline)" }}>
-              <th>Princípio ativo</th>
-              <th>Referência (original)</th>
-              <th>Forma</th>
-              <th>Categoria</th>
-              <th>Seções</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody>
-            {items.map((m) => (
-              <tr key={m.id} style={{ borderBottom: "1px solid var(--color-divider-soft)" }}>
-                <td style={{ fontWeight: 500 }}>{m.principio_ativo}</td>
-                <td>{m.nome_referencia ?? "—"}</td>
-                <td style={{ fontSize: 13 }}>{m.forma_farmaceutica ?? "—"}</td>
-                <td style={{ fontSize: 13 }}>{m.categoria ?? "—"}</td>
-                <td>
-                  <span style={{
-                    padding: "2px 8px", borderRadius: 4, fontSize: 12,
-                    background: m.secoes_active > 0 ? "#e6f7e6" : "#f1f1f1",
-                  }}>
-                    {m.secoes_active}/{m.secoes_total} ativas
-                  </span>
-                </td>
-                <td style={{ display: "flex", gap: 8 }}>
-                  <button className="btn" onClick={() => setEditId(m.id)}>Editar</button>
-                  <button className="btn btn--danger" onClick={() => void handleDelete(m.id)}>
-                    Excluir
-                  </button>
-                </td>
+        <div className="meds__table-wrap">
+          <table className="meds-table">
+            <thead>
+              <tr>
+                <th>Princípio ativo</th>
+                <th>Referência (original)</th>
+                <th>Categoria</th>
+                <th>Curadoria</th>
+                <th></th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {items.map((m) => {
+                const p = m.secoes_total > 0 ? Math.round((m.secoes_active / m.secoes_total) * 100) : 0;
+                return (
+                  <tr key={m.id} onDoubleClick={() => setEditId(m.id)}>
+                    <td className="meds-table__pa">
+                      {m.principio_ativo}
+                      {m.forma_farmaceutica && (
+                        <div className="meds-table__muted">{m.forma_farmaceutica}</div>
+                      )}
+                    </td>
+                    <td className="meds-table__ref">{m.nome_referencia ?? "—"}</td>
+                    <td className="meds-table__muted">{m.categoria ?? "—"}</td>
+                    <td>
+                      <div className="meds-prog">
+                        <div className="meds-prog__bar">
+                          <div className="meds-prog__fill" style={{ width: `${p}%` }} />
+                        </div>
+                        <span className="meds-prog__txt">
+                          <strong>{m.secoes_active}</strong>/{m.secoes_total} ativas
+                        </span>
+                      </div>
+                    </td>
+                    <td>
+                      <div className="meds-table__actions">
+                        <button className="meds-btn meds-btn--sm" onClick={() => setEditId(m.id)}>Editar</button>
+                        <button className="meds-btn meds-btn--sm meds-btn--ghost-danger"
+                          onClick={() => void handleDelete(m.id)}>Excluir</button>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
       )}
 
       {editId !== null && (
-        <EditModal
-          id={editId}
-          onClose={() => setEditId(null)}
-          onSaved={() => { void refresh(); }}
-        />
+        <EditModal id={editId} onClose={() => setEditId(null)} onSaved={() => { void refresh(); }} />
       )}
       {creating && (
         <CreateModal
@@ -244,6 +331,36 @@ function ReferenciaPanel() {
   );
 }
 
+function Stat({ label, value, variant }: {
+  label: string; value: number | string; variant?: "active" | "pending" | "disabled";
+}) {
+  return (
+    <div className="meds-stat">
+      <p className="meds-stat__label">{label}</p>
+      <div className={`meds-stat__value ${variant ? `meds-stat__value--${variant}` : ""}`}>{value}</div>
+    </div>
+  );
+}
+
+function SearchBox({ value, onChange, onSubmit, placeholder }: {
+  value: string; onChange: (v: string) => void; onSubmit: () => void; placeholder: string;
+}) {
+  return (
+    <div className="meds__search">
+      <svg width="15" height="15" viewBox="0 0 16 16" fill="none">
+        <circle cx="7" cy="7" r="5" stroke="currentColor" strokeWidth="1.6" />
+        <path d="M11 11l3.5 3.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+      </svg>
+      <input
+        placeholder={placeholder}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        onKeyDown={(e) => { if (e.key === "Enter") onSubmit(); }}
+      />
+    </div>
+  );
+}
+
 // ── Modal de edição + curadoria ─────────────────────────────────────────────
 
 function EditModal({
@@ -251,6 +368,7 @@ function EditModal({
 }: { id: number; onClose: () => void; onSaved: () => void }) {
   const [detail, setDetail] = useState<ReferenciaDetail | null>(null);
   const [savingParent, setSavingParent] = useState(false);
+  const [bulkBusy, setBulkBusy] = useState(false);
 
   const load = async () => setDetail(await getReferencia(id));
   useEffect(() => { void load(); /* eslint-disable-next-line */ }, [id]);
@@ -271,11 +389,26 @@ function EditModal({
     }
   };
 
+  const bulkSections = async (status: SecaoStatus) => {
+    if (status === "active" &&
+      !confirm("Ativar TODAS as seções deste medicamento? O conteúdo clínico (de 2001) passa a ser exposto ao agente.")) return;
+    setBulkBusy(true);
+    try {
+      const updated = await bulkSetMedSecoes(id, { status });
+      setDetail(updated);
+      onSaved();
+    } finally {
+      setBulkBusy(false);
+    }
+  };
+
+  const activeCount = detail?.secoes.filter((s) => s.status === "active").length ?? 0;
+
   return (
-    <Modal open onClose={onClose} title={detail?.principio_ativo ?? "Carregando…"} width={720}>
+    <Modal open onClose={onClose} title={detail?.principio_ativo ?? "Carregando…"} width={760}>
       {!detail ? <Spinner size={24} /> : (
-        <div style={{ display: "flex", flexDirection: "column", gap: 12, minWidth: 520 }}>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+        <div className="meds-edit">
+          <div className="meds-edit__grid">
             <Field label="Princípio ativo">
               <input value={detail.principio_ativo}
                 onChange={(e) => setDetail({ ...detail, principio_ativo: e.target.value })} />
@@ -293,21 +426,32 @@ function EditModal({
                 onChange={(e) => setDetail({ ...detail, categoria: e.target.value || null })} />
             </Field>
           </div>
-          <div style={{ display: "flex", justifyContent: "flex-end" }}>
-            <button className="btn btn--primary" onClick={() => void saveParent()} disabled={savingParent}>
+          <div className="meds-edit__footer">
+            <button className="meds-btn meds-btn--primary" onClick={() => void saveParent()} disabled={savingParent}>
               {savingParent ? "Salvando…" : "Salvar dados"}
             </button>
           </div>
 
-          <hr style={{ border: 0, borderTop: "1px solid var(--color-hairline)", margin: "4px 0" }} />
-          <h4 style={{ margin: 0 }}>Seções clínicas (curadoria)</h4>
-          <p style={{ fontSize: 12, color: "var(--color-ink-muted-48)", margin: 0 }}>
+          <hr className="meds-edit__divider" />
+
+          <div className="meds-edit__section-head">
+            <h4>Seções clínicas <span className="meds-table__muted">({activeCount}/{detail.secoes.length} ativas)</span></h4>
+            <div className="meds-edit__bulk">
+              <button className="meds-btn meds-btn--sm meds-btn--success" disabled={bulkBusy}
+                onClick={() => void bulkSections("active")}>✓ Ativar todas</button>
+              <button className="meds-btn meds-btn--sm" disabled={bulkBusy}
+                onClick={() => void bulkSections("pending")}>Pendentes</button>
+              <button className="meds-btn meds-btn--sm" disabled={bulkBusy}
+                onClick={() => void bulkSections("disabled")}>Desativar todas</button>
+            </div>
+          </div>
+          <p className="meds-edit__hint">
             Edite o texto e marque <strong>Ativa</strong> só após revisar. Apenas
-            seções ativas chegam ao agente.
+            seções ativas chegam ao agente. Use os botões acima para agir em todas de uma vez.
           </p>
 
           {detail.secoes.length === 0 ? (
-            <p style={{ color: "var(--color-ink-muted-48)" }}>Sem seções clínicas importadas.</p>
+            <p className="meds-edit__hint">Sem seções clínicas importadas.</p>
           ) : (
             detail.secoes.map((s) => (
               <SecaoEditor
@@ -343,6 +487,10 @@ function SecaoEditor({
   const [status, setStatus] = useState<SecaoStatus>(initialStatus);
   const [busy, setBusy] = useState(false);
 
+  // Sincroniza quando o pai recarrega (ex.: após ação em massa).
+  useEffect(() => { setConteudo(initialConteudo); }, [initialConteudo]);
+  useEffect(() => { setStatus(initialStatus); }, [initialStatus]);
+
   const save = async () => {
     setBusy(true);
     try {
@@ -353,34 +501,26 @@ function SecaoEditor({
     }
   };
 
-  const badgeBg = status === "active" ? "#e6f7e6" : status === "disabled" ? "#fde2e2" : "#f1f1f1";
-
   return (
-    <div style={{ border: "1px solid var(--color-hairline)", borderRadius: 6, padding: 10 }}>
-      <header style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6 }}>
+    <div className={`meds-sec ${status === "active" ? "meds-sec--active" : ""}`}>
+      <div className="meds-sec__head">
         <strong>{SECAO_LABEL[secao] ?? secao}</strong>
-        <span style={{ padding: "2px 8px", borderRadius: 4, fontSize: 12, background: badgeBg }}>
-          {STATUS_LABEL[status]}
-        </span>
+        <StatusChip status={status} />
         {reviewedBy && (
-          <small style={{ color: "var(--color-ink-muted-48)" }}>
+          <span className="meds-sec__rev">
             revisado por {reviewedBy}
             {reviewedAt ? ` em ${new Date(reviewedAt).toLocaleDateString("pt-BR")}` : ""}
-          </small>
+          </span>
         )}
-      </header>
-      <textarea
-        value={conteudo}
-        onChange={(e) => setConteudo(e.target.value)}
-        style={{ width: "100%", minHeight: 90, fontSize: 13 }}
-      />
-      <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 6 }}>
+      </div>
+      <textarea value={conteudo} onChange={(e) => setConteudo(e.target.value)} />
+      <div className="meds-sec__foot">
         <select value={status} onChange={(e) => setStatus(e.target.value as SecaoStatus)}>
           <option value="pending">Pendente</option>
           <option value="active">Ativa</option>
           <option value="disabled">Desativada</option>
         </select>
-        <button className="btn btn--primary" onClick={() => void save()} disabled={busy}>
+        <button className="meds-btn meds-btn--sm meds-btn--primary" onClick={() => void save()} disabled={busy}>
           {busy ? "Salvando…" : "Salvar seção"}
         </button>
       </div>
@@ -418,8 +558,8 @@ function CreateModal({
   };
 
   return (
-    <Modal open onClose={onClose} title="Novo medicamento de referência">
-      <div style={{ display: "flex", flexDirection: "column", gap: 12, minWidth: 420 }}>
+    <Modal open onClose={onClose} title="Novo medicamento de referência" width={520}>
+      <div className="meds-edit" style={{ minWidth: 380 }}>
         <Field label="Princípio ativo">
           <input value={pa} onChange={(e) => setPa(e.target.value)} placeholder="Ex.: BUSPIRONA (CLORIDRATO)" />
         </Field>
@@ -432,10 +572,10 @@ function CreateModal({
         <Field label="Categoria">
           <input value={cat} onChange={(e) => setCat(e.target.value)} />
         </Field>
-        {err && <div style={{ color: "#b00" }}>{err}</div>}
-        <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
-          <button className="btn" onClick={onClose} disabled={busy}>Cancelar</button>
-          <button className="btn btn--primary" onClick={() => void submit()} disabled={busy}>
+        {err && <div className="meds-err">{err}</div>}
+        <div className="meds-edit__footer">
+          <button className="meds-btn" onClick={onClose} disabled={busy}>Cancelar</button>
+          <button className="meds-btn meds-btn--primary" onClick={() => void submit()} disabled={busy}>
             {busy ? "Criando…" : "Criar"}
           </button>
         </div>
@@ -446,8 +586,8 @@ function CreateModal({
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 13 }}>
-      <span style={{ color: "var(--color-ink-muted-48)" }}>{label}</span>
+    <label className="meds-field">
+      <span>{label}</span>
       {children}
     </label>
   );

@@ -129,3 +129,45 @@ export async function patchSecao(
   );
   return data;
 }
+
+// ── Curadoria em massa ──────────────────────────────────────────────────────
+
+export interface ReferenciaStats {
+  medicamentos: number;
+  secoes_total: number;
+  secoes_active: number;
+  secoes_pending: number;
+  secoes_disabled: number;
+}
+
+export async function getReferenciaStats(): Promise<ReferenciaStats> {
+  const { data } = await api.get<ReferenciaStats>(
+    "/admin/medicamentos/referencia/stats",
+  );
+  return data;
+}
+
+/** Muda o status de TODAS as seções de um medicamento de uma vez. */
+export async function bulkSetMedSecoes(
+  id: number,
+  body: { status: SecaoStatus; only_pending?: boolean },
+): Promise<ReferenciaDetail> {
+  const { data } = await api.patch<ReferenciaDetail>(
+    `/admin/medicamentos/referencia/${id}/secoes`,
+    body,
+  );
+  return data;
+}
+
+/** Muda o status de seções em MASSA (todos os medicamentos). Retorna a contagem. */
+export async function bulkSetAllSecoes(body: {
+  status: SecaoStatus;
+  secao?: string;
+  only_pending?: boolean;
+}): Promise<{ updated: number }> {
+  const { data } = await api.post<{ updated: number }>(
+    "/admin/medicamentos/referencia/bulk/status",
+    body,
+  );
+  return data;
+}

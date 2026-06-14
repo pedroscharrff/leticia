@@ -111,6 +111,8 @@ services:
       dockerfile: api/Dockerfile
     environment:
       <<: *api-env
+    ports:
+      - "8000:8000"   # expõe a API ao host (proxy do vite em frontend/vite.config.ts → localhost:8000)
     depends_on:
       pgbouncer:
         condition: service_healthy
