@@ -103,6 +103,31 @@ class SecaoPatch(BaseModel):
     status: Literal["pending", "active", "disabled"] | None = None
 
 
+class BulkMedStatus(BaseModel):
+    """Muda o status de TODAS as seções de um medicamento de uma vez."""
+    status: Literal["pending", "active", "disabled"]
+    only_pending: bool = False   # se True, só toca seções que estão `pending`
+
+
+class BulkGlobalStatus(BaseModel):
+    """Muda o status de seções em MASSA (todos os medicamentos)."""
+    status: Literal["pending", "active", "disabled"]
+    secao: str | None = None     # opcional: restringe a uma seção (slug)
+    only_pending: bool = False   # opcional: só afeta as que estão `pending`
+
+
+class BulkResult(BaseModel):
+    updated: int
+
+
+class ReferenciaStats(BaseModel):
+    medicamentos: int
+    secoes_total: int
+    secoes_active: int
+    secoes_pending: int
+    secoes_disabled: int
+
+
 # ── Bulário ANVISA (read-only) ──────────────────────────────────────────────
 
 @admin_router.get("/bulario", response_model=list[BularioOut])
@@ -205,6 +230,31 @@ async def list_referencia(
         )
         for r in rows
     ]
+
+
+# IMPORTANTE: declarar ANTES de `/referencia/{ref_id}` — senão o FastAPI casa
+# "stats" como {ref_id} (int) e devolve 422 em vez de cair aqui.
+@admin_router.get("/referencia/stats", response_model=ReferenciaStats)
+async def referencia_stats(_admin: AdminUser) -> ReferenciaStats:
+    """Resumo para o painel: total de medicamentos e contagem de seções por status."""
+    async with get_db_conn() as conn:
+        meds = await conn.fetchval("SELECT count(*) FROM public.medicamentos_referencia")
+        row = await conn.fetchrow(
+            """
+            SELECT count(*) AS total,
+                   count(*) FILTER (WHERE status = 'active')   AS active,
+                   count(*) FILTER (WHERE status = 'pending')  AS pending,
+                   count(*) FILTER (WHERE status = 'disabled') AS disabled
+              FROM public.medicamentos_referencia_secoes
+            """
+        )
+    return ReferenciaStats(
+        medicamentos=meds or 0,
+        secoes_total=row["total"] or 0,
+        secoes_active=row["active"] or 0,
+        secoes_pending=row["pending"] or 0,
+        secoes_disabled=row["disabled"] or 0,
+    )
 
 
 @admin_router.get("/referencia/{ref_id}", response_model=ReferenciaDetailOut)
@@ -369,3 +419,73 @@ async def patch_secao(
         reviewed_at=row["reviewed_at"].isoformat() if row["reviewed_at"] else None,
         reviewed_by=row["reviewed_by"],
     )
+
+
+# ── Curadoria em massa ──────────────────────────────────────────────────────
+
+@admin_router.patch("/referencia/{ref_id}/secoes", response_model=ReferenciaDetailOut)
+async def bulk_patch_med_secoes(
+    admin_email: AdminUser, ref_id: int, body: BulkMedStatus
+) -> ReferenciaDetailOut:
+    """
+    Muda o status de TODAS as seções de UM medicamento de uma vez
+    ("ativar todos os campos"). `only_pending=True` não reverte o que já foi
+    desativado/ativado manualmente — só promove as `pending`.
+    """
+    where = ["referencia_id = $3"]
+    params: list = [body.status, admin_email, ref_id]
+    if body.only_pending:
+        where.append("status = 'pending'")
+    async with get_db_conn() as conn:
+        exists = await conn.fetchval(
+            "SELECT 1 FROM public.medicamentos_referencia WHERE id = $1", ref_id
+        )
+        if not exists:
+            raise HTTPException(status_code=404, detail="Medicamento não encontrado")
+        await conn.execute(
+            f"""
+            UPDATE public.medicamentos_referencia_secoes
+               SET status = $1, reviewed_by = $2, reviewed_at = NOW(), updated_at = NOW()
+             WHERE {' AND '.join(where)}
+            """,
+            *params,
+        )
+    return await get_referencia(admin_email, ref_id)
+
+
+@admin_router.post("/referencia/bulk/status", response_model=BulkResult)
+async def bulk_patch_all_secoes(
+    admin_email: AdminUser, body: BulkGlobalStatus
+) -> BulkResult:
+    """
+    Muda o status de seções em MASSA, em TODOS os medicamentos
+    ("ativar todos os medicamentos"). Opcionalmente restringe a uma `secao` e/ou
+    só às que estão `pending`. Retorna a contagem de seções afetadas.
+    """
+    where: list[str] = []
+    params: list = [body.status, admin_email]
+    if body.secao:
+        if body.secao not in _VALID_SECOES:
+            raise HTTPException(status_code=422, detail=f"seção inválida: {body.secao}")
+        params.append(body.secao)
+        where.append(f"secao = ${len(params)}")
+    if body.only_pending:
+        where.append("status = 'pending'")
+    where_sql = ("WHERE " + " AND ".join(where)) if where else ""
+    async with get_db_conn() as conn:
+        res = await conn.execute(
+            f"""
+            UPDATE public.medicamentos_referencia_secoes
+               SET status = $1, reviewed_by = $2, reviewed_at = NOW(), updated_at = NOW()
+            {where_sql}
+            """,
+            *params,
+        )
+    try:
+        updated = int(res.split()[-1])
+    except (ValueError, IndexError):
+        updated = 0
+    log.info("referencia.bulk_status", actor=admin_email,
+             status=body.status, secao=body.secao,
+             only_pending=body.only_pending, updated=updated)
+    return BulkResult(updated=updated)
