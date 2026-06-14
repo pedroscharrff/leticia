@@ -109,7 +109,7 @@ END $$;
 | Tabela | Propósito |
 |---|---|
 | `conversation_state` | Por (tenant, phone): ai_paused, paused_until, closed_at |
-| `medicamentos_anvisa` + `bula_secoes` | Base regulatória compartilhada (ANVISA) |
+| `medicamentos_anvisa` + `bula_secoes` | Base regulatória compartilhada (ANVISA). Cache só-leitura: populado pelo cold path dos agentes E pela alimentação manual do superadmin (`POST /admin/medicamentos/bulario/consultar` e `/bulario/bulk`) |
 | `medicamentos_referencia` + `medicamentos_referencia_secoes` | Guia curado de referência (marca↔genérico). Seções clínicas com `status` pending/active/disabled — só `active` é exposta ao agente. Migration 067 |
 | `medicamentos_referencia_consultas` | Log/telemetria de cada consulta do agente à base de referência (termo, medicamento casado, seções ativas devolvidas, tenant/skill). Sem FK (telemetria não bloqueia turno). Alimenta o painel "Consultas". Migration 068 |
 
