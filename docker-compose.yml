@@ -112,7 +112,10 @@ services:
     environment:
       <<: *api-env
     ports:
-      - "8000:8000"   # expõe a API ao host (proxy do vite em frontend/vite.config.ts → localhost:8000)
+      # Só localhost: proxy do vite dev (frontend/vite.config.ts → localhost:8000)
+      # alcança a API. NUNCA usar "8000:8000" (0.0.0.0) — Docker fura o ufw e
+      # exporia a API sem SSL, contornando o nginx. Em prod o acesso é via nginx.
+      - "127.0.0.1:8000:8000"
     depends_on:
       pgbouncer:
         condition: service_healthy
