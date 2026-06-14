@@ -690,6 +690,28 @@ function TabTransferencia({ channel, onChanged }: { channel: Channel; onChanged:
         </small>
       </div>
 
+      {cfg.post_handoff_order === "offers_first" && (
+        <div className="drawer-row">
+          <label className="form-label">Atraso antes do resumo quando a oferta tem imagem (segundos)</label>
+          <input
+            className="form-input"
+            type="number"
+            min={0}
+            max={30}
+            step={0.5}
+            value={cfg.post_handoff_media_delay_seconds ?? 2.5}
+            onChange={(e) => set("post_handoff_media_delay_seconds",
+              Math.max(0, Math.min(30, parseFloat(e.target.value || "0") || 0)))}
+          />
+          <small style={{ color: "#6b7280" }}>
+            No modo <strong>Ofertas → Resumo</strong>, a imagem da oferta sai pela API do canal e
+            chega mais devagar que o texto do resumo. Este intervalo segura o resumo para a imagem
+            aparecer primeiro (padrão 2,5s). Se o resumo ainda chegar antes da imagem, aumente.
+            Use <strong>0</strong> para desativar.
+          </small>
+        </div>
+      )}
+
       <div className="drawer-row">
         <label className="form-label">Tempo que a IA fica pausada após a transferência (minutos)</label>
         <input
