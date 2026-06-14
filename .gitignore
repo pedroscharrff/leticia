@@ -30,3 +30,5 @@ Thumbs.db
 
 # Mac
 .DS_Store
+# Override de DEV (expõe portas de banco) — nunca versionar/deployar
+docker-compose.override.yml
