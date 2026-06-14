@@ -83,6 +83,27 @@ A mutação completa de `cart.items` e `cart.last_order` é o que permite `send_
 
 Estratégia: cache → local fuzzy (`bulario_repo`) → fallback ANVISA API com upsert.
 
+⚠️ **Threshold de similaridade (`bulario_repo.MIN_SIMILARITY`, 0.45):** o operador
+`%` do pg_trgm sozinho usa o default 0.30 (frouxo) — "buspirona" casava
+"espironolactona" (sim=0.30) e o early-return de `get_or_fetch` nunca chegava à
+ANVISA. `search_local` e `_fetch_rows_filtered` aplicam o corte explícito; abaixo
+dele o resultado é descartado (força refetch). NÃO baixar o threshold sem validar
+true-positives (`dipirona`, `losartana`, `paracetamol`).
+
+### `referencia.py` — Guia de medicamentos de referência (curado, global)
+
+| Tool | Args | Retorna |
+|---|---|---|
+| `consultar_medicamento_referencia(termo)` | princípio ativo OU marca | Mapeamento referência↔genérico (princípio ativo, marca original, forma, categoria) + seções clínicas **só se `status='active'`** |
+
+Fonte: `public.medicamentos_referencia(+_secoes)`, ingerida do *Guia de Medicamentos
+Genéricos* (2001) via `scripts/ingest_guia_genericos.py`. Bindada em `farmaceutico`,
+`principio_ativo` e `genericos`. **Gate de curadoria determinístico** em
+`referencia_repo.search_referencia` (mesmo `MIN_SIMILARITY` do bulário): seções
+`pending`/`disabled` nunca chegam ao agente — só as revisadas/ativadas no painel
+superadmin (`/admin/medicamentos`). A info clínica é COMPLEMENTO da bula ANVISA,
+nunca a substitui; o prompt do farmacêutico fixa essa hierarquia.
+
 ### `sales_extras.py` — Tools opcionais por capability
 
 | Tool | Capability | Args | Retorna |

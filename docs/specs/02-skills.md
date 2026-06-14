@@ -5,16 +5,61 @@
 ## Onde vive
 
 ```
-agents/nodes/skills/
-├── _base.py            # run_skill, _persona_prefix, _build_messages, _parse_handoff, _parse_escalate
-├── saudacao.py
-├── farmaceutico.py
-├── principio_ativo.py
-├── genericos.py
-├── vendedor.py         # bifurca em normal vs pré-atendimento
-├── recuperador.py
-└── guardrails.py
+agents/
+├── skills_registry.py  # FONTE ÚNICA: SkillDefinition + SKILLS (name, plan, allowed_handoffs, node_path)
+├── runtime.py          # AgentRuntime: run_tool_loop compartilhado (tool-loop + flow signals + fallback)
+├── prompts/
+│   ├── builder.py      # PromptBuilder (montagem declarativa estável/volátil)
+│   ├── flow.py         # instruções de handoff/escalate/end GERADAS do contrato das tools de fluxo
+│   ├── commerce.py     # blocos de capability do vendedor (cross-sell, frete, PIX, memória)
+│   └── clinical.py     # blocos do farmaceutico (stock_check em modo ERP)
+├── tools/
+│   └── flow_control.py # HandoffTool/EscalateTool/EndTool (SINAIS, não efeitos)
+└── nodes/skills/
+    ├── _base.py        # run_skill (wrapper do runtime), _persona_prefix, _build_messages, _parse_*
+    ├── saudacao.py
+    ├── farmaceutico.py # prompt modular + flow tools (handoff/end)
+    ├── principio_ativo.py
+    ├── genericos.py
+    ├── vendedor.py     # bifurca normal/pré-atendimento; PromptBuilder + run_tool_loop + flow tools (force-call/draft no post_loop_hook)
+    ├── recuperador.py
+    └── guardrails.py
 ```
+
+### Arquitetura de prompt + fluxo (2026-06, modularização)
+
+**Metadados de skill (`skills_registry.py`)** — fonte ÚNICA. `_KNOWN_SKILLS`
+(router), `_VALID_HANDOFF_TARGETS` (_base), `all_skill_nodes` (graph_builder) e
+as descrições do orchestrator agora DERIVAM de `SKILLS`. Adicionar skill = editar
+o registry (+ node file + migration de catálogo). `node_path` é resolvido
+preguiçosamente (evita import circular registry→skill→_base→registry).
+
+**Montagem de prompt (`prompts/PromptBuilder`)** — acaba com os `parts`/
+`volatile_parts` à mão. `.core/.section/.flow/.extra_instructions` = ESTÁVEL
+(prefixo cacheado); `.volatile` = por-turno (após o marker de cache). Blocos de
+capability viraram funções puras em `commerce.py`/`clinical.py`. `_persona_prefix`
+segue como porta ÚNICA de persona (chamada dentro de `.core`).
+
+**Controle de fluxo HÍBRIDO (`tools/flow_control.py` + `prompts/flow.py`)** —
+handoff/escalate/end são TOOLS (caminho primário): `target_skill` é `Literal`
+derivado de `allowed_handoffs` → o LLM não roteia para destino inválido
+(determinismo no schema). O `AgentRuntime` detecta a tool em `tool_calls`, seta
+o sinal (`handoff_to`/`escalate`/`end_conversation`) e NÃO a executa. O parser de
+marcadores (`_parse_*`) continua como REDE DE SEGURANÇA: se o LLM emitir `[[...]]`
+em texto (ou prompt custom de tenant), captura. Tool vence; marcador é fallback;
+**nunca falha estrito** (princípio 10.1). `flow.py` gera a instrução do prompt do
+MESMO contrato das tools (fonte única — fim da divergência prompt↔parser).
+
+**Runtime compartilhado (`runtime.run_tool_loop`)** — o tool-loop comum (antes
+duplicado em `_base._invoke_with_tools` e no `vendedor.py` inline). `run_skill` é
+um wrapper fino sobre ele. Hook `post_loop_hook` para lógica específica do skill
+(force-call, draft-fallback). `_invoke_with_tools` foi REMOVIDO.
+
+**Sticky ownership (determinístico)** — `state.current_owner` (persistido em
+Redis, TTL da sessão, por `context.py`) faz o orchestrator pular a classificação
+por LLM enquanto a conversa tem dono. Gated por `settings.sticky_ownership_enabled`
+(default False). Emergência / pedido de humano nunca é interceptado
+(`orchestrator._should_bypass_sticky`). Limpa em fim/escalation/pedido finalizado.
 
 ## Contrato do skill
 
@@ -84,7 +129,7 @@ Plano: pro.
 Tools (modo normal): `buscar_produto`, `adicionar_ao_carrinho`, `remover_do_carrinho`, `atualizar_qtd_carrinho`, `finalizar_pedido`, `salvar_dados_cliente`, `consultar_pedido`, `cancelar_pedido`, `editar_pedido`. Tools extras condicionadas: `recomendar_complementos`, `calcular_frete`, `gerar_link_pix`, `registrar_alergia`, `registrar_medicamento_continuo`, `registrar_preferencia`.
 Tools (modo pré-atendimento): `salvar_dados_cliente`, `consultar_pedido`, `registrar_itens_interesse`, `anotar_pedido_balcao`.
 Quando: cliente quer comprar, preço, montar carrinho.
-Característica: **bifurca em modo normal vs pré-atendimento** baseado em capability `sales.stock_check`. Tem force-call no pré-atendimento (se LLM "fechou" sem chamar `anotar_pedido_balcao`, força a chamada).
+Característica: **bifurca em modo normal vs pré-atendimento** baseado em capability `sales.stock_check`. Tem force-call no pré-atendimento (se LLM "fechou" sem chamar `anotar_pedido_balcao`, força a chamada). **Desde a modularização (2026-06):** vendedor monta prompt via `PromptBuilder` (+`prompts/commerce.py`), roda o loop via `runtime.run_tool_loop`, e o force-call + draft-fallback vivem no `post_loop_hook` passado ao runtime — NÃO foram removidos, só mudaram de lugar. Controle de fluxo é por tools (handoff/escalate/end), com o parser de marcadores como fallback. Handoff no pré-atendimento: a tool só é bindada (destino `farmaceutico`) quando `sales.pharmacist_validation` ON E farmacêutico ativo.
 Característica (pré-atendimento): a regra 4 do `_SYSTEM_PRE_ATENDIMENTO` exige `[[HANDOFF:farmaceutico:nome]]` quando o cliente cita medicamento por nome — farmacêutico valida na bula antes de anotar. Itens claramente não-medicamento (fralda/xampu/álcool/etc.) seguem direto pra coleta. **Esse handoff só roteia quando a capability `sales.pharmacist_validation` está ON E o farmacêutico está em `available_skills`** — caso contrário o marcador é só limpo do texto (comportamento histórico, sem validação). O gate fica no fim do `vendedor_node` (parse de handoff do pré-atendimento). **Trigger principal:** quando a cap está ON, o próprio `orchestrator` roteia medicamento nomeado → `farmaceutico` (override da regra 2), porque o orquestrador já classifica "dipirona" como medicamento de forma confiável e o farmacêutico tem `consultar_bula` (cobre ANVISA inteira, não só o catálogo local). O handoff `vendedor→farmaceutico` permanece como backstop. Isso evita inchar o prompt do vendedor com lógica de validação.
 Característica: `anotar_pedido_balcao` **popula o cart in-place** (`items`, `subtotal=0`, `last_order`, `just_finalized=True`) — assim o `send_order_summary` do worker, disparado pelo `escalate=True`, consegue montar o resumo do pedido (capability `sales.order_summary_after_handoff`, mig 044). Sem essa mutação, o resumo sai vazio em pré-atendimento.
 Característica (recuperação de carrinho no pré-atendimento): `registrar_itens_interesse` (Etapa 2 do `_SYSTEM_PRE_ATENDIMENTO`) grava a lista de interesse no `cart` in-place **sem** `just_finalized` — o `save_context` então persiste uma linha em `{schema}.cart` com `items>0` e `stock_mode='balcao'`. **Esse é o único caminho que torna o carrinho de pré-atendimento recuperável**: sem ele, o cliente que some antes de confirmar nunca gera linha de cart (a única outra tool que escreve itens, `anotar_pedido_balcao`, é terminal e limpa via `just_finalized`). **Invariante a não quebrar:** `registrar_itens_interesse` NÃO finaliza/transfere e NÃO seta `just_finalized`; `anotar_pedido_balcao` continua terminal e limpa o cart. O job `recover_abandoned_carts` e a página de Recuperação funcionam sem alteração (filtram por `items>0`, sem filtro de modo). O envio só ocorre se a capability `sales.abandoned_cart` estiver ON.
@@ -155,12 +200,11 @@ Quando a capability `intelligence.sentiment_analysis` está ON, o nó `sentiment
 
 ### Adicionar novo skill
 
-1. `agents/nodes/skills/<nome>.py` — implementa `<nome>_node`. Use `run_skill` se possível.
-2. Constante `_SYSTEM` no topo com o prompt base.
-3. Em `agents/router.py`: adicionar em `_KNOWN_SKILLS` e em `_VALID_HANDOFF_TARGETS` no `_base.py`.
-4. Em `agents/graph_builder.py`: import + bind via partial + entrada em `all_skill_nodes`.
-5. Migration: INSERT em `public.skill_catalog` (skill_name, display_name, plan_min, channel_compat, tools_json, default_provider/llm).
-6. Frontend `PortalSkills.tsx` mostra automaticamente (lê do catálogo).
+1. `agents/nodes/skills/<nome>.py` — implementa `<nome>_node`. Use `run_skill` se possível (passe `enable_handoff/escalate/end` se o skill faz controle de fluxo).
+2. Constante `_SYSTEM` no topo com o prompt base (sem instruções de marcador — o `.flow()` do PromptBuilder gera isso a partir das tools).
+3. **`agents/skills_registry.py`: adicionar uma `SkillDefinition` em `SKILLS`** (name, plan_min, description, node_path, allowed_handoffs, capabilities). É a ÚNICA edição de "registro" — `_KNOWN_SKILLS`, `_VALID_HANDOFF_TARGETS`, `all_skill_nodes` e as descrições do orchestrator derivam daqui automaticamente.
+4. Migration: INSERT em `public.skill_catalog` (skill_name, display_name, plan_min, channel_compat, tools_json, default_provider/llm).
+5. Frontend `PortalSkills.tsx` mostra automaticamente (lê do catálogo).
 
 ### Prompt customizado por tenant
 
@@ -190,3 +234,8 @@ Via portal `PortalLLMConfig.tsx` → `SkillOverride` (campos `llm_model`, `llm_p
 - **Não adicionar `selected_skill` errado no return**. Convenção: `handoff_target or skill_name` (skill que efetivamente respondeu).
 - **Não remover o fallback determinístico de rascunho** (`_detect_item_listing` + `_extract_items_from_dialog`). O LLM ignora `registrar_itens_interesse` na maioria dos turnos de pré-atendimento — sem o fallback, carrinhos ficam `items=[]` e a recuperação fica vazia. Se mexer na heurística, verificar métrica `preattend_draft_fallback_total` para taxa de acionamento.
 - **Não setar `just_finalized` na extração do fallback.** Ela é rascunho puro — só `anotar_pedido_balcao` fecha.
+- **Não jogar bloco volátil no `.section()` do PromptBuilder** (é estável/cacheado). Carrinho, memória, handoff, sentimento → `.volatile()`. Mesma regra de ouro do caching de sempre, agora explícita na API.
+- **Não remover o parser de marcadores (`_parse_*`) nem teimar em "tool-only estrito".** É a rede de segurança do controle de fluxo híbrido. Se o LLM não chamar a tool de fluxo, o marcador (ou simplesmente continuar o atendimento) é o fallback — nunca abandonar o cliente (princípio 10.1). O `gemini.md` pedia "falhar estrito"; foi deliberadamente rejeitado.
+- **Não ensinar marcador `[[...]]` E tool de fluxo no mesmo prompt.** Confunde o LLM. O prompt do skill ensina a TOOL (via `.flow()`); o parser de marcador existe só para capturar stragglers/prompts custom de tenant.
+- **Não duplicar metadados de skill fora do `skills_registry.py`.** `_KNOWN_SKILLS`/`_VALID_HANDOFF_TARGETS`/`all_skill_nodes`/descrições do orchestrator DERIVAM do registry. Editar um set hardcoded = drift de volta ao problema que o registry resolveu.
+- **Não setar `current_owner` para skill fora de `available_skills`** nem deixar de limpá-lo em fim/escalation/pedido finalizado (senão o sticky prende a conversa). A limpeza vive em `context.save_context`.

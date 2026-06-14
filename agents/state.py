@@ -28,6 +28,16 @@ class AgentState(TypedDict, total=False):
     available_skills: list[str]
     retry_count:     int
 
+    # ── Sticky ownership (determinístico — evita re-rodar o orchestrator a cada
+    # turno). `current_owner` é o skill que conduz a conversa; enquanto setado e
+    # sem handoff/escalate/end, o orchestrator pula a classificação por LLM e
+    # reusa o owner. Carregado/persistido pelo context.py (Redis, TTL da sessão).
+    # `conversation_phase` é COSTURA FUTURA (Fase 2 / ConversationType) — campo
+    # presente para evolução, ainda não consumido. Ambos total=False → ausência
+    # = comportamento atual.
+    current_owner:      str | None
+    conversation_phase: str | None
+
     # ── Multi-agent handoff ───────────────────────────────────────────────────
     handoff_to:      str | None          # próximo skill solicitado pelo skill atual
     handoff_count:   int                  # nº de handoffs nesta execução (limite p/ evitar loop)

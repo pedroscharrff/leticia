@@ -48,7 +48,7 @@ def build_graph_for_tenant(cfg: TenantConfig, redis) -> CompiledGraph
 
 ## Invariantes
 
-1. **Skills no grafo == skills_active intersect _KNOWN_SKILLS**. Tentar rotear para skill não compilado quebra o LangGraph.
+1. **Skills no grafo == skills_active intersect _KNOWN_SKILLS**. Tentar rotear para skill não compilado quebra o LangGraph. `_KNOWN_SKILLS`/`all_skill_nodes` agora DERIVAM de `agents/skills_registry.py::SKILLS` (fonte única) — ver SPEC 02.
 2. **`guardrails` sempre tem node**. É safety net global, não depende do plano.
 3. **`safety_guard` sempre tem node**. Faz passthrough quando `inventory.track_stock=OFF`.
 4. **Tenant com 1 skill → fast-path** no orchestrator (pula LLM).
@@ -70,20 +70,38 @@ START → load_context → ingest_media → sentiment_analyzer → orchestrator
 
 `sentiment_analyzer` (`agents/nodes/sentiment_analyzer.py`) é **passthrough quando a capability `intelligence.sentiment_analysis` está OFF** (early-return após 1 leitura cacheada de `is_enabled` — zero custo/latência). Quando ON: classifica o sentimento (Haiku), grava `sentiment`/`sentiment_score`/`sentiment_directive` (este último é injetado como bloco volátil nos skills) e, se `escalate_on_frustration` estiver ligado e o score passar do limiar, seta `escalate=True` (reusa o fluxo de escalação abaixo — NÃO cria caminho novo).
 
-### Fluxo de handoff entre skills
+### Fluxo de handoff entre skills (HÍBRIDO: tool primária + marcador fallback)
 
-Skill emite `[[HANDOFF:vendedor:Dipirona 500mg]]` no fim da resposta:
-1. `_parse_handoff` extrai target + context, **limpa o marker do texto**.
-2. `handoff_router` valida: target em `_VALID_HANDOFF_TARGETS`, em `available_skills`, não é o último skill executado (anti-loop), `handoff_count <= 2`.
-3. Próximo skill recebe `received_handoff=True` via `prev_response` e **complementa** (resposta concatenada).
+Caminho PRIMÁRIO: o skill chama a tool `transferir_para_especialidade(target_skill, context)`.
+O `AgentRuntime` (`agents/runtime.py`) detecta a tool em `tool_calls`, seta
+`state.handoff_to`/`handoff_context` e encerra o turno. O `target_skill` é um
+`Literal` derivado de `allowed_handoffs` (registry) → destino inválido é
+impossível no schema.
 
-### Fluxo de escalation humana
+Caminho FALLBACK (rede de segurança): se o skill emitir `[[HANDOFF:vendedor:...]]`
+em texto, `_parse_handoff` captura e limpa o marcador. Tool vence; marcador é
+fallback. **Em ambos** o `handoff_router` valida: target em
+`_VALID_HANDOFF_TARGETS`, em `available_skills`, não é o último skill (anti-loop),
+`handoff_count <= 2`. O próximo skill recebe `received_handoff=True` via
+`prev_response` e **complementa** (resposta concatenada). NUNCA falha estrito.
 
-Skill emite `[[ESCALATE]]` OU `escalate=True` no state:
-1. `_parse_escalate` extrai e limpa.
-2. `analyst_router` retorna `"escalate"` (prioridade máxima).
-3. `save_context` salva normalmente.
-4. **Worker** (fora do grafo) combina com keyword/order_finalized e dispara `transfer_to_human` + `auto_pause_after_handoff`.
+### Fluxo de escalation humana (HÍBRIDO)
+
+Caminho PRIMÁRIO: skill chama `transferir_para_atendente(reason)` → runtime seta
+`escalate=True`. FALLBACK: `[[ESCALATE]]` em texto → `_parse_escalate`. Depois:
+1. `analyst_router` retorna `"escalate"` (prioridade máxima).
+2. `save_context` salva normalmente (e LIMPA `current_owner`).
+3. **Worker** (fora do grafo) combina com keyword/order_finalized e dispara `transfer_to_human` + `auto_pause_after_handoff`.
+
+Fim de atendimento idem: tool `encerrar_atendimento` OU `[[END]]` → `end_conversation=True`.
+
+### Sticky ownership (orchestrator não roda a cada turno)
+
+Gated por `settings.sticky_ownership_enabled` (default False). Quando ON, o
+orchestrator reusa `state.current_owner` (persistido em Redis por `context.py`)
+e PULA o LLM de classificação, salvo se: owner ausente/inválido, ou a mensagem
+casa com `_should_bypass_sticky` (emergência / pedido de humano). Owner é limpo
+em fim/escalation/pedido finalizado. Reduz custo/latência/misroute mid-conversa.
 
 ### Fluxo de retry do analyst
 
@@ -95,10 +113,8 @@ Skill emite `[[ESCALATE]]` OU `escalate=True` no state:
 
 ### Adicionar skill ao grafo
 
-Em `graph_builder.py::build_graph_for_tenant`:
-1. Import do node + bind via `functools.partial(node_fn, llm_factory=llm_factory)`.
-2. Entrada em `all_skill_nodes = {...}`.
-3. Adicionar em `_KNOWN_SKILLS` em `router.py`.
+1. Adicionar `SkillDefinition` em `agents/skills_registry.py::SKILLS` (fonte única).
+2. `graph_builder.py` resolve nodes via `load_skill_nodes(PLAN_GATED_SKILLS)` e binda `llm_factory` automaticamente — **nenhuma edição de imports/`all_skill_nodes`/`_KNOWN_SKILLS` necessária**.
 
 Os mapas `routing_map`, `handoff_map`, `retry_map` derivam automaticamente de `active_skills`.
 

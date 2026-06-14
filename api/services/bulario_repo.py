@@ -30,15 +30,31 @@ TOP_N_DETAIL = 3
 # Tempo que um cache de query permanece válido sem refetch.
 QUERY_CACHE_MIN_RESULTS = 1
 
+# Similaridade trigram mínima para aceitar um match por nome. O operador `%`
+# do pg_trgm usa o `pg_trgm.similarity_threshold` default (0.30), frouxo demais:
+# "buspirona" casava "espironolactona" (sim=0.30) e, por causa do early-return
+# em get_or_fetch, virava resposta final sem nunca consultar a ANVISA. Subimos o
+# corte para 0.45 — true-positives comuns (typos leves, plurais) passam, mas
+# colisões espúrias de raiz ("...spiron...") não. Ajustável; validar com termos
+# reais antes de mexer. Match por substring exato em principio_ativo é mantido
+# (alta precisão, não depende de threshold).
+MIN_SIMILARITY = 0.45
+
 
 def _normalize(term: str) -> str:
     return " ".join((term or "").lower().split())
 
 
-async def search_local(termo: str, limit: int = 10) -> list[dict]:
+async def search_local(
+    termo: str, limit: int = 10, threshold: float = MIN_SIMILARITY
+) -> list[dict]:
     """
     Busca medicamentos no catálogo local. Combina match exato em
     principio_ativo + similaridade trigram em nome_produto_norm.
+
+    O `nome_produto_norm % $1` mantém o uso do índice GIN trigram (candidatos
+    com sim ≥ 0.30), e o `similarity(...) >= $3` aplica o corte mais estrito
+    por cima — sem isso, colisões fracas (cf. MIN_SIMILARITY) viram resultado.
     """
     norm = _normalize(termo)
     if not norm:
@@ -51,15 +67,46 @@ async def search_local(termo: str, limit: int = 10) -> list[dict]:
                    classes_terapeuticas, mes_ano_vencimento, has_detail,
                    similarity(nome_produto_norm, $1) AS sim
               FROM public.medicamentos_anvisa
-             WHERE nome_produto_norm % $1
+             WHERE (nome_produto_norm % $1 AND similarity(nome_produto_norm, $1) >= $3)
                 OR principio_ativo ILIKE '%' || $1 || '%'
              ORDER BY sim DESC NULLS LAST
              LIMIT $2
             """,
             norm,
             limit,
+            threshold,
         )
     return [dict(r) for r in rows]
+
+
+async def _fetch_rows_filtered(
+    num_processos: list[str], norm: str, threshold: float = MIN_SIMILARITY
+) -> dict[str, dict]:
+    """
+    Carrega linhas por num_processo aplicando o mesmo corte de similaridade do
+    search_local. Usado tanto no cache-hit quanto no pós-ANVISA para garantir
+    que um cache/resultado envenenado (ex.: 'buspirona'→'espironolactona') seja
+    descartado e force refetch em vez de virar resposta. Retorna mapa
+    num_processo → row (só os que passam).
+    """
+    if not num_processos:
+        return {}
+    async with get_db_conn() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT num_processo, nome_produto, principio_ativo,
+                   razao_social, classes_terapeuticas, mes_ano_vencimento,
+                   has_detail
+              FROM public.medicamentos_anvisa
+             WHERE num_processo = ANY($1::text[])
+               AND ((nome_produto_norm % $2 AND similarity(nome_produto_norm, $2) >= $3)
+                    OR principio_ativo ILIKE '%' || $2 || '%')
+            """,
+            num_processos,
+            norm,
+            threshold,
+        )
+    return {r["num_processo"]: dict(r) for r in rows}
 
 
 async def _bump_query_cache_hit(query_norm: str) -> None:
@@ -391,22 +438,12 @@ async def get_or_fetch(
     # 1) Cache de query
     cached_nps = await _get_cached_query(norm)
     if cached_nps:
-        async with get_db_conn() as conn:
-            rows = await conn.fetch(
-                """
-                SELECT num_processo, nome_produto, principio_ativo,
-                       razao_social, classes_terapeuticas, mes_ano_vencimento,
-                       has_detail
-                  FROM public.medicamentos_anvisa
-                 WHERE num_processo = ANY($1::text[])
-                """,
-                cached_nps,
-            )
-        if rows:
+        # Filtra por similaridade: um cache antigo apontando para match espúrio
+        # cai aqui e força refetch em vez de devolver lixo.
+        by_np = await _fetch_rows_filtered(cached_nps, norm)
+        ordered = [by_np[np] for np in cached_nps if np in by_np]
+        if ordered:
             await _bump_query_cache_hit(norm)
-            # Preserva ordem da cache key
-            by_np = {r["num_processo"]: dict(r) for r in rows}
-            ordered = [by_np[np] for np in cached_nps if np in by_np]
             log.info("bulario.cache.hit", termo=norm, n=len(ordered))
             return ordered
 
@@ -434,17 +471,8 @@ async def get_or_fetch(
         if own_client:
             await cli.close()
 
-    # Retorna linhas pós-upsert (agora com detail nos top-N)
-    async with get_db_conn() as conn:
-        rows = await conn.fetch(
-            """
-            SELECT num_processo, nome_produto, principio_ativo,
-                   razao_social, classes_terapeuticas, mes_ano_vencimento,
-                   has_detail
-              FROM public.medicamentos_anvisa
-             WHERE num_processo = ANY($1::text[])
-            """,
-            num_processos,
-        )
-    by_np = {r["num_processo"]: dict(r) for r in rows}
+    # Retorna linhas pós-upsert (agora com detail nos top-N), aplicando o mesmo
+    # corte de similaridade: a busca da ANVISA por nomeProduto também devolve
+    # aproximados, e não queremos que um match fraco vire resposta.
+    by_np = await _fetch_rows_filtered(num_processos, norm)
     return [by_np[np] for np in num_processos if np in by_np]

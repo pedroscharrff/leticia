@@ -20,6 +20,7 @@ export function GlobalNav() {
           <li><button onClick={() => navigate("/dashboard")}>Dashboard</button></li>
           <li><button onClick={() => navigate("/tenants")}>Farmácias</button></li>
           <li><button onClick={() => navigate("/training")}>Treinamentos</button></li>
+          <li><button onClick={() => navigate("/medicamentos")}>Medicamentos</button></li>
           <li><button onClick={() => navigate("/chat-test")}>Chat de Teste</button></li>
           <li><button onClick={() => navigate("/settings")}>Configurações</button></li>
         </ul>

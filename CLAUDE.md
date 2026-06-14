@@ -130,9 +130,8 @@ docker compose logs -f worker  # logs do worker
 
 ### Novo skill (ver SPEC 02 §pontos de extensão)
 - [ ] `agents/nodes/skills/<nome>.py` com `<nome>_node(state, llm_factory)`
-- [ ] Constante `_SYSTEM` no topo (prompt base)
-- [ ] Adicionar em `_KNOWN_SKILLS` (`agents/router.py`) e `_VALID_HANDOFF_TARGETS` (`agents/nodes/skills/_base.py`)
-- [ ] Adicionar em `all_skill_nodes` (`agents/graph_builder.py`)
+- [ ] Constante `_SYSTEM` no topo (prompt base, SEM instruções de marcador — o `.flow()` do PromptBuilder gera isso das tools)
+- [ ] **Adicionar `SkillDefinition` em `agents/skills_registry.py::SKILLS`** — fonte ÚNICA. `_KNOWN_SKILLS` (router), `_VALID_HANDOFF_TARGETS` (_base), `all_skill_nodes` (graph_builder) e descrições do orchestrator DERIVAM daqui. Não edite mais esses 4 lugares à mão.
 - [ ] Migration: INSERT em `public.skill_catalog`
 - [ ] Frontend renderiza automaticamente
 

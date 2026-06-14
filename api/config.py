@@ -104,6 +104,14 @@ class Settings(BaseSettings):
     # Tool-calling loop limits
     skill_max_tool_iterations: int = 5
 
+    # Sticky ownership: quando True, o orchestrator NÃO re-classifica a cada
+    # turno — enquanto a conversa tem dono (current_owner), novas mensagens
+    # voltam ao mesmo skill (economia de custo/latência, menos misroute).
+    # Default False = comportamento histórico (classifica todo turno). Ligar só
+    # após validar no tenant de testes. Emergência/pedido de humano nunca é
+    # interceptado (ver agents/nodes/orchestrator._should_bypass_sticky).
+    sticky_ownership_enabled: bool = False
+
     # Limits
     celery_workers_concurrency: int = 16
     session_ttl_seconds: int = 1800
