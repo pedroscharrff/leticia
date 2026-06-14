@@ -9,6 +9,7 @@ export interface BularioItem {
   razao_social: string | null;
   classes_terapeuticas: string[];
   has_detail: boolean;
+  has_bula: boolean;
 }
 
 export async function listBulario(params: {
@@ -23,6 +24,86 @@ export async function listBulario(params: {
   const qs = search.toString();
   const { data } = await api.get<BularioItem[]>(
     `/admin/medicamentos/bulario${qs ? `?${qs}` : ""}`,
+  );
+  return data;
+}
+
+export interface BularioStats {
+  total: number;
+  com_detalhe: number;
+  com_bula: number;
+}
+
+export async function getBularioStats(): Promise<BularioStats> {
+  const { data } = await api.get<BularioStats>("/admin/medicamentos/bulario/stats");
+  return data;
+}
+
+export interface BularioIngestResult {
+  termo: string;
+  encontrados: number;
+  com_detalhe: number;
+  com_bula: number;
+  itens: BularioItem[];
+  erro: string | null;
+}
+
+/** Consulta manual: busca na ANVISA e insere no cache local. */
+export async function ingestBulario(input: {
+  termo: string;
+  top_n?: number;
+}): Promise<BularioIngestResult> {
+  const { data } = await api.post<BularioIngestResult>(
+    "/admin/medicamentos/bulario/consultar",
+    input,
+  );
+  return data;
+}
+
+export interface BularioBulkResult {
+  total_termos: number;
+  com_resultado: number;
+  sem_resultado: number;
+  com_erro: number;
+  novos_no_cache: number;
+  resultados: BularioIngestResult[];
+}
+
+/** Inserção em massa: vários termos numa tacada. */
+export async function ingestBularioBulk(input: {
+  termos: string[];
+  top_n?: number;
+}): Promise<BularioBulkResult> {
+  const { data } = await api.post<BularioBulkResult>(
+    "/admin/medicamentos/bulario/bulk",
+    input,
+  );
+  return data;
+}
+
+export interface BularioSecao {
+  secao: string;
+  secao_titulo: string | null;
+  conteudo: string;
+  char_count: number;
+}
+
+export interface BularioDetail {
+  num_processo: string;
+  nome_produto: string;
+  nome_comercial: string | null;
+  principio_ativo: string | null;
+  razao_social: string | null;
+  classes_terapeuticas: string[];
+  has_detail: boolean;
+  fetched_at: string | null;
+  detail_fetched_at: string | null;
+  secoes: BularioSecao[];
+}
+
+export async function getBularioDetail(numProcesso: string): Promise<BularioDetail> {
+  const { data } = await api.get<BularioDetail>(
+    `/admin/medicamentos/bulario/${encodeURIComponent(numProcesso)}`,
   );
   return data;
 }

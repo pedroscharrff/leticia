@@ -2,7 +2,10 @@
  * Admin · Medicamentos (superadmin, painel GLOBAL — vale p/ todos os tenants).
  *
  * Duas abas:
- *  • Bulário ANVISA  — somente leitura (cache populado sob demanda pelos agentes).
+ *  • Bulário ANVISA  — cache da ANVISA. Conteúdo não-editável (espelho regulatório),
+ *    mas o superadmin alimenta a base à mão: consulta manual (`ingestBulario`) e
+ *    inserção em massa (`ingestBularioBulk`), ambas reusando o cold path real das
+ *    tools (ANVISA → detalhe → bula). Detalhe/bula por linha via `getBularioDetail`.
  *  • Medicamentos de Referência — guia curado (marca ↔ princípio ativo). As seções
  *    clínicas nascem `pending` e SÓ chegam ao agente quando marcadas `active`.
  *
@@ -22,6 +25,10 @@ import { Spinner } from "../components/Spinner";
 import { Modal } from "../components/Modal";
 import {
   listBulario,
+  getBularioStats,
+  ingestBulario,
+  ingestBularioBulk,
+  getBularioDetail,
   listReferencia,
   getReferencia,
   getReferenciaStats,
@@ -34,6 +41,9 @@ import {
   listConsultas,
   getConsultasStats,
   type BularioItem,
+  type BularioStats,
+  type BularioDetail,
+  type BularioBulkResult,
   type ReferenciaListItem,
   type ReferenciaDetail,
   type ReferenciaStats,
@@ -107,13 +117,24 @@ export function AdminMedicamentos() {
 
 function BularioPanel() {
   const [items, setItems] = useState<BularioItem[]>([]);
+  const [stats, setStats] = useState<BularioStats | null>(null);
   const [loading, setLoading] = useState(true);
   const [q, setQ] = useState("");
+  const [termo, setTermo] = useState("");
+  const [ingesting, setIngesting] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+  const [bulkOpen, setBulkOpen] = useState(false);
+  const [detailNp, setDetailNp] = useState<string | null>(null);
 
   const refresh = async () => {
     setLoading(true);
     try {
-      setItems(await listBulario({ q: q || undefined, limit: 100 }));
+      const [list, st] = await Promise.all([
+        listBulario({ q: q || undefined, limit: 100 }),
+        getBularioStats(),
+      ]);
+      setItems(list);
+      setStats(st);
     } finally {
       setLoading(false);
     }
@@ -121,20 +142,81 @@ function BularioPanel() {
 
   useEffect(() => { void refresh(); /* eslint-disable-next-line */ }, []);
 
+  const handleIngest = async () => {
+    const t = termo.trim();
+    if (t.length < 2) { setMsg("Informe um termo (mín. 2 caracteres)."); return; }
+    setIngesting(true);
+    setMsg(null);
+    try {
+      const res = await ingestBulario({ termo: t });
+      if (res.erro) {
+        setMsg(`Falha ao consultar a ANVISA: ${res.erro}`);
+      } else if (res.encontrados === 0) {
+        setMsg(`Nenhum medicamento encontrado para "${t}".`);
+      } else {
+        setMsg(`✓ ${res.encontrados} medicamento(s) inseridos/atualizados — ${res.com_bula} com bula.`);
+        setTermo("");
+        setQ(t);
+      }
+      await refresh();
+    } catch (e: any) {
+      setMsg(e?.response?.data?.detail ?? "Falha na consulta.");
+    } finally {
+      setIngesting(false);
+    }
+  };
+
   return (
     <section>
       <p className="meds__intro">
-        Catálogo da ANVISA cacheado localmente (somente leitura). É populado sob
-        demanda conforme os agentes consultam o bulário.
+        Catálogo da ANVISA cacheado localmente. Além de ser populado sob demanda
+        pelos agentes, você pode <strong>alimentar a base manualmente</strong>:
+        consulte um termo (busca na ANVISA, baixa detalhe + bula e insere) ou faça
+        uma <strong>inserção em massa</strong> com vários termos de uma vez.
       </p>
+
+      {/* Stats */}
+      <div className="meds__stats">
+        <Stat label="No cache" value={stats?.total ?? "—"} />
+        <Stat label="Com detalhe" value={stats?.com_detalhe ?? "—"} variant="active" />
+        <Stat label="Com bula" value={stats?.com_bula ?? "—"} variant="active" />
+      </div>
+
+      {/* Consulta manual */}
+      <div className="meds__toolbar">
+        <div className="meds__search">
+          <svg width="15" height="15" viewBox="0 0 16 16" fill="none">
+            <circle cx="7" cy="7" r="5" stroke="currentColor" strokeWidth="1.6" />
+            <path d="M11 11l3.5 3.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+          </svg>
+          <input
+            placeholder="Consultar e inserir (ex.: dipirona, losartana)…"
+            value={termo}
+            onChange={(e) => setTermo(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") void handleIngest(); }}
+            disabled={ingesting}
+          />
+        </div>
+        <button className="meds-btn meds-btn--primary" onClick={() => void handleIngest()} disabled={ingesting}>
+          {ingesting ? "Consultando ANVISA…" : "Consultar + inserir"}
+        </button>
+        <button className="meds-btn" onClick={() => setBulkOpen(true)} disabled={ingesting}>
+          Inserção em massa
+        </button>
+      </div>
+      {msg && <div className="meds__intro" style={{ marginTop: -4 }}>{msg}</div>}
+
+      {/* Busca no cache local */}
       <div className="meds__toolbar">
         <SearchBox value={q} onChange={setQ} onSubmit={() => void refresh()}
-          placeholder="Buscar por nome ou princípio ativo…" />
+          placeholder="Filtrar o cache local por nome ou princípio ativo…" />
         <button className="meds-btn" onClick={() => void refresh()}>Filtrar</button>
       </div>
 
       {loading ? <Spinner size={28} /> : items.length === 0 ? (
-        <div className="meds__empty">Nenhum medicamento no cache.</div>
+        <div className="meds__empty">
+          Nenhum medicamento no cache. Use a consulta manual acima para começar a alimentar a base.
+        </div>
       ) : (
         <div className="meds__table-wrap">
           <table className="meds-table">
@@ -144,24 +226,179 @@ function BularioPanel() {
                 <th>Princípio ativo</th>
                 <th>Fabricante</th>
                 <th>Classe</th>
+                <th>Detalhe</th>
                 <th>Bula</th>
               </tr>
             </thead>
             <tbody>
               {items.map((m) => (
-                <tr key={m.num_processo}>
+                <tr key={m.num_processo} onDoubleClick={() => setDetailNp(m.num_processo)}
+                    style={{ cursor: "pointer" }} title="Duplo clique para ver detalhe + bula">
                   <td className="meds-table__pa">{m.nome_produto}</td>
                   <td>{m.principio_ativo ?? "—"}</td>
                   <td className="meds-table__muted">{m.razao_social ?? "—"}</td>
                   <td className="meds-table__muted">{m.classes_terapeuticas.slice(0, 2).join(", ") || "—"}</td>
                   <td>{m.has_detail ? "✓" : "—"}</td>
+                  <td>{m.has_bula ? "✓" : "—"}</td>
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
       )}
+
+      {bulkOpen && (
+        <BularioBulkModal
+          onClose={() => setBulkOpen(false)}
+          onDone={() => { void refresh(); }}
+        />
+      )}
+      {detailNp && (
+        <BularioDetailModal numProcesso={detailNp} onClose={() => setDetailNp(null)} />
+      )}
     </section>
+  );
+}
+
+function BularioBulkModal({
+  onClose, onDone,
+}: { onClose: () => void; onDone: () => void }) {
+  const [text, setText] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<BularioBulkResult | null>(null);
+
+  const termos = text
+    .split(/[\n,;]+/)
+    .map((t) => t.trim())
+    .filter(Boolean);
+
+  const submit = async () => {
+    if (termos.length === 0) return;
+    setBusy(true);
+    try {
+      const res = await ingestBularioBulk({ termos: termos.slice(0, 100) });
+      setResult(res);
+      onDone();
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Modal open onClose={onClose} title="Inserção em massa — Bulário ANVISA" width={620}>
+      <div className="meds-edit" style={{ minWidth: 420 }}>
+        {!result ? (
+          <>
+            <p className="meds-edit__hint">
+              Cole um termo por linha (ou separados por vírgula). Cada termo é
+              consultado na ANVISA e inserido no cache local, com detalhe e bula.
+              Máx. 100 termos. Pode levar alguns segundos por termo.
+            </p>
+            <Field label={`Termos (${termos.length})`}>
+              <textarea
+                value={text}
+                onChange={(e) => setText(e.target.value)}
+                placeholder={"dipirona\nlosartana\nomeprazol\nparacetamol"}
+                rows={10}
+                disabled={busy}
+              />
+            </Field>
+            <div className="meds-edit__footer">
+              <button className="meds-btn" onClick={onClose} disabled={busy}>Cancelar</button>
+              <button className="meds-btn meds-btn--primary" onClick={() => void submit()}
+                disabled={busy || termos.length === 0}>
+                {busy ? `Inserindo ${termos.length} termo(s)…` : `Inserir ${termos.length} termo(s)`}
+              </button>
+            </div>
+          </>
+        ) : (
+          <>
+            <div className="meds__stats">
+              <Stat label="Termos" value={result.total_termos} />
+              <Stat label="Com resultado" value={result.com_resultado} variant="active" />
+              <Stat label="Sem resultado" value={result.sem_resultado} variant="pending" />
+              <Stat label="Com erro" value={result.com_erro} variant="disabled" />
+            </div>
+            <p className="meds-edit__hint">
+              {result.novos_no_cache} novo(s) medicamento(s) adicionados ao cache.
+            </p>
+            <div className="meds__table-wrap" style={{ maxHeight: 280, overflowY: "auto" }}>
+              <table className="meds-table">
+                <thead>
+                  <tr><th>Termo</th><th>Encontrados</th><th>Com bula</th><th>Status</th></tr>
+                </thead>
+                <tbody>
+                  {result.resultados.map((r) => (
+                    <tr key={r.termo}>
+                      <td className="meds-table__pa">{r.termo}</td>
+                      <td>{r.encontrados}</td>
+                      <td>{r.com_bula}</td>
+                      <td>
+                        {r.erro ? (
+                          <span className="meds-chip meds-chip--disabled" title={r.erro}>Erro</span>
+                        ) : r.encontrados > 0 ? (
+                          <span className="meds-chip meds-chip--active">OK</span>
+                        ) : (
+                          <span className="meds-chip meds-chip--pending">Sem match</span>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div className="meds-edit__footer">
+              <button className="meds-btn meds-btn--primary" onClick={onClose}>Fechar</button>
+            </div>
+          </>
+        )}
+      </div>
+    </Modal>
+  );
+}
+
+function BularioDetailModal({
+  numProcesso, onClose,
+}: { numProcesso: string; onClose: () => void }) {
+  const [detail, setDetail] = useState<BularioDetail | null>(null);
+
+  useEffect(() => {
+    void (async () => setDetail(await getBularioDetail(numProcesso)))();
+  }, [numProcesso]);
+
+  return (
+    <Modal open onClose={onClose} title={detail?.nome_produto ?? "Carregando…"} width={720}>
+      {!detail ? <Spinner size={24} /> : (
+        <div className="meds-edit">
+          <div className="meds-edit__grid">
+            <Field label="Princípio ativo"><input value={detail.principio_ativo ?? "—"} readOnly /></Field>
+            <Field label="Nome comercial"><input value={detail.nome_comercial ?? "—"} readOnly /></Field>
+            <Field label="Fabricante"><input value={detail.razao_social ?? "—"} readOnly /></Field>
+            <Field label="Classes"><input value={detail.classes_terapeuticas.join(", ") || "—"} readOnly /></Field>
+          </div>
+          <hr className="meds-edit__divider" />
+          <div className="meds-edit__section-head">
+            <h4>Seções de bula <span className="meds-table__muted">({detail.secoes.length})</span></h4>
+          </div>
+          {detail.secoes.length === 0 ? (
+            <p className="meds-edit__hint">
+              Sem seções de bula extraídas. A ANVISA pode não ter fornecido PDF, ou
+              o detalhe ainda não foi enriquecido — reconsulte o termo no painel.
+            </p>
+          ) : (
+            detail.secoes.map((s) => (
+              <div key={s.secao} className="meds-sec">
+                <div className="meds-sec__head">
+                  <strong>{s.secao_titulo || SECAO_LABEL[s.secao] || s.secao}</strong>
+                  <span className="meds-sec__rev">{s.char_count} caracteres</span>
+                </div>
+                <textarea value={s.conteudo} readOnly rows={5} />
+              </div>
+            ))
+          )}
+        </div>
+      )}
+    </Modal>
   );
 }
 

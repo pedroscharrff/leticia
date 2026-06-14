@@ -90,6 +90,18 @@ ANVISA. `search_local` e `_fetch_rows_filtered` aplicam o corte explícito; abai
 dele o resultado é descartado (força refetch). NÃO baixar o threshold sem validar
 true-positives (`dipirona`, `losartana`, `paracetamol`).
 
+**Alimentação manual (superadmin):** além do cold path disparado pelos agentes, o
+painel `/admin/medicamentos` aba **Bulário ANVISA** permite popular o cache à mão:
+- `POST /admin/medicamentos/bulario/consultar` `{termo, top_n}` — consulta manual
+  de 1 termo (reusa `bulario_repo.get_or_fetch` com `AnvisaClient` próprio).
+- `POST /admin/medicamentos/bulario/bulk` `{termos[], top_n}` — inserção em massa
+  (até 100 termos, dedup, **sequencial** com 1 `AnvisaClient` compartilhado — a API
+  da ANVISA é throttled, paralelismo agressivo toma rate-limit).
+- `GET /admin/medicamentos/bulario/stats` — total/com-detalhe/com-bula (header).
+- `GET /admin/medicamentos/bulario/{num_processo}` — detalhe + seções de bula
+  extraídas (conferência). Read-only: o bulário não é editável (é cache da ANVISA),
+  diferente da base de referência que é curada.
+
 ### `referencia.py` — Guia de medicamentos de referência (curado, global)
 
 | Tool | Args | Retorna |
