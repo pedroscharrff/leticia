@@ -317,6 +317,21 @@
 .meds-edit__footer { display: flex; justify-content: flex-end; gap: 8px; }
 .meds-err { color: var(--color-danger); font-size: var(--text-caption); }
 
+/* ── Consultas: select da toolbar + chips de seção ────────────────────────── */
+.meds-select {
+  appearance: none;
+  padding: 8px 12px;
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-caption);
+  font-family: var(--font-text);
+  color: var(--color-ink);
+  background: var(--color-canvas);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.meds-secao-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+
 @media (max-width: 720px) {
   .meds__stats { grid-template-columns: repeat(2, 1fr); }
   .meds-edit { min-width: auto; }

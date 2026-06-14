@@ -128,6 +128,30 @@ class ReferenciaStats(BaseModel):
     secoes_disabled: int
 
 
+class ConsultaOut(BaseModel):
+    id: int
+    tenant_id: str | None
+    session_id: str | None
+    skill: str | None
+    termo: str
+    encontrado: bool
+    num_resultados: int
+    medicamentos: list[dict] = Field(default_factory=list)
+    secoes: list[str] = Field(default_factory=list)
+    created_at: str
+
+
+class ConsultasStats(BaseModel):
+    total: int
+    encontrados: int
+    nao_encontrados: int
+    # encontraram o medicamento mas NENHUMA seção ativa foi devolvida
+    # (sinal de curadoria pendente para aquele medicamento)
+    sem_secao_ativa: int
+    # slug da seção → nº de consultas que a devolveram (consumo real por seção)
+    por_secao: dict[str, int] = Field(default_factory=dict)
+
+
 # ── Bulário ANVISA (read-only) ──────────────────────────────────────────────
 
 @admin_router.get("/bulario", response_model=list[BularioOut])
@@ -255,6 +279,115 @@ async def referencia_stats(_admin: AdminUser) -> ReferenciaStats:
         secoes_pending=row["pending"] or 0,
         secoes_disabled=row["disabled"] or 0,
     )
+
+
+# ── Consultas (log de uso da base pelo agente) ──────────────────────────────
+# IMPORTANTE: declarar ANTES de `/referencia/{ref_id}` — "consultas" casaria
+# como {ref_id:int} e devolveria 422 (mesma pegadinha de `/referencia/stats`).
+
+@admin_router.get("/referencia/consultas/stats", response_model=ConsultasStats)
+async def consultas_stats(
+    _admin: AdminUser,
+    tenant_id: str | None = Query(None, description="filtra por farmácia (UUID)"),
+) -> ConsultasStats:
+    """Resumo do consumo da base de referência pelos agentes."""
+    where = []
+    params: list = []
+    if tenant_id:
+        params.append(tenant_id)
+        where.append(f"tenant_id = ${len(params)}::uuid")
+    where_sql = ("WHERE " + " AND ".join(where)) if where else ""
+    async with get_db_conn() as conn:
+        row = await conn.fetchrow(
+            f"""
+            SELECT count(*) AS total,
+                   count(*) FILTER (WHERE encontrado) AS encontrados,
+                   count(*) FILTER (WHERE NOT encontrado) AS nao_encontrados,
+                   count(*) FILTER (
+                       WHERE encontrado AND jsonb_array_length(secoes) = 0
+                   ) AS sem_secao_ativa
+              FROM public.medicamentos_referencia_consultas
+            {where_sql}
+            """,
+            *params,
+        )
+        sec_rows = await conn.fetch(
+            f"""
+            SELECT s.slug AS slug, count(*) AS n
+              FROM public.medicamentos_referencia_consultas c
+              CROSS JOIN LATERAL jsonb_array_elements_text(c.secoes) AS s(slug)
+            {where_sql}
+             GROUP BY s.slug
+             ORDER BY n DESC
+            """,
+            *params,
+        )
+    return ConsultasStats(
+        total=row["total"] or 0,
+        encontrados=row["encontrados"] or 0,
+        nao_encontrados=row["nao_encontrados"] or 0,
+        sem_secao_ativa=row["sem_secao_ativa"] or 0,
+        por_secao={r["slug"]: r["n"] for r in sec_rows},
+    )
+
+
+@admin_router.get("/referencia/consultas", response_model=list[ConsultaOut])
+async def list_consultas(
+    _admin: AdminUser,
+    q: str | None = Query(None, description="busca no termo consultado"),
+    tenant_id: str | None = Query(None, description="filtra por farmácia (UUID)"),
+    skill: str | None = Query(None, description="farmaceutico | principio_ativo | genericos"),
+    encontrado: bool | None = Query(None, description="só com/sem match"),
+    secao: str | None = Query(None, description="só consultas que devolveram esta seção (slug)"),
+    limit: int = Query(100, ge=1, le=1000),
+    offset: int = Query(0, ge=0),
+) -> list[ConsultaOut]:
+    where: list[str] = []
+    params: list = []
+    if q:
+        params.append(_normalize(q))
+        where.append(f"lower(termo) ILIKE '%' || ${len(params)} || '%'")
+    if tenant_id:
+        params.append(tenant_id)
+        where.append(f"tenant_id = ${len(params)}::uuid")
+    if skill:
+        params.append(skill)
+        where.append(f"skill = ${len(params)}")
+    if encontrado is not None:
+        params.append(encontrado)
+        where.append(f"encontrado = ${len(params)}")
+    if secao:
+        params.append(secao)
+        where.append(f"secoes ? ${len(params)}")
+    where_sql = ("WHERE " + " AND ".join(where)) if where else ""
+    params.extend([limit, offset])
+    async with get_db_conn() as conn:
+        rows = await conn.fetch(
+            f"""
+            SELECT id, tenant_id, session_id, skill, termo, encontrado,
+                   num_resultados, medicamentos, secoes, created_at
+              FROM public.medicamentos_referencia_consultas
+            {where_sql}
+             ORDER BY created_at DESC
+             LIMIT ${len(params) - 1} OFFSET ${len(params)}
+            """,
+            *params,
+        )
+    return [
+        ConsultaOut(
+            id=r["id"],
+            tenant_id=str(r["tenant_id"]) if r["tenant_id"] else None,
+            session_id=r["session_id"],
+            skill=r["skill"],
+            termo=r["termo"],
+            encontrado=r["encontrado"],
+            num_resultados=r["num_resultados"],
+            medicamentos=list(r["medicamentos"] or []),
+            secoes=list(r["secoes"] or []),
+            created_at=r["created_at"].isoformat(),
+        )
+        for r in rows
+    ]
 
 
 @admin_router.get("/referencia/{ref_id}", response_model=ReferenciaDetailOut)

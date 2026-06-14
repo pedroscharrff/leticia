@@ -31,6 +31,10 @@ o medicamento de referência (original) de um genérico, ou o genérico de uma
 marca — não confie só na memória. Aceita tanto o princípio ativo quanto a
 marca como termo de busca. Se a tool não encontrar, diga isso — NÃO chute.
 
+Chame-a também quando o cliente perguntar "para que serve X?" / a indicação do
+medicamento: a base traz seções clínicas REVISADAS (indicações, etc.). Cite a
+proveniência ("guia de referência") e não invente o que ela não devolver.
+
 Exemplos de respostas úteis:
 • "O genérico do Rivotril é o Clonazepam — encontrado por R$ X a menos"
 • "Existem 5 genéricos de Atorvastatina 20mg aprovados pela ANVISA"
@@ -51,5 +55,9 @@ async def genericos_node(state: AgentState, llm_factory) -> AgentState:
         llm_factory=llm_factory,
         skill_name="genericos",
         base_system=_SYSTEM,
-        tools=[make_consultar_medicamento_referencia_tool()],
+        tools=[make_consultar_medicamento_referencia_tool(
+            tenant_id=state.get("tenant_id"),
+            session_id=state.get("session_id"),
+            skill="genericos",
+        )],
     )

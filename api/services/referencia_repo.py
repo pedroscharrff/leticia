@@ -91,3 +91,60 @@ async def search_referencia(
         d["secoes"] = secoes
         out.append(d)
     return out
+
+
+async def log_consulta(
+    *,
+    termo: str,
+    rows: list[dict],
+    tenant_id: str | None = None,
+    session_id: str | None = None,
+    skill: str | None = None,
+) -> None:
+    """
+    Grava UMA linha de telemetria por consulta à base de referência (tool
+    `consultar_medicamento_referencia`). Alimenta o painel "Consultas".
+
+    Defensivo por contrato: telemetria NUNCA pode quebrar o turno do agente —
+    qualquer falha é logada e engolida. Recebe as `rows` já devolvidas por
+    `search_referencia`, então deriva (medicamentos casados, seções ativas
+    consumidas) sem re-consultar o banco.
+
+    JSONB: passamos listas Python direto — o codec de db/postgres.py já encoda;
+    NÃO usar json.dumps aqui (evita double-encoding, cf. jsonb-double-encoding).
+    """
+    try:
+        meds = [
+            {
+                "principio_ativo": r.get("principio_ativo"),
+                "nome_referencia": r.get("nome_referencia"),
+            }
+            for r in rows
+        ]
+        # Slugs únicos de seções ativas efetivamente devolvidas (consumidas).
+        secoes: list[str] = []
+        for r in rows:
+            for s in (r.get("secoes") or []):
+                slug = s.get("secao")
+                if slug and slug not in secoes:
+                    secoes.append(slug)
+
+        async with get_db_conn() as conn:
+            await conn.execute(
+                """
+                INSERT INTO public.medicamentos_referencia_consultas
+                    (tenant_id, session_id, skill, termo, encontrado,
+                     num_resultados, medicamentos, secoes)
+                VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8)
+                """,
+                tenant_id,
+                session_id,
+                skill,
+                termo,
+                bool(rows),
+                len(rows),
+                meds,
+                secoes,
+            )
+    except Exception as exc:  # noqa: BLE001
+        log.warning("referencia.log_consulta.failed", termo=termo, exc=str(exc))
