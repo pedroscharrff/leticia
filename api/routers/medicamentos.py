@@ -134,7 +134,7 @@ class ReferenciaStats(BaseModel):
 async def list_bulario(
     _admin: AdminUser,
     q: str | None = Query(None, description="busca por nome ou princípio ativo"),
-    limit: int = Query(50, ge=1, le=200),
+    limit: int = Query(50, ge=1, le=1000),
     offset: int = Query(0, ge=0),
 ) -> list[BularioOut]:
     norm = _normalize(q) if q else None
@@ -183,7 +183,7 @@ async def list_referencia(
     _admin: AdminUser,
     q: str | None = Query(None, description="busca por princípio ativo ou marca"),
     pendentes: bool = Query(False, description="só os que têm seção pendente"),
-    limit: int = Query(50, ge=1, le=200),
+    limit: int = Query(50, ge=1, le=1000),
     offset: int = Query(0, ge=0),
 ) -> list[ReferenciaListOut]:
     norm = _normalize(q) if q else None
