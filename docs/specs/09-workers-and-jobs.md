@@ -183,6 +183,21 @@ retornar `int` (qtd de mídias enviadas) justamente pra isso — não voltar a `
 Em `summary_first` não há atraso: texto-antes-imagem já cai na ordem desejada
 naturalmente.
 
+**`post_handoff_media_delay_seconds` é editável no portal** (campo numérico, 0–30s,
+passo 0,5, default 2,5). Aparece só quando `post_handoff_order = "offers_first"`:
+- **Broker** (`tenant_integrations.handoff_config`): `PortalBroker.tsx` — state
+  `postHandoffMediaDelay`, salvo via `saveFlow` no `handoff_config`.
+- **Webhook nativo** (`tenant_channels.handoff_config`): `PortalCanais.tsx` — padrão
+  `cfg`/`set`, salvo via `updateChannel`.
+- Tipo em `frontend/src/api/{portal,broker}.ts::HandoffConfig`.
+
+⚠️ Histórico: o worker lia esse campo desde a v7, mas ele **não existia no tipo
+`HandoffConfig` nem nos forms** — ficava órfão, travado no default 2,5s, sem como
+o tenant ajustar (o ajuste é a primeira linha de defesa quando o resumo ultrapassa
+a imagem). Plugado no front em 2026-06-14. **É ajuste de timing, não garantia**: a
+corrida de transportes (mídia via API do canal × resumo via `reply_url`) continua
+existindo — para eliminá-la de vez, mandar o resumo pelo MESMO transporte da mídia.
+
 ### Finalização determinística do atendimento (closed_at)
 
 O status "encerrado" do portal (inbox em `routers/conversations.py`) vem de `conversation_state.closed_at`. Regras:

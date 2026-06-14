@@ -107,6 +107,9 @@ export interface HandoffConfig {
   transfer_message?: string;
   trigger_keywords?: string[];
   post_handoff_order?: "summary_first" | "offers_first";
+  /** Só em offers_first: segundos de espera entre a oferta com mídia e o
+   *  resumo, pra dar tempo da imagem chegar primeiro no WhatsApp. Default 2.5. */
+  post_handoff_media_delay_seconds?: number;
 }
 
 export interface Channel {

@@ -1174,6 +1174,9 @@ function HandoffTab({ integration, onSaved }: { integration: Integration; onSave
   const [postHandoffOrder, setPostHandoffOrder] = useState<"summary_first" | "offers_first">(
     cfg.post_handoff_order === "offers_first" ? "offers_first" : "summary_first"
   );
+  const [postHandoffMediaDelay, setPostHandoffMediaDelay] = useState<number>(
+    cfg.post_handoff_media_delay_seconds ?? 2.5
+  );
 
   // ── Pausa da IA após handoff / resposta humana ────────────────────────────
   const [pauseMin, setPauseMin] = useState<number>(integration.handoff_pause_minutes ?? 240);
@@ -1397,6 +1400,7 @@ function HandoffTab({ integration, onSaved }: { integration: Integration; onSave
       : DEFAULT_TRIGGER_KEYWORDS
     ).join(", "));
     setPostHandoffOrder(c.post_handoff_order === "offers_first" ? "offers_first" : "summary_first");
+    setPostHandoffMediaDelay(c.post_handoff_media_delay_seconds ?? 2.5);
     setPauseMin(integration.handoff_pause_minutes ?? 240);
     const h = integration.human_handoff_detection || {};
     setHhdEnabled(!!h.enabled);
@@ -1442,6 +1446,7 @@ function HandoffTab({ integration, onSaved }: { integration: Integration; onSave
       transfer_message: transferMessage.trim(),
       trigger_keywords: parseKeywords(),
       post_handoff_order: postHandoffOrder,
+      post_handoff_media_delay_seconds: postHandoffMediaDelay,
     };
     // Coerção do valor esperado no match de saída: "true"/"false"/número/string
     const equalsRaw = hhdOutEquals.trim();
@@ -1652,6 +1657,27 @@ function HandoffTab({ integration, onSaved }: { integration: Integration; onSave
             bloco só é enviado se a respectiva funcionalidade estiver ativa.
           </small>
         </label>
+
+        {postHandoffOrder === "offers_first" && (
+          <label className="broker-field">
+            <span>Atraso antes do resumo quando a oferta tem imagem (segundos)</span>
+            <input
+              type="number"
+              min={0}
+              max={30}
+              step={0.5}
+              value={postHandoffMediaDelay}
+              onChange={(e) => setPostHandoffMediaDelay(
+                Math.max(0, Math.min(30, parseFloat(e.target.value || "0") || 0)))}
+            />
+            <small style={{ color: "#86868b", fontSize: 12 }}>
+              No modo <strong>Ofertas → Resumo</strong>, a imagem da oferta sai pela API do
+              canal e chega mais devagar que o texto do resumo. Este intervalo segura o resumo
+              para a imagem aparecer primeiro (padrão 2,5s). Se o resumo ainda chegar antes da
+              imagem, aumente. Use <strong>0</strong> para desativar.
+            </small>
+          </label>
+        )}
 
         <label className="broker-field">
           <span>Tempo que a IA fica pausada após a transferência / resposta humana (minutos)</span>
