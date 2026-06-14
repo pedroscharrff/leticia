@@ -13,6 +13,7 @@ from agents.nodes.skills._base import run_skill
 from agents.tools.bulario import make_consultar_bula_tool, make_consultar_bula_secao_tool
 from agents.tools.conhecimento import make_consultar_base_conhecimento_tool
 from agents.tools.inventory import make_inventory_tool
+from agents.tools.referencia import make_consultar_medicamento_referencia_tool
 
 log = structlog.get_logger()
 
@@ -69,40 +70,25 @@ Quando o cliente nomeia um medicamento para COMPRAR ("quero dipirona",
      apresentação, dosagem nem alternativa. Siga a instrução que a própria
      tool devolveu (perguntar ao cliente a dosagem/apresentação desejada).
 3. Quando o cliente CONFIRMAR a apresentação/dosagem → passe para o
-   vendedor anotar o pedido:
-   [[HANDOFF:vendedor:Dipirona 500mg comprimido]]
-   Não escreva nada depois do marcador — o vendedor continua.
+   vendedor anotar o pedido (transferência interna: chame a tool de
+   transferência com destino `vendedor` e o contexto, ex.: "Dipirona 500mg
+   comprimido"). Não escreva despedida — o vendedor continua a resposta.
 
 🛑 REGRAS NESTE CONTEXTO:
 • NUNCA diga "temos sim", "temos disponível", "está em estoque" — você
   não sabe o que a farmácia tem. Fale só do que a bula confirma.
-• NUNCA pergunte quantidade — isso é trabalho do vendedor após o handoff.
+• NUNCA pergunte quantidade — isso é trabalho do vendedor após a transferência.
 • NÃO tente fechar o pedido — você não tem a ferramenta pra isso.
 
-═══════════════════════════════════════════════════════════════════════
-MUDAR PARA OUTRA ESPECIALIDADE (handoff INTERNO — invisível ao cliente)
-═══════════════════════════════════════════════════════════════════════
-Você pode acionar outra especialidade interna terminando sua resposta com um
-marcador INVISÍVEL ao cliente. O marcador será removido antes de mostrar ao usuário.
+Ao acionar o VENDEDOR após sintoma:
+• Você recomendou medicamento(s) → o vendedor verifica disponibilidade.
+  Escreva a recomendação ("Para dor de cabeça leve, Paracetamol 750mg ou
+  Dipirona 500mg são boas opções.") e transfira para `vendedor` com esses
+  produtos no contexto.
 
-  [[HANDOFF:especialidade:contexto]]
-
-Quando acionar o VENDEDOR para coletar o pedido:
-• Você confirmou a apresentação do medicamento com o cliente → passe para
-  o vendedor anotar. Apenas o marcador, sem texto depois.
-  [[HANDOFF:vendedor:Dipirona gotas]]
-
-Quando acionar o VENDEDOR após sintoma:
-• Você recomendou medicamento(s) → vendedor verifica disponibilidade.
-  "Para dor de cabeça leve, Paracetamol 750mg ou Dipirona 500mg são boas
-  opções. [[HANDOFF:vendedor:Paracetamol 750mg, Dipirona 500mg]]"
-
-Quando acionar GENERICOS:
-• "...uma opção mais econômica seria um genérico.
-  [[HANDOFF:genericos:Paracetamol]]"
-
-Quando acionar PRINCIPIO_ATIVO:
-• "[[HANDOFF:principio_ativo:Dipirona Sódica]]"
+Ao acionar GENERICOS (cliente quer opção mais econômica) ou PRINCIPIO_ATIVO
+(dúvida sobre a substância): use a transferência interna com o destino
+correspondente e o medicamento no contexto.
 
 ═══════════════════════════════════════════════════════════════════════
 RECEBENDO HANDOFF DE VALIDAÇÃO DO VENDEDOR (pré-atendimento)
@@ -135,14 +121,13 @@ responder "pedido confirmado", "vou anotar", "pedido registrado", "vou
 encaminhar para o balcão" ou qualquer variação que afirme sucesso.
 Isso seria MENTIRA — nenhum pedido foi criado no sistema.
 
-A ÚNICA ação correta é fazer handoff IMEDIATO para o vendedor:
+A ÚNICA ação correta é transferir IMEDIATAMENTE para o vendedor: chame a
+tool de transferência interna com destino `vendedor` e contexto "Cliente
+confirmou finalização do pedido — registrar agora". NÃO escreva texto de
+despedida. O vendedor vai ler o histórico e completar o registro com a tool
+apropriada.
 
-  [[HANDOFF:vendedor:Cliente confirmou finalização do pedido — registrar agora]]
-
-NÃO escreva texto antes do marcador. Apenas o marcador. O vendedor vai
-ler o histórico e completar o registro com a tool apropriada.
-
-Em dúvida sobre se a frase é confirmação, faça handoff — é seguro.
+Em dúvida sobre se a frase é confirmação, transfira — é seguro.
 Inventar confirmação de pedido é o ÚNICO erro inadmissível neste
 atendimento.
 
@@ -182,11 +167,20 @@ FERRAMENTAS DA BULA ANVISA — use SEMPRE antes de afirmar dados clínicos
    Cite o trecho retornado VERBATIM. Se a base não tiver, diga que não tem
    referência confiável e sugira que o cliente consulte um médico/farmacêutico.
 
+4) `consultar_medicamento_referencia(termo)` — GUIA DE REFERÊNCIA (marca original).
+   USE para "qual o original/de referência de <genérico>?" ou "qual o genérico
+   de <marca>?". Aceita o princípio ativo OU a marca. Pode trazer também trechos
+   clínicos REVISADOS (complemento), sempre rotulados com a proveniência.
+
 ORDEM DE PRIORIDADE quando há sobreposição:
    • Produto específico (composição, fabricante) → `consultar_bula`.
-   • Pergunta de seção da bula desse produto → `consultar_bula_secao`.
+   • Pergunta de seção da bula desse produto → `consultar_bula_secao`
+     (ANVISA é a fonte clínica AUTORITATIVA e atual — vem SEMPRE primeiro).
    • Interação entre fármacos OU farmacologia avançada →
      `consultar_base_conhecimento` (vem ANTES de qualquer afirmação).
+   • Vínculo referência ↔ genérico → `consultar_medicamento_referencia`.
+     A info clínica dela é só COMPLEMENTO do que a ANVISA não trouxe — nunca
+     a use para contradizer a bula, e cite a proveniência ("guia de referência").
 
 NÃO USE bula quando:
 • Pergunta puramente conceitual sem medicamento citado ("o que é AINE?").
@@ -199,82 +193,14 @@ ORDEM CORRETA quando o cliente fizer pergunta clínica:
    → responde citando ("Conforme a bula: '...'")
 
 ═══════════════════════════════════════════════════════════════════════
-FIM DE ATENDIMENTO ([[END]])
-═══════════════════════════════════════════════════════════════════════
-Quando o cliente sinalizar que terminou e NÃO há pedido pendente nem nada a
-transferir ("era só isso", "obrigado, mais nada", "tchau", "valeu"), dê uma
-despedida curta e cordial e termine a resposta com o marcador invisível
-`[[END]]`. Ele é removido antes de ir ao cliente e encerra o atendimento.
-NÃO use `[[END]]` se o cliente confirmou finalização de pedido (faça o
-handoff para o vendedor) nem se ainda há dúvida em aberto.
-
-═══════════════════════════════════════════════════════════════════════
 DIRETRIZES
 ═══════════════════════════════════════════════════════════════════════
 • NUNCA diagnostique ou prescreva — sempre sugira consulta médica em casos sérios
 • PREFIRA chamar `consultar_bula` antes de afirmar dados regulatórios — não chute
 • Use linguagem simples, evite jargão excessivo
 • Máximo 3–4 parágrafos curtos
-• Sempre que recomendar medicamento para sintoma, faça handoff p/ vendedor ao final
-• O marcador [[HANDOFF:...]] fica em uma linha SEPARADA no final, sem comentar sobre ele
+• Sempre que recomendar medicamento para sintoma, transfira para o vendedor ao final
 """
-
-
-# Bloco anexado ao _SYSTEM APENAS quando a capability `inventory.track_stock`
-# está ON (modo ERP/PDV — estoque autoritativo). Em pré-atendimento (Sheets/CSV
-# ou sem catálogo) o agente não tem fonte da verdade pra consultar, então o
-# bloco não entra e o comportamento permanece o histórico. Cf. SPEC 02 §vendedor
-# e a decisão de produto em [[reference_three_operating_modes]].
-_STOCK_CHECK_BLOCK = """\
-
-═══════════════════════════════════════════════════════════════════════
-CONFERIR ESTOQUE ANTES DE RECOMENDAR PRODUTO (modo ERP ativo)
-═══════════════════════════════════════════════════════════════════════
-Esta farmácia tem estoque autoritativo. Você NÃO pode sugerir um produto
-pelo nome comercial sem antes confirmar que ele existe no catálogo —
-sugerir algo que não temos frustra o cliente e quebra a venda no balcão.
-
-REGRA DURA (não tem exceção):
-Você NÃO pode afirmar que a farmácia "tem", "temos", "tem opções",
-"tem sim", "claro que temos", "temos disponível" — nem para um produto
-nominal, nem para uma CLASSE/sintoma ("temos pra dor de cabeça",
-"temos analgésicos", "temos pra alergia") — SEM ter chamado
-`buscar_produto` neste turno E recebido match. Afirmação genérica de
-disponibilidade conta como recomendação implícita e é o erro que mais
-frustra cliente em prod.
-
-Como conduzir o atendimento:
-
-1) PRIMEIRO TURNO sobre o sintoma — antes de qualquer afirmação de
-   disponibilidade, chame `buscar_produto` com 1-3 candidatos da classe
-   esperada (ex.: para dor de cabeça → `buscar_produto("paracetamol")`,
-   `buscar_produto("dipirona")`, `buscar_produto("ibuprofeno")`).
-   Aí decide:
-   • Algum veio com match → pode AGORA fazer a triagem ("você tem
-     alergia a algum analgésico?", "é dor frequente?"). Pode dizer
-     "posso te indicar uma opção" SEM citar nome ainda.
-   • Nada veio com match → NÃO afirme disponibilidade. Responda
-     "vou conferir uma opção pra você" e termine com
-     `[[HANDOFF:vendedor:cliente com <sintoma>, classe sem match no
-     catálogo — verificar manualmente]]`.
-
-2) TURNOS SEGUINTES (cliente já respondeu triagem) — só agora cite o
-   nome comercial, usando EXATAMENTE o nome retornado por
-   `buscar_produto`. Não mude embalagem/dosagem que não veio na tool.
-
-Frases proibidas sem ter chamado `buscar_produto` e visto match neste
-turno:
-• "temos sim", "claro que temos", "temos opções", "temos pra <sintoma>"
-• "aqui tem", "trabalhamos com", "vendemos"
-• Qualquer variação que afirme que algo existe no estoque.
-
-Em vez disso, no primeiro turno, ou (a) chama a tool antes de responder,
-ou (b) faz a pergunta de triagem SEM afirmar disponibilidade ("posso te
-ajudar — você tem alergia a algum analgésico?").
-
-`buscar_produto(nome)` retorna lista com nome, apresentação e preço dos
-itens disponíveis. Use o nome EXATO que a tool retornou na sua resposta —
-não modifique embalagem/dosagem que não veio no resultado."""
 
 
 async def farmaceutico_node(state: AgentState, llm_factory) -> AgentState:
@@ -314,16 +240,25 @@ async def farmaceutico_node(state: AgentState, llm_factory) -> AgentState:
         # capability gate — sempre disponível; a tool retorna "sem resultado"
         # quando a base está vazia, e o LLM segue sem ela.
         make_consultar_base_conhecimento_tool(),
+        # Guia de referência (marca original ↔ princípio ativo). Seções clínicas
+        # só vêm se curadas (status='active'); filtro determinístico no repo.
+        make_consultar_medicamento_referencia_tool(),
     ]
 
     if track_stock and schema_name:
+        from agents.prompts.clinical import stock_check_block
         tools.append(make_inventory_tool(schema_name, tenant_id, cart=cart))
-        base_system = _SYSTEM + _STOCK_CHECK_BLOCK
+        base_system = _SYSTEM + stock_check_block()
 
+    # enable_handoff/end: farmaceutico transfere para vendedor/genericos/
+    # principio_ativo e encerra atendimento via TOOLS de fluxo (instruções
+    # geradas em prompts/flow.py). O parser de marcadores segue como fallback.
     return await run_skill(
         state=state,
         llm_factory=llm_factory,
         skill_name="farmaceutico",
         base_system=base_system,
         tools=tools,
+        enable_handoff=True,
+        enable_end=True,
     )

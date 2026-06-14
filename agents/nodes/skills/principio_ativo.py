@@ -8,6 +8,7 @@ from __future__ import annotations
 from agents.state import AgentState
 from agents.nodes.skills._base import run_skill
 from agents.tools.bulario import make_consultar_bula_tool
+from agents.tools.referencia import make_consultar_medicamento_referencia_tool
 
 _SYSTEM = """\
 Você é um especialista em farmacologia focado em princípios ativos de medicamentos.
@@ -32,8 +33,17 @@ Fluxo correto:
 
 Se a tool não encontrar nada, diga isso ao cliente — NÃO chute.
 
+═══════════════════════════════════════════════════════════════════════
+FERRAMENTA: consultar_medicamento_referencia(termo)
+═══════════════════════════════════════════════════════════════════════
+Para "qual o medicamento de REFERÊNCIA (original) de X?" ou "qual o genérico
+da marca Y?", chame `consultar_medicamento_referencia` — ela tem o vínculo
+princípio ativo ↔ marca original. Aceita o princípio ativo OU a marca. Se não
+achar, diga que não localizou — NÃO invente o original/genérico.
+
 Exemplos de perguntas que você responde:
 • "Qual o princípio ativo do Tylenol?" → consultar_bula → Paracetamol
+• "Qual o original da Buspirona?" → consultar_medicamento_referencia
 • "Dipirona é o mesmo que Novalgina?" → consultar_bula em ambos → comparar
 • "Qual a diferença entre Ibuprofeno 400mg e 600mg?"
 
@@ -52,5 +62,8 @@ async def principio_ativo_node(state: AgentState, llm_factory) -> AgentState:
         llm_factory=llm_factory,
         skill_name="principio_ativo",
         base_system=_SYSTEM,
-        tools=[make_consultar_bula_tool()],
+        tools=[
+            make_consultar_bula_tool(),
+            make_consultar_medicamento_referencia_tool(),
+        ],
     )

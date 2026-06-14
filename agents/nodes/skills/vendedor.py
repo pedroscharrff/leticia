@@ -12,13 +12,14 @@ Modos de operação (controlado pela capability sales.stock_check):
 from __future__ import annotations
 
 import structlog
-from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
 
 from agents.state import AgentState
 from agents.nodes.skills._base import (
-    _persona_prefix, _build_messages, _parse_handoff, _parse_escalate,
+    _build_messages, _parse_handoff, _parse_escalate,
     _parse_end, _extract_text,
 )
+from agents.prompts import PromptBuilder
+from agents.prompts import commerce as _commerce
 
 log = structlog.get_logger()
 
@@ -83,8 +84,8 @@ PLAYBOOK — etapas da conversa
    - Cliente nomeia produto → chame `buscar_produto(nome)`.
    - Em estoque → informe nome, apresentação e preço, FIM. Pergunte
      "quer adicionar ao carrinho?".
-   - Fora de estoque → faça [[HANDOFF:genericos:nome_do_produto]] para
-     o agente buscar alternativa. Não invente alternativa.
+   - Fora de estoque → transfira para a especialidade `genericos` (tool de
+     transferência interna) buscar alternativa. Não invente alternativa.
 
 2. Adicionar ao carrinho:
    - Cliente confirma → chame `adicionar_ao_carrinho(produto, qty)`.
@@ -102,52 +103,23 @@ PLAYBOOK — etapas da conversa
      de pagamento (se ainda não escolheu) e chame `finalizar_pedido`.
    - Tool retorna número → confirme com o número EXATO retornado pela tool.
 
-═══════════════════════════════════════════════════════════════════════
-HANDOFFS — passar para outro agente
-═══════════════════════════════════════════════════════════════════════
-Termine sua mensagem com `[[HANDOFF:agente:contexto]]` quando:
-• Sintoma sem nome de produto → `[[HANDOFF:farmaceutico:descrição]]`
-• Cliente pediu genérico/mais barato → `[[HANDOFF:genericos:produto]]`
-• Cliente perguntou princípio ativo → `[[HANDOFF:principio_ativo:produto]]`
-
-NÃO faça handoff quando:
-• Já está respondendo um handoff recebido (você verá o bloco
-  "[CONTINUAÇÃO INTERNA]" no system prompt).
-• Cliente apenas confirmou ou tirou dúvida simples.
-
-═══════════════════════════════════════════════════════════════════════
-HANDOFF PARA ATENDENTE HUMANO (BALCÃO)
-═══════════════════════════════════════════════════════════════════════
-Termine sua resposta com `[[ESCALATE]]` quando:
-• Cliente pedir EXPLICITAMENTE ("quero falar com atendente", "humano", "balcão").
-• Você não conseguir resolver após 2 tentativas (ex.: tool falhou repetidas
-  vezes, cliente reclamou de problema fora do escopo).
-• Cliente relatou uma EMERGÊNCIA médica.
-
-Quando usar `[[ESCALATE]]`:
-• Coloque ANTES uma frase curta de transição: "Entendo, vou te passar para
-  um de nossos atendentes." e em seguida `[[ESCALATE]]`.
-• O sistema vai fazer a transferência automaticamente.
-
-⚠️ REGRA ABSOLUTA — O MARCADOR É OBRIGATÓRIO:
-Se você decidir transferir, é PROIBIDO escrever "vou te transferir", "vou te
-passar para um atendente", "um momento que chamo alguém" ou QUALQUER frase de
-transferência SEM terminar a mensagem com `[[ESCALATE]]`. A frase sozinha NÃO
-transfere nada — só o marcador `[[ESCALATE]]` aciona a transferência de verdade.
-Se você prometer transferência e não colocar o marcador, o cliente fica
-abandonado falando sozinho. Então: ou você transfere DE VERDADE (frase +
-`[[ESCALATE]]` juntos na mesma resposta), ou continua o atendimento normalmente
-sem mencionar transferência. NUNCA prometa transferir sem o marcador.
+(As instruções de COMO transferir — para outra especialidade ou para atendente
+humano — e de encerrar o atendimento vêm em seções próprias abaixo, via tools de
+transferência. Quando transferir: sintoma sem produto → `farmaceutico`; pedido de
+genérico/mais barato → `genericos`; dúvida de princípio ativo → `principio_ativo`.
+NÃO transfira quando já está respondendo um handoff recebido — você verá o bloco
+"[CONTINUAÇÃO INTERNA]" no system prompt — nem quando o cliente só confirmou ou
+tirou dúvida simples.)
 
 🛑 TRAVA ANTI-TRANSFERÊNCIA INDEVIDA (CRÍTICA):
-NÃO use `[[ESCALATE]]` nem `[[HANDOFF:...]]` em nenhuma outra situação além
-das listadas acima. Especificamente, NUNCA transfira quando:
+NÃO transfira (nem para especialidade, nem para atendente) fora das situações
+previstas. Especificamente, NUNCA transfira quando:
 • o cliente está apenas comprando, confirmando ou respondendo "sim/não/ok";
 • você conseguiu responder normalmente (achou produto, fechou pedido);
 • o cliente só agradeceu ou se despediu.
 Na dúvida, NÃO transfira — continue o atendimento você mesmo. Transferir sem
 motivo real atrapalha o cliente e sobrecarrega o balcão. Só transfira se um
-dos gatilhos explícitos acima realmente ocorreu na ÚLTIMA mensagem do cliente.
+gatilho real ocorreu na ÚLTIMA mensagem do cliente.
 
 ═══════════════════════════════════════════════════════════════════════
 FERRAMENTAS (tools)
@@ -192,11 +164,13 @@ nada sozinho.
    Sem essa chamada o pedido NÃO existe.
 3. NÃO faça mais de UMA pergunta por mensagem.
 4. Quando o cliente CITAR medicamento por nome (com ou sem dosagem/forma)
-   OU descrever sintoma, passe ao FARMACEUTICO via
-   `[[HANDOFF:farmaceutico:nome ou descrição]]` ANTES de anotar — o
-   farmacêutico confirma na bula da ANVISA se a apresentação existe e
-   evita anotar dosagens/marcas inexistentes. Itens claramente não-medicamento
-   (fralda, xampu, bala, soro, álcool) podem ir direto à coleta sem handoff.
+   OU descrever sintoma, transfira ao FARMACEUTICO (tool de transferência
+   interna, destino `farmaceutico`) ANTES de anotar — o farmacêutico confirma
+   na bula da ANVISA se a apresentação existe e evita anotar dosagens/marcas
+   inexistentes. Itens claramente não-medicamento (fralda, xampu, bala, soro,
+   álcool) podem ir direto à coleta sem transferir. (Se a tool de transferência
+   ao farmacêutico não estiver disponível, apenas siga a coleta — não invente
+   dosagem/marca: anote o que o cliente disse e o balcão confere.)
 5. Quando o cliente declarar nome/CPF/CEP/endereço, chame
    `salvar_dados_cliente` IMEDIATAMENTE — sem texto antes.
 6. ANTES de qualquer mensagem que LISTE ou REPITA itens do pedido (ex:
@@ -231,10 +205,10 @@ Sem campos obrigatórios pendentes → vá para a Etapa 2.
 ETAPA 2 — COLETA DO PEDIDO
   • Pergunte o que o cliente precisa.
   • ⚠️ MEDICAMENTO citado por nome (com ou sem dosagem): NÃO anote ainda.
-    PRIMEIRO faça `[[HANDOFF:farmaceutico:<nome>]]` (regra 4) — o farmacêutico
+    PRIMEIRO transfira ao farmacêutico (regra 4, tool de transferência) — ele
     confere a apresentação na bula. Só itens claramente NÃO-medicamento
     (fralda, soro, xampu, álcool, bala) é que você anota direto, "como o
-    cliente disse". Em dúvida se é medicamento, faça o handoff — é seguro.
+    cliente disse". Em dúvida se é medicamento, transfira — é seguro.
   • Para itens não-medicamento: anote o nome e a quantidade EXATAMENTE como o
     cliente disse.
   • ⚠️ OBRIGATÓRIO (Regra 6): A CADA item que o cliente acrescentar/mudar
@@ -262,37 +236,20 @@ Sequência exata:
      "Pronto! Um atendente vai continuar com você em instantes. Obrigado!"
 
 ═══════════════════════════════════════════════════════════════════════
-ESCALATION HUMANA IMEDIATA — quando NÃO coletar pedido
+QUANDO TRANSFERIR PARA ATENDENTE (em vez de coletar pedido)
 ═══════════════════════════════════════════════════════════════════════
-Termine sua resposta com `[[ESCALATE]]` (sem chamar `anotar_pedido_balcao`)
-quando:
+Transfira para atendente humano (tool de transferência ao atendente, SEM chamar
+`anotar_pedido_balcao`) quando:
 • Cliente pedir EXPLICITAMENTE atendente humano antes de listar itens.
 • Cliente relatar EMERGÊNCIA médica.
 • Cliente fizer reclamação grave de pedido anterior, problema com entrega,
   cobrança ou similar — algo fora do escopo de coletar pedido.
 
-Exemplo:
-  "Entendo, vou te passar para um de nossos atendentes agora.[[ESCALATE]]"
-
-═══════════════════════════════════════════════════════════════════════
-FIM DE ATENDIMENTO — encerrar a conversa ([[END]])
-═══════════════════════════════════════════════════════════════════════
-Termine sua resposta com `[[END]]` (marcador invisível, removido antes de ir
-ao cliente) quando o cliente sinalizar que TERMINOU e NÃO há pedido pendente
-para anotar nem nada a transferir:
-• "era só isso", "só queria tirar essa dúvida", "obrigado, mais nada".
-• Despedida sem pedido: "tchau", "valeu", "até mais".
-
-Coloque ANTES uma despedida curta e cordial e então o marcador. Exemplo:
-  "Imagina, qualquer coisa é só chamar. Tenha um ótimo dia![[END]]"
-
-🛑 NÃO use `[[END]]` quando:
-• Há itens que o cliente pediu mas ainda NÃO foram anotados via
-  `anotar_pedido_balcao` — nesse caso conclua a Etapa 3 (anotar) primeiro.
-• O cliente pediu atendente humano (use `[[ESCALATE]]`).
-• O cliente ainda está escolhendo / pode querer mais algo — pergunte antes.
-
-[[END]] é só para fechar a conversa quando não restou nenhuma ação pendente.
+🛑 Antes de encerrar o atendimento (tool de encerrar): só quando o cliente se
+despediu e NÃO há itens pendentes de anotar. Se há itens pedidos mas ainda não
+anotados via `anotar_pedido_balcao`, conclua a Etapa 3 primeiro; se o cliente
+pediu atendente, transfira (não encerre); se ainda pode querer mais algo,
+pergunte antes. (As seções de COMO transferir/encerrar vêm abaixo via tools.)
 
 ═══════════════════════════════════════════════════════════════════════
 FERRAMENTAS (tools)
@@ -571,23 +528,43 @@ async def vendedor_node(state: AgentState, llm_factory) -> AgentState:
         stock_check_enabled=caps["stock_check"],
     )
 
+    # Pré-atendimento: handoff (single-hop) ao farmacêutico p/ validar na bula
+    # só quando a capability está ON E o farmacêutico está ativo no tenant.
+    # Usado tanto no prompt (.flow) quanto na escolha das tools de fluxo.
+    available_set = set(state.get("available_skills", []))
+    preattend_handoff_enabled = bool(
+        caps.get("pharmacist_validation") and "farmaceutico" in available_set
+    )
+
+    # Defaults dos sinais de fluxo — garantem que o pós-processamento funcione
+    # mesmo se o except de setup disparar antes do run_tool_loop.
+    sig_handoff_to: str | None = None
+    sig_handoff_ctx = ""
+    sig_escalate = False
+    sig_end = False
+
     # ── Setup de prompt + tools (bifurca por modo) ────────────────────────────
     # Um único try/except cobre tanto o setup quanto a invocação do LLM abaixo.
     try:
         if use_preattendimento:
             # ── Modo pré-atendimento (sem estoque) ───────────────────────────
-            # parts = ESTÁVEL (cacheado) · volatile_parts = por-turno (não cacheado)
-            parts: list[str] = []
-            volatile_parts: list[str] = []
-            persona_txt = _persona_prefix(persona)
-            if persona_txt:
-                parts.append(persona_txt)
-
-            parts.append(skill_prompts.get("vendedor_preattendimento", _SYSTEM_PRE_ATENDIMENTO))
+            # PromptBuilder: .core/.section = ESTÁVEL (cacheado);
+            # .volatile = por-turno (após o marker de cache).
+            pb = PromptBuilder(
+                persona, "vendedor",
+                override=skill_prompts.get("vendedor_preattendimento") or None,
+            )
+            pb.core(_SYSTEM_PRE_ATENDIMENTO)
+            # Controle de fluxo via tools: escalate + end sempre; handoff ao
+            # farmacêutico só no single-hop de validação (cap ON + ativo).
+            pb.flow(
+                ("farmaceutico",) if preattend_handoff_enabled else (),
+                handoff=preattend_handoff_enabled, escalate=True, end=True,
+            )
 
             skill_extra = skill_instructions.get("vendedor", "")
             if skill_extra:
-                parts.append("[INSTRUÇÕES EXTRAS DO DONO DA FARMÁCIA]\n" + skill_extra)
+                pb.section("[INSTRUÇÕES EXTRAS DO DONO DA FARMÁCIA]\n" + skill_extra)
 
             # ── Volátil: status do cliente + contexto de handoff ─────────────
             try:
@@ -596,8 +573,7 @@ async def vendedor_node(state: AgentState, llm_factory) -> AgentState:
                     customer,
                     skip_known_field_confirmation=caps["skip_known_field_confirmation"],
                 )
-                if customer_block:
-                    volatile_parts.append(customer_block)
+                pb.volatile(customer_block)
             except Exception as _exc:  # noqa: BLE001
                 log.warning("vendedor.pre_customer_block_failed", exc=str(_exc))
 
@@ -605,27 +581,24 @@ async def vendedor_node(state: AgentState, llm_factory) -> AgentState:
             if caps["time_aware_greeting"]:
                 try:
                     from services.time_context import build_time_context_block
-                    time_block = build_time_context_block()
-                    if time_block:
-                        volatile_parts.append(time_block)
+                    pb.volatile(build_time_context_block())
                 except Exception as _exc:  # noqa: BLE001
                     log.warning("vendedor.pre_time_block_failed", exc=str(_exc))
 
             if received_handoff and handoff_context:
-                volatile_parts.append(
+                pb.volatile(
                     "[CONTEXTO DE HANDOFF]\n"
                     f"O cliente já mencionou interesse em: {handoff_context}\n"
                     "Adicione esse produto à lista de itens e continue a coleta. "
                     "Não precisa perguntar novamente sobre ele — só confirme e pergunte se quer mais algo."
                 )
             elif received_handoff and prev_response:
-                volatile_parts.append(
+                pb.volatile(
                     "[CONTEXTO DE HANDOFF]\n"
                     f"Continuando atendimento iniciado: {prev_response[:200]}"
                 )
 
-            system_prompt = "\n\n".join(parts)
-            volatile_prompt = "\n\n".join(volatile_parts)
+            system_prompt, volatile_prompt = pb.build()
             messages = _build_messages(state, system_prompt, volatile_prompt=volatile_prompt)
 
             from agents.tools.customer import (
@@ -651,101 +624,56 @@ async def vendedor_node(state: AgentState, llm_factory) -> AgentState:
 
         else:
             # ── Modo normal (com consulta de estoque) ────────────────────────
-            # parts = ESTÁVEL (cacheado) · volatile_parts = por-turno (não cacheado)
-            parts = []
-            volatile_parts = []
-            persona_txt = _persona_prefix(persona)
-            if persona_txt:
-                parts.append(persona_txt)
-
-            parts.append(skill_prompts.get("vendedor", _SYSTEM))
+            # PromptBuilder: .core/.section = ESTÁVEL (cacheado);
+            # .volatile = por-turno. Blocos de capability vivem em prompts/commerce.py.
+            pb = PromptBuilder(
+                persona, "vendedor",
+                override=skill_prompts.get("vendedor") or None,
+                extra=skill_instructions.get("vendedor") or None,
+            )
+            pb.core(_SYSTEM)
 
             if caps["cross_sell"]:
                 max_sug = int(cap_config.get("cross_sell", {}).get("max_suggestions_per_turn", 1))
-                parts.append(
-                    "═══════════════════════════════════════════════════════════════\n"
-                    "CROSS-SELL ATIVO (ofereça complementos)\n"
-                    "═══════════════════════════════════════════════════════════════\n"
-                    f"Você TEM a tool `recomendar_complementos(produto)`. Sempre que o cliente\n"
-                    f"adicionar um item ao carrinho com `adicionar_ao_carrinho`, CHAME\n"
-                    f"`recomendar_complementos` com o mesmo produto e ofereça NO MÁXIMO\n"
-                    f"{max_sug} sugestão por turno com framing de valor (ex.: 'quem leva X\n"
-                    f"costuma levar Y para potencializar'). Nunca empurre — pergunte e siga\n"
-                    f"o ritmo do cliente."
-                )
+                pb.section(_commerce.cross_sell_block(max_sug))
 
             if caps["shipping"]:
-                parts.append(
-                    "═══════════════════════════════════════════════════════════════\n"
-                    "FRETE POR CEP ATIVO\n"
-                    "═══════════════════════════════════════════════════════════════\n"
-                    "Você TEM a tool `calcular_frete(cep, subtotal)`. Sempre que o cliente\n"
-                    "fornecer o CEP de entrega, ANTES de fechar o pedido, CHAME essa tool\n"
-                    "passando o CEP e o subtotal atual do carrinho. Comunique valor + prazo\n"
-                    "+ total final em UMA frase. Se o tool retornar 'frete grátis', destaque\n"
-                    "isso para o cliente."
-                )
+                pb.section(_commerce.shipping_block())
 
             if caps["pix"]:
                 pix_cfg = cap_config.get("pix", {})
                 auto_send = pix_cfg.get("auto_send_after_confirm", True)
-                parts.append(
-                    "═══════════════════════════════════════════════════════════════\n"
-                    "PIX NO CHAT ATIVO (Asaas)\n"
-                    "═══════════════════════════════════════════════════════════════\n"
-                    "Você TEM a tool `gerar_link_pix(numero_pedido, valor_total)`.\n"
-                    + ("Sempre que `finalizar_pedido` retornar um número de pedido com\n"
-                       "sucesso E o cliente tiver escolhido pagamento PIX, CHAME essa tool\n"
-                       "imediatamente passando o número do pedido e o valor total\n"
-                       "(incluindo frete se aplicável). Repasse ao cliente o copia-cola\n"
-                       "PIX retornado.\n"
-                       if auto_send else
-                       "Quando o cliente PEDIR explicitamente o PIX (ex.: \"manda o PIX\"),\n"
-                       "CHAME essa tool com o número do pedido e o valor total.\n")
-                    + "Se a tool retornar uma mensagem pedindo CPF, peça o CPF ao cliente,\n"
-                      "salve com `salvar_dados_cliente` e tente novamente.\n"
-                      "Após o cliente pagar, o sistema avisará automaticamente — você não\n"
-                      "precisa ficar perguntando se pagou."
-                )
+                pb.section(_commerce.pix_block(auto_send))
 
             if caps["customer_memory"]:
-                parts.append(
-                    "═══════════════════════════════════════════════════════════════\n"
-                    "MEMÓRIA DE CLIENTES ATIVA\n"
-                    "═══════════════════════════════════════════════════════════════\n"
-                    "Você TEM as tools `registrar_alergia(...)`, `registrar_medicamento_continuo(...)`\n"
-                    "e `registrar_preferencia(...)`. Use SEMPRE que o cliente declarar\n"
-                    "uma alergia, mencionar medicamento de uso contínuo, ou expressar\n"
-                    "uma preferência. NÃO confirme com mensagens longas — só registre e\n"
-                    "siga o atendimento naturalmente."
-                )
+                pb.section(_commerce.customer_memory_block())
 
             # Modo de fechamento (coleta vs completo) — definido pela farmácia,
             # sobrepõe a intuição do agente sobre perguntar pagamento/entrega.
             # É ESTÁVEL (depende só da config do tenant) → fica no prefixo cacheado.
             try:
                 from services.sales_config import build_checkout_flow_block
-                checkout_block = build_checkout_flow_block(sales_config)
-                if checkout_block:
-                    parts.append(checkout_block)
+                pb.section(build_checkout_flow_block(sales_config))
             except Exception as _exc:  # noqa: BLE001
                 log.warning("vendedor.checkout_flow_block_failed", exc=str(_exc))
 
-            skill_extra = skill_instructions.get("vendedor", "")
-            if skill_extra:
-                parts.append(
-                    f"[INSTRUÇÕES EXTRAS DO DONO DA FARMÁCIA — sobreponha qualquer "
-                    f"comportamento padrão]\n{skill_extra}"
-                )
+            # Controle de fluxo via tools (handoff p/ farmaceutico/genericos/
+            # principio_ativo + escalation humana + fim de atendimento).
+            from agents.skills_registry import allowed_handoffs_for
+            pb.flow(
+                allowed_handoffs_for("vendedor"),
+                handoff=True, escalate=True, end=True,
+            )
+
+            # extra_instructions do dono (mesmo formato "— sobreponha..." do _base).
+            pb.extra_instructions()
 
             # ── VOLÁTIL (após o marcador de cache) ───────────────────────────
             # Dados do cliente (memória) — mudam conforme o cadastro.
             if caps["customer_memory"]:
                 try:
                     from services.persona import build_customer_memory_block
-                    mem_block = build_customer_memory_block(customer)
-                    if mem_block:
-                        volatile_parts.append(mem_block)
+                    pb.volatile(build_customer_memory_block(customer))
                 except Exception as _exc:  # noqa: BLE001
                     log.warning("vendedor.memory_block_failed", exc=str(_exc))
 
@@ -753,9 +681,7 @@ async def vendedor_node(state: AgentState, llm_factory) -> AgentState:
             # dado que o cliente fornece → volátil.
             try:
                 from services.sales_config import build_sales_config_block
-                sales_block = build_sales_config_block(sales_config, customer)
-                if sales_block:
-                    volatile_parts.append(sales_block)
+                pb.volatile(build_sales_config_block(sales_config, customer))
             except Exception as _exc:  # noqa: BLE001
                 log.warning("vendedor.sales_config_block_failed", exc=str(_exc))
 
@@ -763,9 +689,7 @@ async def vendedor_node(state: AgentState, llm_factory) -> AgentState:
             # cliente → volátil. Permite confirmar em vez de pedir do zero.
             try:
                 from services.sales_config import build_known_address_hint
-                addr_hint = build_known_address_hint(sales_config, customer)
-                if addr_hint:
-                    volatile_parts.append(addr_hint)
+                pb.volatile(build_known_address_hint(sales_config, customer))
             except Exception as _exc:  # noqa: BLE001
                 log.warning("vendedor.address_hint_failed", exc=str(_exc))
 
@@ -773,14 +697,12 @@ async def vendedor_node(state: AgentState, llm_factory) -> AgentState:
             if caps["time_aware_greeting"]:
                 try:
                     from services.time_context import build_time_context_block
-                    time_block = build_time_context_block()
-                    if time_block:
-                        volatile_parts.append(time_block)
+                    pb.volatile(build_time_context_block())
                 except Exception as _exc:  # noqa: BLE001
                     log.warning("vendedor.time_block_failed", exc=str(_exc))
 
             if received_handoff:
-                volatile_parts.append(
+                pb.volatile(
                     "[CONTINUAÇÃO INTERNA — não é visível ao cliente]\n"
                     f"Você acabou de dizer (como parte da mesma conversa contínua):\n"
                     f"\"\"\"\n{prev_response}\n\"\"\"\n"
@@ -799,13 +721,12 @@ async def vendedor_node(state: AgentState, llm_factory) -> AgentState:
             # Carrinho — muda a cada add/remove → o principal motivo do cache miss.
             if cart.get("items"):
                 cart_lines = [f"  • {i['qty']}x {i['name']} — R$ {i['price']:.2f}" for i in cart["items"]]
-                volatile_parts.append(
+                pb.volatile(
                     "Carrinho atual do cliente:\n" + "\n".join(cart_lines)
                     + f"\n  Subtotal: R$ {cart.get('subtotal', 0):.2f}"
                 )
 
-            system_prompt = "\n\n".join(parts)
-            volatile_prompt = "\n\n".join(volatile_parts)
+            system_prompt, volatile_prompt = pb.build()
             messages = _build_messages(state, system_prompt, volatile_prompt=volatile_prompt)
 
             from agents.tools.inventory import (
@@ -869,77 +790,45 @@ async def vendedor_node(state: AgentState, llm_factory) -> AgentState:
             except Exception as _exc:  # noqa: BLE001
                 log.warning("vendedor.extra_tools_failed", exc=str(_exc))
 
-        # ── LLM invocation (compartilhado entre os dois modos) ───────────────
-        llm = llm_factory("skill")
-        llm_with_tools = llm.bind_tools(tools)
-
-        from config import settings
-        max_iters = settings.skill_max_tool_iterations
-        lc_messages = list(messages)
-        last_tool_result = ""
-        final_response = ""
-        tool_calls_trace: list[dict] = []
-        iters_used = 0
-
-        for i in range(max_iters):
-            iters_used = i + 1
-            response = await llm_with_tools.ainvoke(lc_messages)
-
-            if not response.tool_calls:
-                final_response = _extract_text(response.content)
-                break
-
-            # Executa as tool calls
-            lc_messages.append(response)
-            for tc in response.tool_calls:
-                tool_map = {t.name: t for t in tools}
-                tool = tool_map.get(tc["name"])
-                tc_record: dict = {
-                    "iter": iters_used,
-                    "name": tc.get("name"),
-                    "args": tc.get("args"),
-                }
-                if tool:
-                    try:
-                        result = await tool.ainvoke(tc["args"])
-                        last_tool_result = str(result)
-                        tc_record["result_preview"] = last_tool_result[:300]
-                        from langchain_core.messages import ToolMessage
-                        lc_messages.append(ToolMessage(content=last_tool_result, tool_call_id=tc["id"]))
-                    except Exception as tool_exc:  # noqa: BLE001
-                        tc_record["error"] = str(tool_exc)
-                        log.warning("vendedor.tool_failed",
-                                    name=tc.get("name"), exc=str(tool_exc))
-                else:
-                    tc_record["error"] = "tool_not_found"
-                tool_calls_trace.append(tc_record)
-        else:
-            # Excedeu iterações — resposta parcial sem tools
-            response = await llm.ainvoke(lc_messages)
-            final_response = _extract_text(response.content)
-
-        # ── Force-call no pré-atendimento ────────────────────────────────────
-        # Se o LLM "fechou" o atendimento ("anotei", "atendente vai te chamar")
-        # SEM ter chamado anotar_pedido_balcao, o pedido não foi salvo. Forçamos
-        # uma nova iteração informando o erro e exigindo a chamada da tool.
+        # ── Tools de controle de fluxo (handoff/escalate/end) por modo ───────
+        from agents.tools.flow_control import (
+            make_handoff_tool, make_escalate_tool, make_end_tool,
+        )
+        flow_tools = [make_escalate_tool(), make_end_tool()]
         if use_preattendimento:
-            balcao_called_in_loop = any(
+            if preattend_handoff_enabled:
+                ht = make_handoff_tool(("farmaceutico",))
+                if ht is not None:
+                    flow_tools.insert(0, ht)
+        else:
+            from agents.skills_registry import allowed_handoffs_for
+            ht = make_handoff_tool(allowed_handoffs_for("vendedor"))
+            if ht is not None:
+                flow_tools.insert(0, ht)
+        tools = list(tools) + flow_tools
+
+        # ── post_loop_hook: travas históricas do pré-atendimento ─────────────
+        # Roda DENTRO do run_tool_loop, após o loop. Preserva 1:1 o force-call de
+        # anotar_pedido_balcao e o draft-fallback Haiku ([[project_preattend_draft_fallback]],
+        # [[project_balcao_cart_mutation]]). NÃO remover.
+        async def _vendedor_post_hook(*, lc_messages, llm, llm_with_tools, tools, result):
+            if not use_preattendimento:
+                return
+            from langchain_core.messages import HumanMessage as _HM, ToolMessage as _TM
+
+            # Force-call: "fechou" sem anotar_pedido_balcao → o pedido não existe.
+            balcao_ok = any(
                 tc.get("name") == "anotar_pedido_balcao"
                 and "PEDIDO_ANOTADO:OK" in str(tc.get("result_preview", ""))
-                for tc in tool_calls_trace
+                for tc in result.tool_calls_trace
             )
-            lower_resp = (final_response or "").lower()
-            looks_like_closing = any(hint in lower_resp for hint in _CLOSING_HINTS)
-            if looks_like_closing and not balcao_called_in_loop:
-                log.warning(
-                    "vendedor.preattendimento.closing_without_tool",
-                    final_response_preview=final_response[:200],
-                )
-                # IMPORTANTE: usa HumanMessage, não SystemMessage. Anthropic
-                # rejeita system messages não-consecutivas (depois de Human/AI)
-                # com ValueError "Received multiple non-consecutive system
-                # messages" — quebrava 3+ turnos/dia em prod.
-                lc_messages.append(HumanMessage(content=(
+            lower_resp = (result.final_text or "").lower()
+            if any(h in lower_resp for h in _CLOSING_HINTS) and not balcao_ok:
+                log.warning("vendedor.preattendimento.closing_without_tool",
+                            final_response_preview=result.final_text[:200])
+                # HumanMessage (não SystemMessage): Anthropic rejeita system
+                # não-consecutiva depois de Human/AI. (Regressão histórica.)
+                lc_messages.append(_HM(content=(
                     "[INSTRUÇÃO INTERNA DO SISTEMA — não é o cliente falando]\n"
                     "⚠️ VOCÊ ESQUECEU DE CHAMAR A TOOL `anotar_pedido_balcao`.\n"
                     "Sua resposta dá a entender que o pedido foi anotado, mas "
@@ -949,93 +838,75 @@ async def vendedor_node(state: AgentState, llm_factory) -> AgentState:
                     "formato itens=[{\"name\":\"...\",\"qty\":N}, ...]. "
                     "NÃO escreva texto antes — só a tool call."
                 )))
-                # Re-invoca COM as tools — desta vez deve chamar a tool.
                 response2 = await llm_with_tools.ainvoke(lc_messages)
                 if response2.tool_calls:
                     lc_messages.append(response2)
+                    tool_map = {t.name: t for t in tools}
                     for tc in response2.tool_calls:
-                        tool_map = {t.name: t for t in tools}
                         tool = tool_map.get(tc["name"])
-                        tc_record: dict = {
-                            "iter": "forced",
-                            "name": tc.get("name"),
-                            "args": tc.get("args"),
-                        }
+                        rec: dict = {"iter": "forced", "name": tc.get("name"), "args": tc.get("args")}
                         if tool:
                             try:
-                                result = await tool.ainvoke(tc["args"])
-                                last_tool_result = str(result)
-                                tc_record["result_preview"] = last_tool_result[:300]
-                                from langchain_core.messages import ToolMessage
-                                lc_messages.append(ToolMessage(
-                                    content=last_tool_result, tool_call_id=tc["id"]
-                                ))
+                                r = await tool.ainvoke(tc["args"])
+                                result.last_tool_result = str(r)
+                                rec["result_preview"] = str(r)[:300]
+                                lc_messages.append(_TM(content=str(r), tool_call_id=tc["id"]))
                             except Exception as tool_exc:  # noqa: BLE001
-                                tc_record["error"] = str(tool_exc)
-                        tool_calls_trace.append(tc_record)
-                    # Depois da tool, pede a mensagem final ao cliente
+                                rec["error"] = str(tool_exc)
+                        result.tool_calls_trace.append(rec)
                     response3 = await llm.ainvoke(lc_messages)
-                    final_response = _extract_text(response3.content) or final_response
+                    result.final_text = _extract_text(response3.content) or result.final_text
                 else:
-                    # Se mesmo assim o LLM se recusou a chamar a tool, deixamos
-                    # uma mensagem clara para o cliente (não fingimos sucesso).
                     log.error("vendedor.preattendimento.force_call_failed")
-                    final_response = (
+                    result.final_text = (
                         "Tive um problema técnico ao registrar seu pedido agora. "
                         "Vou te transferir para um atendente humano completar."
                     )
 
-        # ── Camada 1: extração determinística de rascunho (pré-atendimento) ──
-        # Se o LLM listou itens em texto mas NÃO chamou registrar_itens_interesse
-        # nem anotar_pedido_balcao neste turno, o cart fica items=[] e a
-        # recuperação não funciona. Aqui detectamos esse gap e extraímos os
-        # itens via Haiku (schema forçado, sem agência) pra gravar o rascunho.
-        if use_preattendimento:
+            # Draft-fallback: itens listados em texto sem tool de cart → extrai
+            # via Haiku e grava rascunho (mesma camada 1 de antes).
             _any_cart_tool = any(
                 tc.get("name") in ("registrar_itens_interesse", "anotar_pedido_balcao")
-                for tc in tool_calls_trace
+                for tc in result.tool_calls_trace
             )
-            if not _any_cart_tool and final_response:
-                _needs_draft = _detect_item_listing(final_response)
-                if _needs_draft:
-                    try:
-                        extracted = await _extract_items_from_dialog(
-                            lc_messages, llm_factory,
-                        )
-                        if extracted:
-                            cart["items"] = extracted
-                            cart["subtotal"] = 0.0
-                            _DRAFT_FALLBACK.labels(
-                                tenant_id=tenant_id or "unknown",
-                            ).inc()
-                            log.info(
-                                "vendedor.draft.extracted_by_fallback",
-                                items=len(extracted),
-                                session=session_key,
-                            )
-                    except Exception as _fb_exc:  # noqa: BLE001
-                        log.warning(
-                            "vendedor.draft.fallback_failed",
-                            exc=str(_fb_exc),
-                        )
+            if not _any_cart_tool and result.final_text and _detect_item_listing(result.final_text):
+                try:
+                    extracted = await _extract_items_from_dialog(lc_messages, llm_factory)
+                    if extracted:
+                        cart["items"] = extracted
+                        cart["subtotal"] = 0.0
+                        _DRAFT_FALLBACK.labels(tenant_id=tenant_id or "unknown").inc()
+                        log.info("vendedor.draft.extracted_by_fallback",
+                                 items=len(extracted), session=session_key)
+                except Exception as _fb_exc:  # noqa: BLE001
+                    log.warning("vendedor.draft.fallback_failed", exc=str(_fb_exc))
 
-        # Garante resposta textual ao cliente: se LLM ficou só em tool calls e
-        # não gerou texto, fazemos uma chamada final SEM tools forçando a resposta.
-        if not final_response or not final_response.strip():
-            log.info("vendedor.empty_text_after_tools", tool_result=last_tool_result[:120])
-            from langchain_core.messages import HumanMessage
-            lc_messages.append(HumanMessage(content=(
-                "Responda agora em texto curto (1-3 frases) ao cliente sobre o que "
-                "você acabou de fazer, e termine com UMA pergunta para o próximo passo."
-            )))
-            response = await llm.ainvoke(lc_messages)
-            final_response = _extract_text(response.content)
+        # ── Tool-loop compartilhado (runtime) ────────────────────────────────
+        from agents.runtime import run_tool_loop
+        from config import settings
+        llm = llm_factory("skill")
+        result = await run_tool_loop(
+            llm, list(messages), tools, settings.skill_max_tool_iterations,
+            post_loop_hook=_vendedor_post_hook,
+        )
+        final_response   = result.final_text
+        tool_calls_trace = result.tool_calls_trace
+        iters_used       = result.iters_used
+        last_tool_result = result.last_tool_result
+        _node_error      = result.node_error
+        # Sinais de fluxo vindos das TOOLS (handoff/escalate/end).
+        sig_handoff_to   = result.handoff_to
+        sig_handoff_ctx  = result.handoff_context
+        sig_escalate     = result.escalate
+        sig_end          = result.end_conversation
 
-        # Último fallback: se ainda assim ficou vazio, usa o último tool result
-        if not final_response or not final_response.strip():
-            final_response = last_tool_result or (
-                "Pronto! Algo mais que posso ajudar?"
-            )
+        # Último fallback vendedor: se ainda vazio, usa o último tool result.
+        # NÃO aplica quando há handoff (a outra especialidade fala) — senão
+        # poluiria a resposta concatenada com "Pronto! Algo mais?". Com marcador
+        # antigo isso não acontecia (o texto vinha não-vazio antes do parse);
+        # com a tool de handoff o texto pode vir vazio de propósito.
+        if (not final_response or not final_response.strip()) and not sig_handoff_to:
+            final_response = last_tool_result or "Pronto! Algo mais que posso ajudar?"
 
     except Exception as exc:
         # Captura o erro real para o trace step (linha 744 abaixo) — sem isso o
@@ -1075,20 +946,20 @@ async def vendedor_node(state: AgentState, llm_factory) -> AgentState:
         log.info("vendedor.balcao_pedido_anotado", mode="pre_atendimento",
                  schema=schema_name)
 
-    # ── Detecta pedido explícito de escalation humana ([[ESCALATE]]) ─────────
-    # O agente em modo NORMAL pode marcar [[ESCALATE]] quando o cliente
-    # pede atendente, há emergência ou ele não consegue resolver.
-    final_response, explicit_escalate = _parse_escalate(final_response)
+    # ── Escalation humana: TOOL (sig_escalate) OU marcador [[ESCALATE]] ──────
+    # Caminho primário = tool `transferir_para_atendente`; marcador é fallback.
+    final_response, parsed_escalate = _parse_escalate(final_response)
+    explicit_escalate = sig_escalate or parsed_escalate
     if explicit_escalate:
         log.info("vendedor.explicit_escalate",
                  mode="pre_atendimento" if use_preattendimento else "normal",
                  schema=schema_name)
 
-    # ── Detecta fim de atendimento sinalizado pelo agente ([[END]]) ──────────
-    # Cliente se despediu / disse que era só isso, SEM pedido pendente. SEMPRE
-    # limpamos o marcador do texto. Só propagamos o flag quando NÃO houve
+    # ── Fim de atendimento: TOOL (sig_end) OU marcador [[END]] ───────────────
+    # SEMPRE limpamos o marcador do texto. Só propagamos o flag quando NÃO houve
     # balcão nem escalation (essas têm prioridade — já fecham via handoff).
-    final_response, end_conversation = _parse_end(final_response)
+    final_response, parsed_end = _parse_end(final_response)
+    end_conversation = sig_end or parsed_end
     if balcao_called or explicit_escalate:
         end_conversation = False
     if end_conversation:
@@ -1096,35 +967,35 @@ async def vendedor_node(state: AgentState, llm_factory) -> AgentState:
                  mode="pre_atendimento" if use_preattendimento else "normal",
                  schema=schema_name)
 
-    # ── Parseia handoff ──────────────────────────────────────────────────────
-    # Mesmo em pré-atendimento (onde não roteamos pra outro skill), PRECISAMOS
-    # rodar o parse pra LIMPAR o marcador [[HANDOFF:...]] do texto antes de
-    # enviar ao cliente. O LLM ocasionalmente gera o marcador apesar do prompt
-    # — se não removermos, o cliente vê lixo tipo "[[HANDOFF:farmaceutico:...]]"
-    # no WhatsApp e o analyst reprova legitimamente.
+    # ── Handoff: TOOL (sig_handoff_to) com prioridade, marcador como fallback ─
+    # SEMPRE rodamos _parse_handoff para LIMPAR qualquer marcador residual do
+    # texto antes de enviar ao cliente (mesmo em pré-atendimento, onde por padrão
+    # não roteamos). O SINAL da tool de fluxo vence; o marcador é a rede de
+    # segurança.
     handoff_target: str | None = None
     handoff_ctx_new = ""
     if not received_handoff:
         final_response, parsed_target, parsed_ctx = _parse_handoff(final_response)
-        # Em modo NORMAL: respeita o roteamento.
         if not use_preattendimento:
-            handoff_target  = parsed_target
-            handoff_ctx_new = parsed_ctx
-        # Em pré-atendimento: por padrão só limpa o texto e descarta o target
-        # (sem roteamento entre skills — a transferência ocorre via escalate
-        # quando o balcão finaliza). EXCEÇÃO: quando a capability
-        # `sales.pharmacist_validation` está ON, roteamos o handoff de validação
-        # ao farmacêutico (single-hop), que confere o medicamento na bula da
-        # ANVISA antes de o item entrar na coleta — evita anotar dosagem/
-        # apresentação inventada. Só roteia se o farmacêutico estiver ativo no
-        # tenant; senão degrada para o comportamento padrão (sem validação).
-        elif (
-            caps.get("pharmacist_validation")
-            and parsed_target == "farmaceutico"
-            and "farmaceutico" in set(state.get("available_skills", []))
-        ):
-            handoff_target  = parsed_target
-            handoff_ctx_new = parsed_ctx
+            # Modo NORMAL: tool ou marcador roteiam livremente.
+            handoff_target  = sig_handoff_to or parsed_target
+            handoff_ctx_new = sig_handoff_ctx or parsed_ctx
+        else:
+            # Pré-atendimento: handoff SÓ ao farmacêutico (single-hop de
+            # validação na bula). A tool de fluxo já só foi bindada quando
+            # `preattend_handoff_enabled` — então sig_handoff_to só pode ser
+            # "farmaceutico". O marcador (fallback) respeita o mesmo gating
+            # explicitamente. Cf. [[reference_three_operating_modes]].
+            if sig_handoff_to == "farmaceutico":
+                handoff_target  = "farmaceutico"
+                handoff_ctx_new = sig_handoff_ctx
+            elif (
+                caps.get("pharmacist_validation")
+                and parsed_target == "farmaceutico"
+                and "farmaceutico" in set(state.get("available_skills", []))
+            ):
+                handoff_target  = parsed_target
+                handoff_ctx_new = parsed_ctx
 
     # Se está recebendo handoff no modo normal, concatena resposta anterior + nova
     if not use_preattendimento and received_handoff and final_response and final_response.strip():

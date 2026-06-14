@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import re
 import structlog
-from langchain_core.messages import SystemMessage, HumanMessage, AIMessage, ToolMessage
+from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
 
 from agents.state import AgentState
 
@@ -84,11 +84,15 @@ def _extract_text(content) -> str:
         return "".join(parts)
     return str(content)
 
-# Skills permitidos como destino de handoff
-_VALID_HANDOFF_TARGETS = {
-    "farmaceutico", "principio_ativo", "genericos",
-    "vendedor", "recuperador", "saudacao",
-}
+# Skills permitidos como destino de handoff — DERIVADO do skills_registry
+# (fonte única). Antes era um set hardcoded {farmaceutico, principio_ativo,
+# genericos, vendedor, recuperador, saudacao}. Usamos PLAN_GATED_SKILLS (mesmo
+# conjunto) para o PARSER de fallback ser PERMISSIVO como antes — limpa/aceita
+# qualquer destino plan-gated que um prompt (inclusive custom de tenant) possa
+# emitir em texto. O gating ESTRITO por-skill é feito pelo Literal do
+# HandoffTool (caminho primário), via allowed_handoffs do registry.
+from agents.skills_registry import PLAN_GATED_SKILLS as _PLAN_GATED_SKILLS
+_VALID_HANDOFF_TARGETS = set(_PLAN_GATED_SKILLS)
 
 
 def _parse_handoff(text: str) -> tuple[str, str | None, str]:
@@ -357,77 +361,16 @@ def _build_messages(
     return lc_messages
 
 
-async def _invoke_with_tools(
-    llm,
-    lc_messages: list,
-    tools: list,
-    max_iters: int,
-) -> tuple[str, list[dict], int]:
-    """
-    Loop de tool-calling. Retorna (texto_final, trace_de_tool_calls, iters_usadas).
-
-    Cada iteração:
-      • Invoca LLM com tools bindadas.
-      • Sem tool_calls → break com o texto.
-      • Com tool_calls → executa cada uma, anexa ToolMessage, próxima iteração.
-
-    Se exceder max_iters, faz uma última chamada SEM tools pra forçar texto.
-    Se ainda assim vier vazio (LLM só fez tool call no último turno), faz uma
-    chamada extra com instrução explícita pra responder em texto.
-    """
-    llm_with_tools = llm.bind_tools(tools)
-    tool_map = {t.name: t for t in tools}
-    tool_calls_trace: list[dict] = []
-    final_text = ""
-    iters_used = 0
-
-    for i in range(max_iters):
-        iters_used = i + 1
-        response = await llm_with_tools.ainvoke(lc_messages)
-
-        if not response.tool_calls:
-            final_text = _extract_text(response.content)
-            break
-
-        lc_messages.append(response)
-        for tc in response.tool_calls:
-            rec: dict = {"iter": iters_used, "name": tc.get("name"), "args": tc.get("args")}
-            tool = tool_map.get(tc["name"])
-            if not tool:
-                rec["error"] = "tool_not_found"
-                tool_calls_trace.append(rec)
-                continue
-            try:
-                result = await tool.ainvoke(tc["args"])
-                rec["result_preview"] = str(result)[:300]
-                lc_messages.append(ToolMessage(content=str(result), tool_call_id=tc["id"]))
-            except Exception as exc:  # noqa: BLE001
-                rec["error"] = str(exc)
-                log.warning("skill.tool_failed", name=tc.get("name"), exc=str(exc))
-            tool_calls_trace.append(rec)
-    else:
-        # Excedeu o limite — força resposta sem tools
-        response = await llm.ainvoke(lc_messages)
-        final_text = _extract_text(response.content)
-
-    # Se o último turno só teve tool_calls sem texto, força resposta em texto
-    if not final_text or not final_text.strip():
-        lc_messages.append(HumanMessage(content=(
-            "Responda agora em texto curto (1-3 frases) ao cliente, usando as "
-            "informações que você acabou de consultar. Termine com UMA pergunta."
-        )))
-        response = await llm.ainvoke(lc_messages)
-        final_text = _extract_text(response.content)
-
-    return final_text, tool_calls_trace, iters_used
-
-
 async def run_skill(
     state: AgentState,
     llm_factory,
     skill_name: str,
     base_system: str,
     tools: list | None = None,
+    *,
+    enable_handoff: bool = False,
+    enable_escalate: bool = False,
+    enable_end: bool = False,
 ) -> AgentState:
     """
     Executa um skill genérico.
@@ -437,7 +380,21 @@ async def run_skill(
         llm_factory:  Callable(skill_name) → LLM — injetado pelo graph_builder.
         skill_name:   Nome do skill para lookup de prompt customizado.
         base_system:  System prompt padrão do skill.
+        tools:        Tools de DOMÍNIO do skill (opcional).
+        enable_handoff/escalate/end: liga as TOOLS de controle de fluxo + as
+            instruções correspondentes no prompt (geradas em prompts/flow.py).
+            Default False = comportamento histórico (skill não faz handoff/
+            escalation/end via tool). O parser de marcadores continua como rede
+            de segurança independentemente destas flags.
+
+    Montagem do prompt via PromptBuilder: persona (porta única _persona_prefix) +
+    base/override + flow + extra = ESTÁVEL (prefixo cacheado); memória do cliente,
+    tempo, sentimento e continuação de handoff = VOLÁTIL (após o marker de cache).
+    Cf. SPEC 08 + [[reference_prompt_caching_volatile_split]].
     """
+    from agents.prompts import PromptBuilder
+    from agents.skills_registry import allowed_handoffs_for
+
     persona            = state.get("persona", {})
     skill_prompts      = state.get("skill_prompts", {})
     skill_instructions = state.get("skill_instructions", {})
@@ -446,32 +403,19 @@ async def run_skill(
     prev_skill         = (state.get("skill_history") or [None])[-1] if state.get("skill_history") else None
     prev_response      = state.get("final_response", "") if prev_skill and prev_skill != skill_name else ""
 
-    # Monta system prompt: persona + prompt customizado (se houver) + base +
-    # extra instructions. Tudo aqui é ESTÁVEL turn-to-turn → vai no prefixo
-    # cacheado do Anthropic (cf. spec 08 §Prompt caching).
-    #
-    # Estado VOLÁTIL (memória do cliente, continuação de handoff) vai em
-    # `volatile_parts` — passado como `volatile_prompt` em _build_messages, que
-    # adiciona DEPOIS do marker de cache. Misturar volátil no system_prompt =
-    # cache miss em todo turno (já tomamos esse golpe — cf. spec 02 §Não fazer).
-    parts: list[str] = []
-    volatile_parts: list[str] = []
+    allowed_targets = allowed_handoffs_for(skill_name)
 
-    persona_txt = _persona_prefix(persona)
-    if persona_txt:
-        parts.append(persona_txt)
-
-    # Prompt do skill — custom (tenant) substitui o base; senão usa base
-    custom_prompt = skill_prompts.get(skill_name, "")
-    parts.append(custom_prompt or base_system)
-
-    # extra_instructions específicas deste skill (camada do dono da farmácia)
-    skill_extra = skill_instructions.get(skill_name, "")
-    if skill_extra:
-        parts.append(
-            f"[INSTRUÇÕES EXTRAS DO DONO DA FARMÁCIA — sobreponha qualquer "
-            f"comportamento padrão]\n{skill_extra}"
-        )
+    pb = PromptBuilder(
+        persona, skill_name,
+        override=skill_prompts.get(skill_name) or None,
+        extra=skill_instructions.get(skill_name) or None,
+    )
+    pb.core(base_system)
+    pb.flow(
+        allowed_targets,
+        handoff=enable_handoff, escalate=enable_escalate, end=enable_end,
+    )
+    pb.extra_instructions()
 
     # ── VOLÁTIL (após o marker de cache) ──────────────────────────────────
     # Bloco "o que sabemos sobre este cliente" — só injetado quando a
@@ -484,7 +428,7 @@ async def run_skill(
         if await cap_svc.is_enabled(state.get("tenant_id"), "attendance.customer_memory"):
             mem_block = build_customer_memory_block(state.get("customer") or {})
             if mem_block:
-                volatile_parts.append(mem_block)
+                pb.volatile(mem_block)
     except Exception as _exc:  # noqa: BLE001
         log.warning("skill.customer_memory_block.failed", exc=str(_exc))
 
@@ -496,7 +440,7 @@ async def run_skill(
         if await cap_svc.is_enabled(state.get("tenant_id"), "attendance.time_aware_greeting"):
             time_block = build_time_context_block()
             if time_block:
-                volatile_parts.append(time_block)
+                pb.volatile(time_block)
     except Exception as _exc:  # noqa: BLE001
         log.warning("skill.time_context_block.failed", exc=str(_exc))
 
@@ -506,14 +450,14 @@ async def run_skill(
     # cache, nunca invalida o prefixo. Vazia quando a capability está OFF.
     sent_directive = (state.get("sentiment_directive") or "").strip()
     if sent_directive:
-        volatile_parts.append(sent_directive)
+        pb.volatile(sent_directive)
 
     # Se este skill recebeu um handoff, injeta o contexto e a resposta anterior.
     # ESTE BLOCO É VOLÁTIL — depende do skill anterior e do conteúdo da resposta
     # dele. Se for pro prefixo estável, invalida o cache em TODO handoff
     # (farmaceutico→vendedor é o caminho mais comum). Cf. spec 08 §regra de ouro.
     if prev_response and prev_skill and prev_skill != skill_name:
-        volatile_parts.append(
+        pb.volatile(
             "[CONTINUAÇÃO INTERNA — não é visível ao cliente]\n"
             f"Você acabou de dizer (como parte da mesma conversa contínua):\n"
             f"\"\"\"\n{prev_response}\n\"\"\"\n"
@@ -526,67 +470,115 @@ async def run_skill(
             "• Aja como a MESMA pessoa que escreveu o trecho acima."
         )
 
-    system_prompt   = "\n\n".join(parts)
-    volatile_prompt = "\n\n".join(volatile_parts)
+    system_prompt, volatile_prompt = pb.build()
     messages = _build_messages(state, system_prompt, volatile_prompt=volatile_prompt)
+
+    # Monta as tools de fluxo conforme as flags (sinais detectados pelo runtime).
+    flow_tools = []
+    if enable_handoff and allowed_targets:
+        from agents.tools.flow_control import make_handoff_tool
+        ht = make_handoff_tool(allowed_targets)
+        if ht is not None:
+            flow_tools.append(ht)
+    if enable_escalate:
+        from agents.tools.flow_control import make_escalate_tool
+        flow_tools.append(make_escalate_tool())
+    if enable_end:
+        from agents.tools.flow_control import make_end_tool
+        flow_tools.append(make_end_tool())
+
+    all_tools = list(tools or []) + flow_tools
 
     _node_error: dict | None = None
     tool_calls_trace: list[dict] = []
     iters_used = 0
-    try:
-        # Passa o nome do skill para permitir overrides por skill (SkillOverride)
-        llm = llm_factory(skill_name)
+    # Sinais de fluxo vindos das TOOLS (None/False quando não há tools de fluxo).
+    sig_handoff_to: str | None = None
+    sig_handoff_ctx = ""
+    sig_escalate = False
+    sig_end = False
 
-        if tools:
-            # Skill com tool-calling — sem retry decorator (cada iter já é uma
-            # nova chamada com contexto incrementado).
-            from config import settings
-            max_iters = settings.skill_max_tool_iterations
-            final_response, tool_calls_trace, iters_used = await _invoke_with_tools(
-                llm, list(messages), tools, max_iters,
-            )
-        else:
-            # Skill puro (sem tools) — fluxo histórico com retry.
+    # llm_factory pode falhar (provider/config inválido) — degradar com
+    # mensagem amigável em vez de quebrar o node (princípio 10.1). O loop com
+    # tools tem seu próprio try interno (runtime); aqui cobrimos só a criação.
+    try:
+        llm = llm_factory(skill_name)
+        llm_ok = True
+    except Exception as exc:
+        import traceback as _tb
+        _node_error = {
+            "type": type(exc).__name__, "msg": str(exc),
+            "stack": _tb.format_exc()[-1500:],
+        }
+        log.error("skill.llm_factory_failed", skill=skill_name, exc=str(exc))
+        final_response = (
+            "Desculpe, tive uma dificuldade técnica agora. "
+            "Pode repetir sua pergunta? Estou aqui para ajudar."
+        )
+        llm_ok = False
+
+    if not llm_ok:
+        pass  # final_response já definido; pula a invocação
+    elif all_tools:
+        # Tool-loop compartilhado (runtime). Import preguiçoso evita ciclo
+        # _base ↔ runtime. O runtime captura tools de domínio E sinais de fluxo.
+        from agents.runtime import run_tool_loop
+        from config import settings
+        result = await run_tool_loop(
+            llm, list(messages), all_tools, settings.skill_max_tool_iterations,
+        )
+        final_response   = result.final_text
+        tool_calls_trace = result.tool_calls_trace
+        iters_used       = result.iters_used
+        _node_error      = result.node_error
+        sig_handoff_to   = result.handoff_to
+        sig_handoff_ctx  = result.handoff_context
+        sig_escalate     = result.escalate
+        sig_end          = result.end_conversation
+    else:
+        # Skill puro (sem tools) — fluxo histórico com retry.
+        try:
             from llm.retry import llm_retry
             async for attempt in llm_retry():
                 with attempt:
                     response = await llm.ainvoke(messages)
             final_response = _extract_text(response.content)
+        except Exception as exc:
+            import traceback as _tb
+            _node_error = {
+                "type":  type(exc).__name__,
+                "msg":   str(exc),
+                "stack": _tb.format_exc()[-1500:],
+            }
+            log.error("skill.failed", skill=skill_name,
+                      exc=str(exc), error_type=type(exc).__name__)
+            final_response = (
+                "Desculpe, tive uma dificuldade técnica agora. "
+                "Pode repetir sua pergunta? Estou aqui para ajudar."
+            )
 
-    except Exception as exc:
-        # Captura o erro real para o trace step abaixo. Sem isso o turno fica
-        # indistinguível de turno bem-sucedido nos agent_traces e a única
-        # trilha do que quebrou era o log do worker (que some no restart).
-        import traceback as _tb
-        _node_error = {
-            "type":  type(exc).__name__,
-            "msg":   str(exc),
-            "stack": _tb.format_exc()[-1500:],
-        }
-        log.error("skill.failed", skill=skill_name,
-                  exc=str(exc), error_type=type(exc).__name__)
-        final_response = (
-            "Desculpe, tive uma dificuldade técnica agora. "
-            "Pode repetir sua pergunta? Estou aqui para ajudar."
-        )
-
-    # Parseia marcador de handoff. SEMPRE rodamos o parse pra LIMPAR o
-    # marcador do texto antes de enviar ao cliente — mesmo quando este skill
-    # já é o receiver de um handoff (caso em que não roteamos pra outro skill
-    # de novo, pra evitar loop, mas ainda assim queremos texto limpo).
+    # ── Rede de segurança: parser de marcadores ──────────────────────────────
+    # SEMPRE rodamos os parsers pra LIMPAR qualquer marcador residual do texto
+    # antes de enviar ao cliente (LLM que ainda emite [[...]], ou prompt custom
+    # de tenant). Os SINAIS das tools de fluxo têm PRIORIDADE; o marcador só
+    # entra como fallback quando a tool não foi chamada.
     handoff_target: str | None = None
     handoff_ctx_new = ""
     is_receiving_handoff = bool(prev_response)
     final_response, parsed_target, parsed_ctx = _parse_handoff(final_response)
     if not is_receiving_handoff:
-        handoff_target  = parsed_target
-        handoff_ctx_new = parsed_ctx
+        handoff_target  = sig_handoff_to or parsed_target
+        handoff_ctx_new = sig_handoff_ctx or parsed_ctx
 
-    # Fim de atendimento sinalizado pelo agente ([[END]]). SEMPRE limpamos o
-    # marcador do texto; o flag só é propagado quando NÃO estamos roteando um
-    # handoff (não queremos encerrar no meio de uma cadeia farmaceutico→vendedor).
-    final_response, end_conversation = _parse_end(final_response)
-    if handoff_target:
+    final_response, parsed_escalate = _parse_escalate(final_response)
+    escalate = sig_escalate or parsed_escalate
+
+    # Fim de atendimento ([[END]] OU tool). SEMPRE limpamos o marcador do texto;
+    # o flag só é propagado quando NÃO estamos roteando handoff nem escalando
+    # (essas têm prioridade — já finalizam).
+    final_response, parsed_end = _parse_end(final_response)
+    end_conversation = sig_end or parsed_end
+    if handoff_target or escalate:
         end_conversation = False
 
     # Se está recebendo handoff, concatena: resposta anterior + nova resposta
@@ -603,8 +595,9 @@ async def run_skill(
     _trace_data: dict = {
         "chars": len(final_response or ""),
         "handoff_to": handoff_target,
+        "escalate": escalate,
     }
-    if tools:
+    if all_tools:
         _trace_data["iters"] = iters_used
         _trace_data["tool_calls"] = tool_calls_trace
     if _node_error:
@@ -615,7 +608,7 @@ async def run_skill(
         "data": _trace_data,
     })
 
-    return {
+    out: AgentState = {
         **state,
         "final_response":  final_response,
         "trace_steps":     trace,
@@ -627,3 +620,8 @@ async def run_skill(
         "selected_skill":  handoff_target or state.get("selected_skill", skill_name),
         "end_conversation": end_conversation,
     }
+    # Só propaga escalate quando ligado para este skill — não sobrescreve o flag
+    # de outros caminhos (guardrails/vendedor) com False.
+    if enable_escalate:
+        out["escalate"] = escalate
+    return out

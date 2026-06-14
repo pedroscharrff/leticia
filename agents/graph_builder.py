@@ -153,37 +153,24 @@ def build_graph_for_tenant(cfg: TenantConfig, redis: Any = None):
     from agents.nodes.sentiment_analyzer import sentiment_analyzer
     from agents.nodes.analyst      import analyst
     from agents.nodes.safety_guard import safety_guard
-    from agents.nodes.skills.farmaceutico    import farmaceutico_node
-    from agents.nodes.skills.principio_ativo import principio_ativo_node
-    from agents.nodes.skills.genericos       import genericos_node
-    from agents.nodes.skills.vendedor        import vendedor_node
-    from agents.nodes.skills.recuperador     import recuperador_node
-    from agents.nodes.skills.guardrails      import guardrails_node
-    from agents.nodes.skills.saudacao        import saudacao_node
+    from agents.skills_registry import PLAN_GATED_SKILLS, SKILLS, load_skill_nodes
 
     llm_factory = _make_llm_factory(cfg)
     max_retries = settings.analyst_max_retries
 
-    # Bind llm_factory nos nodes via partial
+    # Bind llm_factory nos nodes fixos via partial
     orch_node    = functools.partial(orchestrator,         llm_factory=llm_factory)
     sentiment_node = functools.partial(sentiment_analyzer, llm_factory=llm_factory)
     analyst_node = functools.partial(analyst,              llm_factory=llm_factory, max_retries=max_retries)
-    farm_node    = functools.partial(farmaceutico_node,    llm_factory=llm_factory)
-    pa_node      = functools.partial(principio_ativo_node, llm_factory=llm_factory)
-    gen_node     = functools.partial(genericos_node,       llm_factory=llm_factory)
-    vend_node    = functools.partial(vendedor_node,        llm_factory=llm_factory)
-    recup_node   = functools.partial(recuperador_node,     llm_factory=llm_factory)
-    guard_node   = functools.partial(guardrails_node,      llm_factory=llm_factory)
-    sauda_node   = functools.partial(saudacao_node,        llm_factory=llm_factory)
+    # guardrails é infra (safety net) — sempre presente, fora do gating de plano.
+    guard_node   = functools.partial(SKILLS["guardrails"].load_node(), llm_factory=llm_factory)
 
     # ── Mapa de skills disponíveis para este tenant ───────────────────────────
+    # DERIVADO do skills_registry (fonte única): resolve os nodes plan-gated e
+    # binda llm_factory em cada um. Adicionar skill = só editar o registry.
     all_skill_nodes = {
-        "saudacao":        sauda_node,   # recepção — basic+
-        "farmaceutico":    farm_node,    # dúvidas — basic+
-        "principio_ativo": pa_node,      # substâncias — pro+
-        "genericos":       gen_node,     # genéricos — pro+
-        "vendedor":        vend_node,    # compras — pro+
-        "recuperador":     recup_node,   # reengajamento — enterprise
+        name: functools.partial(fn, llm_factory=llm_factory)
+        for name, fn in load_skill_nodes(list(PLAN_GATED_SKILLS)).items()
     }
     # Filtra apenas skills ativas + garante fallback mínimo
     active_skills = [s for s in cfg.skills_active if s in all_skill_nodes]

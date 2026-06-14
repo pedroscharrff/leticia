@@ -84,6 +84,18 @@ async def load_context(state: AgentState) -> AgentState:
         log.warning("context.redis.load_failed", session=session_id, exc=str(exc))
         updates["messages"] = []
 
+    # ── Sticky ownership: dono atual da conversa (persistido entre turnos) ─────
+    # Lido sempre; só consumido pelo orchestrator quando sticky está ON. Falha
+    # aberta para None (sem owner → orchestrator reclassifica normalmente).
+    try:
+        from db.redis_client import get_redis
+        owner_raw = await get_redis().get(f"owner:{session_id}")
+        if isinstance(owner_raw, bytes):
+            owner_raw = owner_raw.decode()
+        updates["current_owner"] = owner_raw or None
+    except Exception as exc:
+        log.warning("context.redis.owner_load_failed", session=session_id, exc=str(exc))
+
     # ── Persona e prompts do PostgreSQL ───────────────────────────────────────
     try:
         from db.postgres import get_db_conn
@@ -226,6 +238,25 @@ async def save_context(state: AgentState) -> AgentState:
         redis = get_redis()
         ttl_s = await _resolve_session_ttl(state.get("tenant_id"))
         await redis.setex(f"hist:{session_id}", ttl_s, json.dumps(messages))
+
+        # ── Sticky ownership: grava o dono (skill que respondeu) ou limpa ─────
+        # Limpa quando o atendimento terminou/escalou/finalizou pedido — a
+        # próxima mensagem deve reclassificar do zero. Caso contrário, fixa o
+        # owner para o skill que conduziu o turno. Mesma TTL do histórico (o
+        # owner expira junto com a sessão). Consumido pelo orchestrator quando
+        # sticky_ownership_enabled.
+        try:
+            cart_just_finalized = bool((state.get("cart") or {}).get("just_finalized"))
+            if (
+                state.get("end_conversation")
+                or state.get("escalate")
+                or cart_just_finalized
+            ):
+                await redis.delete(f"owner:{session_id}")
+            elif skill_used and skill_used != "unknown":
+                await redis.setex(f"owner:{session_id}", ttl_s, skill_used)
+        except Exception as exc:
+            log.warning("context.redis.owner_save_failed", session=session_id, exc=str(exc))
     except Exception as exc:
         log.warning("context.redis.save_failed", session=session_id, exc=str(exc))
 

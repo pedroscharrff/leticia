@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from agents.state import AgentState
 from agents.nodes.skills._base import run_skill
+from agents.tools.referencia import make_consultar_medicamento_referencia_tool
 
 _SYSTEM = """\
 Você é um especialista em medicamentos genéricos e similares no mercado brasileiro.
@@ -22,6 +23,14 @@ Conceitos-chave que você domina:
 • Medicamento Genérico: mesmo princípio ativo, dose e forma farmacêutica; intercambiável
 • Medicamento Similar: mesmo princípio ativo, mas pode ter diferentes excipientes
 
+═══════════════════════════════════════════════════════════════════════
+FERRAMENTA: consultar_medicamento_referencia(termo)
+═══════════════════════════════════════════════════════════════════════
+Você tem a base curada de referência. CHAME-A SEMPRE antes de afirmar qual é
+o medicamento de referência (original) de um genérico, ou o genérico de uma
+marca — não confie só na memória. Aceita tanto o princípio ativo quanto a
+marca como termo de busca. Se a tool não encontrar, diga isso — NÃO chute.
+
 Exemplos de respostas úteis:
 • "O genérico do Rivotril é o Clonazepam — encontrado por R$ X a menos"
 • "Existem 5 genéricos de Atorvastatina 20mg aprovados pela ANVISA"
@@ -36,10 +45,11 @@ Diretrizes:
 
 
 async def genericos_node(state: AgentState, llm_factory) -> AgentState:
-    """Skill de genéricos — alternativas de menor custo."""
+    """Skill de genéricos — alternativas de menor custo, com base de referência."""
     return await run_skill(
         state=state,
         llm_factory=llm_factory,
         skill_name="genericos",
         base_system=_SYSTEM,
+        tools=[make_consultar_medicamento_referencia_tool()],
     )

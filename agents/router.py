@@ -9,19 +9,12 @@ analyst_router   → analyst decide: aprovado / retry / escalar humano
 from __future__ import annotations
 
 from agents.state import AgentState
+from agents.skills_registry import KNOWN_SKILLS as _KNOWN_SKILLS
 
 _HARD_FALLBACK = "farmaceutico"
 
-# Skills que existem como nodes no grafo
-_KNOWN_SKILLS = {
-    "farmaceutico",
-    "principio_ativo",
-    "genericos",
-    "vendedor",
-    "recuperador",
-    "saudacao",     # recepção — ativo em todos os planos
-    "guardrails",   # node de segurança — sempre disponível
-}
+# _KNOWN_SKILLS (skills que existem como nodes no grafo) agora é DERIVADO do
+# skills_registry — fonte única. Inclui saudacao + guardrails.
 
 
 def _resolve_fallback(state: AgentState) -> str:

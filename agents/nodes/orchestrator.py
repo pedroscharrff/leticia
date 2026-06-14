@@ -120,20 +120,31 @@ def _is_pure_greeting(text: str) -> bool:
 
 
 def _build_skills_list(available: list[str]) -> str:
-    descriptions = {
-        "saudacao":        "recepção, saudações iniciais, primeiro contato, mensagens ambíguas",
-        "farmaceutico":    "dúvidas farmacêuticas, bulas, posologia, interações, sintomas",
-        "principio_ativo": "identificar princípio ativo de medicamentos",
-        "genericos":       "buscar alternativas genéricas / similares",
-        "vendedor":        "compras, preços, consulta de estoque, carrinho, pedidos",
-        "recuperador":     "reengajamento de clientes inativos",
-        "guardrails":      "off-topic, emergências médicas, conteúdo impróprio",
-    }
+    # Descrições DERIVADAS do skills_registry (fonte única).
+    from agents.skills_registry import skill_descriptions
+    descriptions = skill_descriptions()
     lines = []
     for skill in available:
         desc = descriptions.get(skill, skill)
         lines.append(f"- {skill}: {desc}")
     return "\n".join(lines)
+
+
+# Palavras que NUNCA podem ser interceptadas por sticky ownership — precisam ir
+# ao classificador (que roteia para guardrails / escalation). Espelha a detecção
+# de emergência do guardrails_node. Sem isso, uma emergência no meio de uma
+# venda ficaria presa no vendedor (regressão de SEGURANÇA).
+_STICKY_BYPASS_KEYWORDS = (
+    "infarto", "avc", "derrame", "overdose", "engoli remédio", "suicídio",
+    "me matar", "não consigo respirar", "parei de respirar", "samu",
+    "emergência", "emergencia", "urgência", "urgencia",
+    "atendente", "humano", "pessoa de verdade", "falar com alguém",
+)
+
+
+def _should_bypass_sticky(current_message: str) -> bool:
+    msg = (current_message or "").lower()
+    return any(kw in msg for kw in _STICKY_BYPASS_KEYWORDS)
 
 
 def _extract_json(text: str) -> dict:
@@ -169,6 +180,45 @@ async def orchestrator(state: AgentState, llm_factory) -> AgentState:
         available_skills,
         skill_history=state.get("skill_history") or [],
     )
+
+    # ── Fast-path: STICKY OWNERSHIP (determinístico) ──────────────────────────
+    # Enquanto uma conversa tem dono (`current_owner`, persistido entre turnos),
+    # novas mensagens voltam para o MESMO skill SEM re-rodar o LLM de
+    # classificação — economiza custo/latência e evita misroute mid-conversa.
+    # O owner é limpo em fim/escalation/handoff humano (context.save_context),
+    # então este caminho só dispara no meio de um atendimento ativo.
+    # Gated por settings.sticky_ownership_enabled (default False → comportamento
+    # histórico). Emergência / pedido explícito de humano NUNCA é interceptado.
+    from config import settings as _settings
+    sticky_enabled = getattr(_settings, "sticky_ownership_enabled", False)
+    current_owner = state.get("current_owner")
+    if (
+        sticky_enabled
+        and current_owner
+        and current_owner in available_skills
+        and current_owner != "guardrails"
+        and not _should_bypass_sticky(current_message)
+    ):
+        log.info("orchestrator.sticky_owner", owner=current_owner)
+        import time as _time
+        trace = list(state.get("trace_steps", []))
+        trace.append({
+            "node": "orchestrator",
+            "ts_ms": int(_time.time() * 1000),
+            "data": {
+                "skill": current_owner,
+                "confidence": 1.0,
+                "intent": "owner ativo (sticky)",
+                "fast_path": "sticky_owner",
+            },
+        })
+        return {
+            **state,
+            "selected_skill": current_owner,
+            "confidence":     1.0,
+            "intent":         current_message[:120],
+            "trace_steps":    trace,
+        }
 
     # Fast-path: tenant rodando com UM ÚNICO agente (atendimento simples).
     # Pular o LLM de classificação economiza ~300-800ms e o custo do call;
