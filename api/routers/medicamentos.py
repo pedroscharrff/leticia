@@ -13,6 +13,7 @@ A ingestão do bulário deixou de ser só sob demanda (disparada pelos agentes):
 o superadmin agora alimenta o catálogo manualmente daqui, termo a termo
 (consulta manual) ou em lote (inserção em massa). Ambos reusam o cold path
 real das tools (`bulario_repo.get_or_fetch`): ANVISA → upsert + detail + bula.
+O bulário é cache da ANVISA: só inserção/consulta — sem remoção nem edição.
 
 Endpoints (todos exigem admin):
   GET    /admin/medicamentos/bulario                 — lista/busca ANVISA (cache local)

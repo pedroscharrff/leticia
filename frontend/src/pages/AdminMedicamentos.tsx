@@ -232,8 +232,8 @@ function BularioPanel() {
             </thead>
             <tbody>
               {items.map((m) => (
-                <tr key={m.num_processo} onDoubleClick={() => setDetailNp(m.num_processo)}
-                    style={{ cursor: "pointer" }} title="Duplo clique para ver detalhe + bula">
+                <tr key={m.num_processo} onClick={() => setDetailNp(m.num_processo)}
+                    style={{ cursor: "pointer" }} title="Clique para ver detalhe + bula">
                   <td className="meds-table__pa">{m.nome_produto}</td>
                   <td>{m.principio_ativo ?? "—"}</td>
                   <td className="meds-table__muted">{m.razao_social ?? "—"}</td>

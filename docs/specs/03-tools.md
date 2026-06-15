@@ -99,8 +99,10 @@ painel `/admin/medicamentos` aba **Bulário ANVISA** permite popular o cache à 
   da ANVISA é throttled, paralelismo agressivo toma rate-limit).
 - `GET /admin/medicamentos/bulario/stats` — total/com-detalhe/com-bula (header).
 - `GET /admin/medicamentos/bulario/{num_processo}` — detalhe + seções de bula
-  extraídas (conferência). Read-only: o bulário não é editável (é cache da ANVISA),
-  diferente da base de referência que é curada.
+  extraídas (clique na linha abre o modal de conferência).
+
+O bulário é cache da ANVISA: só dá pra inserir (consulta/massa) e consultar — sem
+remoção nem edição (espelho regulatório). A base de referência, sim, é curada/editável.
 
 ### `referencia.py` — Guia de medicamentos de referência (curado, global)
 
