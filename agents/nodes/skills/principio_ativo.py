@@ -5,10 +5,15 @@ Identifica o princípio ativo de medicamentos pelo nome comercial e vice-versa.
 """
 from __future__ import annotations
 
+import structlog
+
 from agents.state import AgentState
 from agents.nodes.skills._base import run_skill
 from agents.tools.bulario import make_consultar_bula_tool
+from agents.tools.medicamento_suggest import make_sugerir_nome_medicamento_tool
 from agents.tools.referencia import make_consultar_medicamento_referencia_tool
+
+log = structlog.get_logger()
 
 _SYSTEM = """\
 Você é um especialista em farmacologia focado em princípios ativos de medicamentos.
@@ -31,7 +36,10 @@ Fluxo correto:
 2. Você chama `consultar_bula("Tylenol")`
 3. Lê o resultado e responde com o que a tool retornou
 
-Se a tool não encontrar nada, diga isso ao cliente — NÃO chute.
+Se a tool não encontrar nada, pode ser erro de digitação: chame
+`sugerir_nome_medicamento(termo)` e OFEREÇA os candidatos ("Você quis dizer
+X?"). Confirmado o nome, chame `consultar_bula` de novo. Sem candidato, diga
+que não localizou — NÃO chute.
 
 ═══════════════════════════════════════════════════════════════════════
 FERRAMENTA: consultar_medicamento_referencia(termo)
@@ -62,17 +70,38 @@ Diretrizes:
 
 async def principio_ativo_node(state: AgentState, llm_factory) -> AgentState:
     """Skill de princípio ativo — identifica substâncias ativas, com bula ANVISA."""
+    tenant_id = state.get("tenant_id")
+
+    tools = [
+        make_consultar_bula_tool(),
+        make_consultar_medicamento_referencia_tool(
+            tenant_id=tenant_id,
+            session_id=state.get("session_id"),
+            skill="principio_ativo",
+        ),
+    ]
+
+    # "Você quis dizer…?" — ON por default; binda só quando a capability liga.
+    try:
+        from services import capabilities as cap_svc
+        if await cap_svc.is_enabled(tenant_id, "attendance.medication_name_suggestion"):
+            scfg = await cap_svc.get_config(tenant_id, "attendance.medication_name_suggestion") or {}
+            try:
+                max_c = int(scfg.get("max_candidates", 3))
+            except (TypeError, ValueError):
+                max_c = 3
+            tools.append(make_sugerir_nome_medicamento_tool(
+                tenant_id=tenant_id,
+                max_candidates=max_c,
+                enable_web=bool(scfg.get("enable_web_search", True)),
+            ))
+    except Exception as exc:  # noqa: BLE001
+        log.warning("skill.principio_ativo.cap_check_failed", exc=str(exc))
+
     return await run_skill(
         state=state,
         llm_factory=llm_factory,
         skill_name="principio_ativo",
         base_system=_SYSTEM,
-        tools=[
-            make_consultar_bula_tool(),
-            make_consultar_medicamento_referencia_tool(
-                tenant_id=state.get("tenant_id"),
-                session_id=state.get("session_id"),
-                skill="principio_ativo",
-            ),
-        ],
+        tools=tools,
     )

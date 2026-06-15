@@ -13,6 +13,7 @@ from agents.nodes.skills._base import run_skill
 from agents.tools.bulario import make_consultar_bula_tool, make_consultar_bula_secao_tool
 from agents.tools.conhecimento import make_consultar_base_conhecimento_tool
 from agents.tools.inventory import make_inventory_tool
+from agents.tools.medicamento_suggest import make_sugerir_nome_medicamento_tool
 from agents.tools.referencia import make_consultar_medicamento_referencia_tool
 
 log = structlog.get_logger()
@@ -66,9 +67,13 @@ Quando o cliente nomeia um medicamento para COMPRAR ("quero dipirona",
      500mg comprimido. Posso anotar para você?"
    • Mais de uma → apresente as opções em UMA frase: "A Dipirona vem em
      500mg comprimido ou gotas. Qual você prefere?"
-   • A tool retornou que NÃO há registro no bulário → NÃO invente
-     apresentação, dosagem nem alternativa. Siga a instrução que a própria
-     tool devolveu (perguntar ao cliente a dosagem/apresentação desejada).
+   • A tool retornou que NÃO há registro no bulário → pode ser erro de
+     digitação do cliente. ANTES de desistir, chame `sugerir_nome_medicamento`
+     com o que o cliente escreveu e OFEREÇA os candidatos ("Você quis dizer
+     Rivotril?"). Só depois que o cliente confirmar, chame `consultar_bula` de
+     novo com o nome certo. Se não vier candidato algum, NÃO invente
+     apresentação/dosagem/alternativa — siga a instrução que a própria tool de
+     bula devolveu (perguntar ao cliente a dosagem/apresentação desejada).
 3. Quando o cliente CONFIRMAR a apresentação/dosagem → passe para o
    vendedor anotar o pedido (transferência interna: chame a tool de
    transferência com destino `vendedor` e o contexto, ex.: "Dipirona 500mg
@@ -101,8 +106,10 @@ bula antes de anotar. Neste caso específico:
 2) Responda DIRETO ao cliente em 1-2 frases — NÃO faça handoff de volta.
    • Apresentação confere → confirme naturalmente e siga a coleta.
    • Não confere → ofereça as apresentações reais e pergunte qual prefere.
-   • Sem registro no bulário → NÃO invente; siga a instrução que a tool
-     devolveu (perguntar a dosagem/apresentação desejada ao cliente).
+   • Sem registro no bulário → pode ser erro de digitação. Chame
+     `sugerir_nome_medicamento` e ofereça os candidatos ("Você quis dizer X?").
+     Confirmado o nome, valide na bula. Sem candidato → NÃO invente; siga a
+     instrução que a tool de bula devolveu (perguntar a dosagem/apresentação).
 
 • Dúvida conceitual ("posso tomar com cerveja?") — responda e encerre.
 • Pergunta de informação pura ("qual a dose máxima?") — responda e encerre.
@@ -178,6 +185,13 @@ FERRAMENTAS DA BULA ANVISA — use SEMPRE antes de afirmar dados clínicos
    esta como complemento; quando a ANVISA não trouxer a seção, esta pode cobrir.
    Sempre cite a proveniência ("guia de referência") ao usar trecho daqui.
 
+5) `sugerir_nome_medicamento(termo)` — CORREÇÃO DE NOME ("Você quis dizer…?").
+   USE quando `consultar_bula` não encontrar o medicamento e houver chance de
+   erro de digitação do cliente ("rivotrio", "buscopam", "neimosulida"). Devolve
+   nomes prováveis para você OFERECER — nunca escolha por ele. Pergunte "Você
+   quis dizer X?" e só siga com o que o cliente confirmar. Sem candidatos, NÃO
+   invente: peça o nome de novo ou que descreva o remédio.
+
 ORDEM DE PRIORIDADE quando há sobreposição:
    • Produto específico (composição, fabricante) → `consultar_bula`.
    • Pergunta de seção da bula desse produto → `consultar_bula_secao`
@@ -228,6 +242,11 @@ async def farmaceutico_node(state: AgentState, llm_factory) -> AgentState:
     # ao cliente (mensagem configurável por tenant) em vez de inventar.
     not_found_message: str | None = None
     track_stock = False
+    # Sugestão de nome ("Você quis dizer…?"): ON por default. Resolvemos a
+    # config (nº de candidatos, busca web) aqui e só bindamos a tool quando ligada.
+    name_suggestion_on = False
+    suggest_max_candidates = 3
+    suggest_enable_web = True
     try:
         from services import capabilities as cap_svc
         track_stock = await cap_svc.is_enabled(tenant_id, "inventory.track_stock")
@@ -236,6 +255,14 @@ async def farmaceutico_node(state: AgentState, llm_factory) -> AgentState:
             not_found_message = (
                 (cfg or {}).get("not_found_message") or _DEFAULT_NOT_FOUND_MESSAGE
             )
+        if await cap_svc.is_enabled(tenant_id, "attendance.medication_name_suggestion"):
+            name_suggestion_on = True
+            scfg = await cap_svc.get_config(tenant_id, "attendance.medication_name_suggestion") or {}
+            try:
+                suggest_max_candidates = int(scfg.get("max_candidates", 3))
+            except (TypeError, ValueError):
+                suggest_max_candidates = 3
+            suggest_enable_web = bool(scfg.get("enable_web_search", True))
     except Exception as exc:  # noqa: BLE001
         log.warning("skill.farmaceutico.cap_check_failed", exc=str(exc))
 
@@ -255,6 +282,14 @@ async def farmaceutico_node(state: AgentState, llm_factory) -> AgentState:
             skill="farmaceutico",
         ),
     ]
+
+    # "Você quis dizer…?" — só entra quando a capability está ON (default).
+    if name_suggestion_on:
+        tools.append(make_sugerir_nome_medicamento_tool(
+            tenant_id=tenant_id,
+            max_candidates=suggest_max_candidates,
+            enable_web=suggest_enable_web,
+        ))
 
     if track_stock and schema_name:
         from agents.prompts.clinical import stock_check_block

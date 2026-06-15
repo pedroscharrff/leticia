@@ -146,6 +146,7 @@ Pra um guard que sempre quer reescrever a resposta (estilo availability), retorn
 - **Não rodar safety_guard no modo pré-atendimento.** O umbrella já faz curto-circuito; não tente "filtrar levemente" — vai gerar atrito sem benefício.
 - **Não trocar a ordem (prescription → price → availability → delivery) sem revisar a lógica de composição.** Severidade orienta a composição.
 - **Não aplicar correção quando `final_response` está vazio.** Curto-circuito no início do umbrella node.
+- **Sugestão de nome de medicamento NUNCA é auto-correção.** O recurso `attendance.medication_name_suggestion` (tool `sugerir_nome_medicamento`, SPEC 03) só OFERECE candidatos — o agente tem que perguntar ("Você quis dizer X?") e esperar a confirmação do cliente. Trocar o nome sozinho = risco de dispensar o remédio errado. Candidatos de LLM/web são sempre verificados contra a ANVISA antes de chegarem ao cliente.
 
 ## Testes manuais úteis
 

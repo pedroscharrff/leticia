@@ -135,6 +135,37 @@ aba **Consultas** (`GET /referencia/consultas` + `/referencia/consultas/stats`).
 Complementa o Counter `saas_reference_clinical_used_total{secao}` (agregado) com
 detalhe por consulta — auditável: termos sem match e "achou mas sem seção ativa".
 
+### `medicamento_suggest.py` — Correção de nome ("Você quis dizer…?")
+
+| Tool | Capability | Args | Retorna |
+|---|---|---|---|
+| `sugerir_nome_medicamento(termo)` | `attendance.medication_name_suggestion` (ON default) | termo como o cliente escreveu | Lista curta de nomes prováveis para o agente OFERECER (com confirmação) |
+
+Entra no caminho **"não encontrei"** do `consultar_bula`: quando o cliente
+escreve o nome com erro forte (abaixo do `MIN_SIMILARITY=0.45` do bulário e a
+ANVISA também não casa), o agente chama esta tool em vez de só desistir.
+
+Pipeline (em `services/medicamento_suggest.py`), determinístico-first:
+1. **fuzzy nas bases reais** — `word_similarity`/`%` (pg_trgm) sobre
+   `public.medicamentos_anvisa` e `public.medicamentos_referencia` (ambas já com
+   índice GIN trigram). Piso `_FUZZY_FLOOR=0.30` (mais frouxo que o do bulário
+   DE PROPÓSITO — aqui queremos os quase-matches que o bulário descartou).
+2. **LLM leve (Haiku)** normaliza a grafia torta — só roda se a camada 1 não
+   encheu `max_candidates` (economia de custo).
+3. **web search nativo do Claude** (`web_search_20250305`, opcional por config
+   `enable_web_search`) — último recurso. Usa o SDK `anthropic` direto (não passa
+   pelo `TokenUsageCallback` do LangChain; usage logada em
+   `medicamento_suggest.llm.usage`). Degrada com elegância se indisponível.
+
+⚠️ **INVARIANTE DE SEGURANÇA:** candidatos das camadas 2/3 são SEMPRE verificados
+contra a ANVISA (`bulario_repo.get_or_fetch`) antes de devolvidos — nunca se
+confia na grafia do LLM/web. E o agente apenas SUGERE (pergunta "Você quis dizer
+X?"); **nunca substitui o nome sozinho** — confirmação do cliente é obrigatória
+(medicamento errado é risco clínico). Bindada em `farmaceutico` e
+`principio_ativo`. **Não cria tabela** — usa as bases reais já existentes (o CSV
+`dados_medicamentos.csv` é registro de correlatos/dispositivos, NÃO de
+medicamentos — não usar como dicionário).
+
 ### `sales_extras.py` — Tools opcionais por capability
 
 | Tool | Capability | Args | Retorna |
@@ -175,6 +206,7 @@ Atualizar `_FIELD_TO_COLUMN` em `customer.py`. Se for coluna nova, criar migrati
 - **Não fazer `tool.invoke` (síncrono) num evento async.** Sempre `await tool.ainvoke(args)`.
 - **Não logar PII do cliente em plaintext** (CPF, endereço completo). Logue prefixo + flags.
 - **Não inventar variantes de embalagem em buscar_produto** — `vendedor._SYSTEM` REGRA 11. Tool retorna o que existe; LLM não pode oferecer "blister/frasco/ampola" que não vieram.
+- **Não deixar `sugerir_nome_medicamento` auto-corrigir.** A tool SUGERE; o agente tem que perguntar e esperar confirmação. Trocar o nome sozinho = risco de dispensar o remédio errado. E nunca usar `dados_medicamentos.csv` como dicionário de nomes (é correlatos/dispositivos, não medicamentos).
 
 ## Loop tool-calling (pattern)
 
