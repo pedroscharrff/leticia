@@ -528,6 +528,29 @@ async def vendedor_node(state: AgentState, llm_factory) -> AgentState:
         stock_check_enabled=caps["stock_check"],
     )
 
+    # Andaime de tool-calling (Fase C) — gated por modelo/provider fraco
+    # (Gemini/weak). Resolvido CEDO para injetar o reforço de venda no prompt e
+    # ligar a guarda domínio+fluxo do runtime. No-op para Claude/GPT forte.
+    from agents.nodes.skills._base import resolve_skill_tier
+    from llm.model_tier import needs_tool_scaffolding
+    _vp, _vm, _ = resolve_skill_tier(llm_factory, "skill")
+    _v_scaffold = needs_tool_scaffolding(_vp, _vm)
+
+    # Reforço SÓ para modelos fracos: eles pulam a Etapa 2 ("Mais alguma coisa?")
+    # e fecham/anotam no primeiro item — disparando o transfer determinístico
+    # (worker order_finalized → atendente). Bloco VOLÁTIL e GATED → prompt do
+    # Claude/GPT byte-idêntico. Medido em prod com gemini-2.5-pro.
+    _SALES_DISCIPLINE = (
+        "[DISCIPLINA DE VENDA — crítico]\n"
+        "• Colete o pedido COMPLETO antes de fechar. Depois de registrar CADA "
+        "item, pergunte 'Mais alguma coisa?' e ESPERE a resposta do cliente.\n"
+        "• Só vá para a confirmação e só chame a tool de anotar/finalizar o "
+        "pedido quando o cliente disser que NÃO quer mais nada ('só isso', "
+        "'não', 'pode fechar').\n"
+        "• NUNCA finalize/anote o pedido logo no primeiro item sem antes "
+        "perguntar se o cliente deseja mais alguma coisa."
+    )
+
     # Pré-atendimento: handoff (single-hop) ao farmacêutico p/ validar na bula
     # só quando a capability está ON E o farmacêutico está ativo no tenant.
     # Usado tanto no prompt (.flow) quanto na escolha das tools de fluxo.
@@ -597,6 +620,9 @@ async def vendedor_node(state: AgentState, llm_factory) -> AgentState:
                     "[CONTEXTO DE HANDOFF]\n"
                     f"Continuando atendimento iniciado: {prev_response[:200]}"
                 )
+
+            if _v_scaffold:
+                pb.volatile(_SALES_DISCIPLINE)
 
             system_prompt, volatile_prompt = pb.build()
             messages = _build_messages(state, system_prompt, volatile_prompt=volatile_prompt)
@@ -725,6 +751,9 @@ async def vendedor_node(state: AgentState, llm_factory) -> AgentState:
                     "Carrinho atual do cliente:\n" + "\n".join(cart_lines)
                     + f"\n  Subtotal: R$ {cart.get('subtotal', 0):.2f}"
                 )
+
+            if _v_scaffold:
+                pb.volatile(_SALES_DISCIPLINE)
 
             system_prompt, volatile_prompt = pb.build()
             messages = _build_messages(state, system_prompt, volatile_prompt=volatile_prompt)
@@ -882,16 +911,12 @@ async def vendedor_node(state: AgentState, llm_factory) -> AgentState:
                     log.warning("vendedor.draft.fallback_failed", exc=str(_fb_exc))
 
         # ── Tool-loop compartilhado (runtime) ────────────────────────────────
+        # `_v_scaffold` (andaime p/ Gemini/weak) já resolvido no topo do skill.
+        # Liga a guarda domínio+fluxo do runtime (não descartar resultado de tool
+        # ao transferir no mesmo turno). No-op para Claude/GPT forte.
         from agents.runtime import run_tool_loop
-        from agents.nodes.skills._base import resolve_skill_tier
-        from llm.model_tier import needs_tool_scaffolding
         from config import settings
         llm = llm_factory("skill")
-        # Andaime de tool-calling (Fase C) — gated por modelo/provider fraco
-        # (Gemini/weak). No-op para Claude/GPT forte. Liga a guarda domínio+fluxo
-        # do runtime (não descartar resultado de tool ao transferir no mesmo turno).
-        _vp, _vm, _ = resolve_skill_tier(llm_factory, "skill")
-        _v_scaffold = needs_tool_scaffolding(_vp, _vm)
         result = await run_tool_loop(
             llm, list(messages), tools, settings.skill_max_tool_iterations,
             post_loop_hook=_vendedor_post_hook,

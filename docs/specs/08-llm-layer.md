@@ -132,6 +132,15 @@ Andaimes gated por esse gate (todos no-op/ausentes para strong):
 2. **Bloco de disciplina de tool no prompt** (`run_skill`, VOLÁTIL → não toca o
    prefixo cacheado): reforça "responda usando o resultado da tool; não transfira
    no mesmo turno; não afirme produto/preço/pedido sem chamar a tool".
+3. **Disciplina de venda no `vendedor`** (`_SALES_DISCIPLINE`, VOLÁTIL, gated):
+   modelos fracos pulam a Etapa 2 ("Mais alguma coisa?") e anotam/fecham no
+   PRIMEIRO item → o `anotar_pedido_balcao`/`finalizar_pedido` dispara o transfer
+   determinístico do worker (`order_finalized`, `celery_app.py`), e o cliente é
+   mandado ao atendente sem chance de comprar mais. O bloco força coletar o
+   pedido completo e só fechar quando o cliente disser que não quer mais nada.
+   A regra já existe no `_SYSTEM`/`_SYSTEM_PRE_ATENDIMENTO` (Etapa 2); isto só a
+   REFORÇA para quem precisa. Não é bug do worker nem do END — é o modelo fraco
+   ignorando o fluxo multi-step.
 
 > **Por que NÃO há force-call amplo de "consultou? então responde" no farmaceutico:**
 > a métrica `pct_sem_tool` é contaminada por turnos de condução legítimos (perguntas
