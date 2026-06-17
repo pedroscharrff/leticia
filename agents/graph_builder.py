@@ -158,6 +158,21 @@ def build_graph_for_tenant(cfg: TenantConfig, redis: Any = None):
     llm_factory = _make_llm_factory(cfg)
     max_retries = settings.analyst_max_retries
 
+    # Observabilidade do provider/modelo resolvido — UMA linha por turno (o grafo
+    # é montado por turno). Permite confirmar em `docker compose logs -f worker`
+    # qual LLM está de fato rodando, sobretudo após o tenant trocar pra BYOK
+    # (Gemini/OpenAI). Não loga a api_key. Grep: `| grep llm.resolved`.
+    import structlog
+    structlog.get_logger().info(
+        "llm.resolved",
+        tenant=cfg.tenant_id,
+        mode=cfg.llm_mode,
+        byok=bool(cfg.llm_api_key),
+        orchestrator=f"{cfg.orchestrator_provider}:{cfg.orchestrator_model}",
+        analyst=f"{cfg.analyst_provider}:{cfg.analyst_model}",
+        skill=f"{cfg.default_skill_provider}:{cfg.default_skill_model}",
+    )
+
     # Bind llm_factory nos nodes fixos via partial
     orch_node    = functools.partial(orchestrator,         llm_factory=llm_factory)
     sentiment_node = functools.partial(sentiment_analyzer, llm_factory=llm_factory)
