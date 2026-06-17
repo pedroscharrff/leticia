@@ -24,7 +24,9 @@ const MODEL_OPTIONS: Record<string, { value: string; label: string }[]> = {
     { value: "gpt-4o",      label: "GPT-4o (avançado)"           },
   ],
   google: [
-    { value: "gemini-2.0-flash", label: "Gemini Flash (rápido)" },
+    { value: "gemini-2.0-flash-lite", label: "Gemini 2.0 Flash-Lite (mais barato)" },
+    { value: "gemini-2.0-flash",      label: "Gemini 2.0 Flash (rápido)"           },
+    { value: "gemini-2.5-flash",      label: "Gemini 2.5 Flash (mais esperto)"     },
   ],
   ollama: [
     { value: "llama3.2", label: "Llama 3.2" },

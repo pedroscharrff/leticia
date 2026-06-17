@@ -61,8 +61,10 @@ MODEL_CATALOG: dict[str, list[dict]] = {
         {"id": "o4-mini",       "label": "o4-mini",       "tier": "reasoning", "good_for": ["skill"]},
     ],
     "google": [
-        {"id": "gemini-2.0-flash", "label": "Gemini 2.0 Flash", "tier": "fast",     "good_for": ["orchestrator", "analyst", "skill"]},
-        {"id": "gemini-2.5-pro",   "label": "Gemini 2.5 Pro",   "tier": "smart",    "good_for": ["skill"]},
+        {"id": "gemini-2.0-flash-lite", "label": "Gemini 2.0 Flash-Lite", "tier": "fast",     "good_for": ["orchestrator", "analyst", "skill"]},
+        {"id": "gemini-2.0-flash",      "label": "Gemini 2.0 Flash",      "tier": "fast",     "good_for": ["orchestrator", "analyst", "skill"]},
+        {"id": "gemini-2.5-flash",      "label": "Gemini 2.5 Flash",      "tier": "balanced", "good_for": ["orchestrator", "analyst", "skill"]},
+        {"id": "gemini-2.5-pro",        "label": "Gemini 2.5 Pro",        "tier": "smart",    "good_for": ["skill"]},
     ],
     "ollama": [
         {"id": "llama3.2",  "label": "Llama 3.2 (local)",  "tier": "fast",     "good_for": ["orchestrator", "analyst"]},

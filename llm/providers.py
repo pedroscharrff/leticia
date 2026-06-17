@@ -18,7 +18,11 @@ Two usage modes:
 from functools import lru_cache
 
 from langchain_anthropic import ChatAnthropic
-from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_google_genai import (
+    ChatGoogleGenerativeAI,
+    HarmBlockThreshold,
+    HarmCategory,
+)
 from langchain_core.language_models import BaseChatModel
 
 from config import settings
@@ -28,6 +32,24 @@ from llm.usage_tracking import TokenUsageCallback
 # Callback singleton — stateless, lê ContextVars do turno. Anexado a TODO model
 # construído por essa factory pra captura uniforme de tokens.
 _USAGE_CB = TokenUsageCallback()
+
+
+# ── Gemini safety settings ───────────────────────────────────────────────────
+# Os filtros de segurança DEFAULT do Gemini bloqueiam conteúdo sobre
+# medicamentos/dosagens (cai em HARM_CATEGORY_DANGEROUS_CONTENT) → o modelo
+# devolve resposta vazia / candidate bloqueado, que vira fallback técnico pro
+# cliente. Num atendimento de FARMÁCIA isso derruba o núcleo do produto.
+#
+# Relaxamos as 4 categorias que o Gemini efetivamente aceita configurar (as
+# legadas — MEDICAL, VIOLENCE, etc. — são rejeitadas pela API). A segurança real
+# do domínio NÃO depende do filtro do provider: já temos persona.forbidden_topics,
+# os safety_guards pós-LLM (SPEC 10) e a temperatura baixa. Cf. SPEC 08.
+_GEMINI_SAFETY_SETTINGS = {
+    HarmCategory.HARM_CATEGORY_HARASSMENT:        HarmBlockThreshold.BLOCK_NONE,
+    HarmCategory.HARM_CATEGORY_HATE_SPEECH:       HarmBlockThreshold.BLOCK_NONE,
+    HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
+    HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
+}
 
 
 def _build_llm(
@@ -58,6 +80,7 @@ def _build_llm(
             request_options={"timeout": timeout},
             temperature=temp,
             max_retries=0,
+            safety_settings=_GEMINI_SAFETY_SETTINGS,
             callbacks=[_USAGE_CB],
         )
 

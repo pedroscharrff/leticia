@@ -55,7 +55,7 @@ def llm_retry() -> AsyncRetrying  # 3 tentativas, exponencial 2-10s
 | Provider | Lib | Auth | Cache? |
 |---|---|---|---|
 | `anthropic` | `langchain_anthropic.ChatAnthropic` | `api_key` (Bearer) | Sim — explicit `cache_control` |
-| `google` | `langchain_google_genai.ChatGoogleGenerativeAI` | `google_api_key` | Não wired (precisa Vertex Cached Content API) |
+| `google` | `langchain_google_genai.ChatGoogleGenerativeAI` | `google_api_key` | Não wired (precisa Vertex Cached Content API) — ver nota de custo abaixo |
 | `openai` | `langchain_openai.ChatOpenAI` | `api_key` | Sim — automático >=1024 tokens |
 | `ollama` | `langchain_ollama.ChatOllama` | `base_url` (sem auth) | N/A (inferência local) |
 
@@ -63,6 +63,26 @@ Todos os providers configurados com:
 - `timeout = settings.llm_timeout_seconds` (default 30s)
 - `temperature = settings.llm_temperature` (default 0.2 — baixa pra evitar alucinação)
 - `max_retries = 0` (delegamos para `llm_retry`)
+
+## Gemini (Google) — safety settings obrigatórios
+
+`_build_llm` constrói o `ChatGoogleGenerativeAI` com `safety_settings=_GEMINI_SAFETY_SETTINGS`
+(`providers.py`), relaxando para `BLOCK_NONE` as **4 categorias que o Gemini aceita
+configurar** (`HARASSMENT`, `HATE_SPEECH`, `SEXUALLY_EXPLICIT`, `DANGEROUS_CONTENT`).
+
+**Por quê:** os filtros default do Gemini bloqueiam conteúdo sobre medicamentos/
+dosagens (cai em `DANGEROUS_CONTENT`) → o modelo devolve candidate bloqueado/resposta
+vazia, que vira fallback técnico pro cliente. Num atendimento de farmácia isso derruba
+o núcleo do produto. A segurança real do domínio NÃO depende do filtro do provider —
+está em `persona.forbidden_topics`, nos safety_guards pós-LLM (SPEC 10) e na temperatura
+baixa. **Não remover** os safety_settings sem mover essa proteção pra outro lugar.
+
+> As categorias legadas (`MEDICAL`, `VIOLENCE`, etc.) NÃO podem ser passadas — a API
+> do Gemini as rejeita. Só as 4 acima.
+
+**Tools + Gemini:** o Gemini rejeita function declaration com `parameters` de objeto
+vazio. Toda tool deve ter ≥1 campo no `args_schema` (ver SPEC 03 §Não fazer). Validado:
+as 22 tools de domínio + 3 de fluxo convertem limpo via `convert_to_genai_function_declarations`.
 
 ## Invariantes
 
@@ -166,6 +186,14 @@ if provider == "google":
 
 Por enquanto Google cai no fallback "concat tudo".
 
+> **Decisão (2026-06-16): NÃO implementar Vertex Cached Content agora.** O objetivo
+> do BYOK Gemini é baratear o atendimento, e o Gemini 2.0 Flash já é mais barato SEM
+> cache ($0.075/M input) do que Haiku CACHEADO ($0.08/M) e ~40× mais barato que Sonnet.
+> Além disso o explicit cache do Gemini tem mínimo de tokens alto (dezenas de milhares);
+> nossos prompts (~5-8K) ficam abaixo do mínimo cacheável → esforço alto, ganho ~zero.
+> A economia vem de TROCAR de modelo, não de cachear. Reavaliar só se os prompts
+> crescerem muito ou se o volume por tenant justificar.
+
 ### Mudar temperatura ou timeout por papel
 
 - Global: `settings.llm_temperature`, `settings.llm_timeout_seconds`.
@@ -239,7 +267,16 @@ Métrica de cache hit não está exposta. Caminho: tap em response Anthropic (`r
 |---|---|---|---|
 | Claude Haiku 4.5 | $0.08 | $0.80 | $4.00 |
 | Claude Sonnet 4.6 | $0.30 | $3.00 | $15.00 |
-| Gemini 2.0 Flash | $0.0375 | $0.075 | $0.30 |
+| Gemini 2.0 Flash-Lite | — | $0.075 | $0.30 |
+| Gemini 2.0 Flash | — | $0.10 | $0.40 |
+| Gemini 2.5 Flash | — | $0.30 | $2.50 |
+| Gemini 2.5 Pro | — | $1.25 | $10.00 |
+
+> **Gemini para baratear (BYOK):** `gemini-2.0-flash-lite` é o piso de custo — input mais
+> barato que Haiku cacheado e ~40× abaixo de Sonnet. `2.5-flash` quando precisar de mais
+> raciocínio. Preços catalogados em `pricing.py` + `prometheus_rules.yml` (manter em sync).
+> `get_price` usa longest-prefix: a entrada `gemini-2.0-flash-lite` PRECISA ser explícita,
+> senão casaria `gemini-2.0-flash` e cobraria mais caro.
 
 (Preços públicos em USD, sujeitos a mudança. Fonte: developers.openai.com/api/docs/models)
 

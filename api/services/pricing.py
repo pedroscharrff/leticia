@@ -53,8 +53,16 @@ MODEL_PRICES: dict[str, ModelPrice] = {
     "o4-mini":                ModelPrice(1.10, 4.40),
 
     # ── Google Gemini ─────────────────────────────────────────────────────
+    # ATENÇÃO: get_price faz longest-prefix match. "gemini-2.0-flash-lite" casa o
+    # prefixo "gemini-2.0-flash" → a entrada explícita (chave mais longa) tem que
+    # existir, senão flash-lite seria cobrado como flash. Idem no
+    # prometheus_rules.yml (lá o match é por label EXATO — manter os dois em sync).
+    "gemini-2.0-flash-lite":  ModelPrice(0.075, 0.30),   # mais barato (BYOK econômico)
     "gemini-2.0-flash":       ModelPrice(0.10, 0.40),
     "gemini-2.0-pro":         ModelPrice(1.25, 5.00),
+    "gemini-2.5-flash-lite":  ModelPrice(0.10, 0.40),
+    "gemini-2.5-flash":       ModelPrice(0.30, 2.50),     # mais esperto, mais caro
+    "gemini-2.5-pro":         ModelPrice(1.25, 10.00),
 
     # ── Ollama / self-hosted (custo de inferência = 0 do ponto de vista API) ──
     "llama3.2":               ModelPrice(0.00, 0.00),

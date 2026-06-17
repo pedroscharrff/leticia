@@ -60,9 +60,19 @@ class _EscalateInput(BaseModel):
 
 
 class _EndInput(BaseModel):
-    # Sem campos: o fim de atendimento não carrega payload. Mantemos um schema
-    # vazio explícito para o LLM saber que a tool não recebe argumentos.
-    pass
+    # O fim de atendimento não carrega payload útil — o runtime trata a tool como
+    # SINAL e nunca executa o coroutine. Ainda assim declaramos UM campo opcional
+    # de propósito: um schema de OBJECT sem `properties` faz o Gemini rejeitar a
+    # function declaration em runtime (`400 INVALID_ARGUMENT ... properties should
+    # be non-empty`). Anthropic/OpenAI aceitam objeto vazio; o Gemini não. Um
+    # campo opcional inócuo mantém a tool compatível em todos os providers.
+    motivo: str = Field(
+        default="",
+        description=(
+            "Motivo opcional do encerramento (ex.: 'cliente se despediu', "
+            "'sem mais dúvidas'). Uso interno — não vai ao cliente."
+        ),
+    )
 
 
 # ── Factories ─────────────────────────────────────────────────────────────────
@@ -145,7 +155,8 @@ def make_escalate_tool() -> StructuredTool:
 def make_end_tool() -> StructuredTool:
     """Tool de FIM DE ATENDIMENTO (cliente se despediu, sem pendência)."""
 
-    async def _run() -> str:
+    async def _run(motivo: str = "") -> str:  # noqa: ARG001
+        # Sinal — o runtime intercepta antes de executar. Ack inócuo.
         return "END_SIGNAL"
 
     return StructuredTool.from_function(

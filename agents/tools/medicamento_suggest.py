@@ -68,7 +68,8 @@ def make_sugerir_nome_medicamento_tool(
         try:
             from services.medicamento_suggest import sugerir_nomes
             cands = await sugerir_nomes(
-                termo, max_candidates=max_candidates, enable_web=enable_web,
+                termo, tenant_id=tenant_id,
+                max_candidates=max_candidates, enable_web=enable_web,
             )
         except Exception as exc:  # noqa: BLE001
             log.warning("tool.sugerir_nome_medicamento.error", termo=termo, exc=str(exc))

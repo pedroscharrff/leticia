@@ -140,101 +140,143 @@ async def _fuzzy_candidates(termo_norm: str, limit: int) -> list[Candidate]:
 
 
 # ── Camadas 2/3: normalização por LLM + busca web (verificadas) ─────────────
+#
+# Camada 2 (normalização) é AGNÓSTICA DE PROVEDOR: roda no LLM do próprio tenant
+# (respeita BYOK / OpenAI / Gemini / Ollama) via a factory get_llm/_for_tenant.
+# Camada 3 (web search) é específica da Anthropic (web search nativo) e só roda
+# quando há uma chave Anthropic disponível (a do tenant se BYOK-Anthropic, senão
+# a da plataforma). Sem chave Anthropic, pula a web — camadas 1+2 cobrem.
 
-async def _llm_candidate_names(termo: str, *, enable_web: bool, max_names: int) -> list[str]:
-    """
-    Pede a um modelo leve (Haiku) os nomes de medicamento mais prováveis para
-    um termo possivelmente mal escrito. Quando `enable_web`, habilita a busca
-    web nativa do Claude para grafias que o modelo sozinho não reconhece.
+_SUGGEST_SYSTEM = (
+    "Você corrige nomes de MEDICAMENTOS brasileiros escritos com erro de "
+    "digitação por clientes de farmácia no WhatsApp. Receberá um termo "
+    "possivelmente errado. Responda APENAS com os nomes de medicamento "
+    "(marca comercial ou princípio ativo) mais prováveis que a pessoa quis "
+    "dizer — no máximo {n}, um por linha, sem numeração, sem explicação, sem "
+    "dosagem. Se o termo claramente NÃO for um medicamento (comida, objeto, "
+    "etc.), responda exatamente: NENHUM."
+)
 
-    Retorna apenas a LISTA DE NOMES sugeridos pelo LLM — a verificação contra a
-    ANVISA é feita pelo chamador. Defensivo: qualquer falha (sem chave, SDK
-    indisponível, timeout) retorna [] e o pipeline degrada para só a camada 1.
-    """
-    if not settings.anthropic_api_key:
-        return []
-    try:
-        from anthropic import AsyncAnthropic
-    except Exception as exc:  # noqa: BLE001
-        log.warning("medicamento_suggest.llm.no_sdk", exc=str(exc))
-        return []
 
-    system = (
-        "Você corrige nomes de MEDICAMENTOS brasileiros escritos com erro de "
-        "digitação por clientes de farmácia no WhatsApp. Receberá um termo "
-        "possivelmente errado. Responda APENAS com os nomes de medicamento "
-        "(marca comercial ou princípio ativo) mais prováveis que a pessoa quis "
-        f"dizer — no máximo {max_names}, um por linha, sem numeração, sem "
-        "explicação, sem dosagem. Se o termo claramente NÃO for um medicamento "
-        "(comida, objeto, etc.), responda exatamente: NENHUM."
-    )
-    tools = []
-    if enable_web:
-        tools = [{"type": "web_search_20250305", "name": "web_search", "max_uses": 2}]
-
-    # Com web search ligado o turno pode gastar tokens nos blocos de busca antes
-    # do texto final; folga maior evita truncar no meio do loop. Sem web, a
-    # resposta é só os nomes — 150 basta.
-    max_toks = 512 if tools else 150
-
-    client = AsyncAnthropic(api_key=settings.anthropic_api_key,
-                            timeout=float(settings.llm_timeout_seconds))
-    try:
-        kwargs: dict = dict(
-            model=_SUGGEST_MODEL,
-            max_tokens=max_toks,
-            system=system,
-            messages=[{"role": "user", "content": termo}],
-        )
-        if tools:
-            kwargs["tools"] = tools
-        resp = await client.messages.create(**kwargs)
-    except Exception as exc:  # noqa: BLE001
-        # web_search pode não estar habilitado na conta → tenta de novo sem ele.
-        if tools:
-            try:
-                resp = await client.messages.create(
-                    model=_SUGGEST_MODEL, max_tokens=150, system=system,
-                    messages=[{"role": "user", "content": termo}],
-                )
-            except Exception as exc2:  # noqa: BLE001
-                log.warning("medicamento_suggest.llm.error", termo=termo, exc=str(exc2))
-                return []
-        else:
-            log.warning("medicamento_suggest.llm.error", termo=termo, exc=str(exc))
-            return []
-    finally:
-        try:
-            await client.close()
-        except Exception:  # noqa: BLE001
-            pass
-
-    # Usage estruturada (não passa pelo callback de tokens do LangChain).
-    try:
-        u = getattr(resp, "usage", None)
-        if u is not None:
-            log.info("medicamento_suggest.llm.usage", termo=termo,
-                     model=_SUGGEST_MODEL,
-                     input_tokens=getattr(u, "input_tokens", None),
-                     output_tokens=getattr(u, "output_tokens", None),
-                     web=bool(tools))
-    except Exception:  # noqa: BLE001
-        pass
-
-    # Extrai o texto dos blocos de resposta (ignora blocos de tool/web_search).
-    text = " ".join(
-        getattr(b, "text", "") for b in (resp.content or [])
-        if getattr(b, "type", "") == "text"
-    ).strip()
+def _parse_names(text: str, max_names: int) -> list[str]:
+    text = (text or "").strip()
     if not text or "NENHUM" in text.upper():
         return []
-
     names: list[str] = []
     for line in text.splitlines():
         cand = line.strip().lstrip("-•*0123456789. ").strip()
         if cand and cand.upper() != "NENHUM":
             names.append(cand)
     return names[:max_names]
+
+
+async def _resolve_tenant_llm(tenant_id: str | None) -> dict:
+    """
+    Resolve o provedor/modelo/credencial de SKILL do tenant (reusa o mesmo
+    helper que os skills usam). Defensivo: em qualquer falha cai nos defaults da
+    plataforma. Acrescenta `anthropic_key` — a chave a usar na camada web.
+    """
+    cfg: dict = {}
+    if tenant_id:
+        try:
+            from services.llm_config import load_tenant_llm_config
+            cfg = await load_tenant_llm_config(tenant_id) or {}
+        except Exception as exc:  # noqa: BLE001
+            log.warning("medicamento_suggest.llm_config.error", exc=str(exc))
+    provider = cfg.get("default_skill_provider") or settings.default_skill_provider
+    model    = cfg.get("default_skill_model") or settings.default_skill_model
+    mode     = cfg.get("llm_mode") or "credits"
+    api_key  = cfg.get("llm_api_key")
+    base_url = cfg.get("llm_base_url")
+    # Camada web: chave do tenant só se ele é BYOK-Anthropic; senão plataforma.
+    if provider == "anthropic" and mode == "byok" and api_key:
+        anthropic_key = api_key
+    else:
+        anthropic_key = settings.anthropic_api_key
+    return {
+        "provider": provider, "model": model, "mode": mode,
+        "api_key": api_key, "base_url": base_url, "anthropic_key": anthropic_key,
+    }
+
+
+async def _normalize_with_llm(termo: str, llmcfg: dict, max_names: int) -> list[str]:
+    """
+    Camada 2 — normalização da grafia no provedor do TENANT (provider-agnóstico,
+    via factory). Token tracking acontece pelo callback padrão do LangChain.
+    """
+    try:
+        from langchain_core.messages import SystemMessage, HumanMessage
+        from llm.providers import get_llm, get_llm_for_tenant
+        if llmcfg["mode"] == "byok" and llmcfg["api_key"]:
+            llm = get_llm_for_tenant(
+                llmcfg["provider"], llmcfg["model"],
+                llmcfg["api_key"], llmcfg.get("base_url"),
+            )
+        else:
+            llm = get_llm(llmcfg["provider"], llmcfg["model"])
+        resp = await llm.ainvoke([
+            SystemMessage(content=_SUGGEST_SYSTEM.format(n=max_names)),
+            HumanMessage(content=termo),
+        ])
+    except Exception as exc:  # noqa: BLE001
+        log.warning("medicamento_suggest.normalize.error",
+                    termo=termo, provider=llmcfg.get("provider"), exc=str(exc))
+        return []
+    content = getattr(resp, "content", "")
+    if isinstance(content, list):  # alguns providers retornam blocos
+        content = " ".join(
+            b.get("text", "") if isinstance(b, dict) else str(b) for b in content
+        )
+    return _parse_names(str(content), max_names)
+
+
+async def _web_search_names(termo: str, anthropic_key: str, max_names: int) -> list[str]:
+    """
+    Camada 3 — busca web nativa do Claude (web_search_20250305). Específica da
+    Anthropic; usa o SDK direto (não há abstração de server-tool na factory).
+    Não passa pelo callback de tokens do LangChain → usage logada aqui.
+    Defensivo: sem SDK / web desabilitada na conta / timeout → [].
+    """
+    if not anthropic_key:
+        return []
+    try:
+        from anthropic import AsyncAnthropic
+    except Exception as exc:  # noqa: BLE001
+        log.warning("medicamento_suggest.web.no_sdk", exc=str(exc))
+        return []
+
+    system = _SUGGEST_SYSTEM.format(n=max_names)
+    tools = [{"type": "web_search_20250305", "name": "web_search", "max_uses": 2}]
+    client = AsyncAnthropic(api_key=anthropic_key,
+                            timeout=float(settings.llm_timeout_seconds))
+    try:
+        resp = await client.messages.create(
+            model=_SUGGEST_MODEL, max_tokens=512, system=system, tools=tools,
+            messages=[{"role": "user", "content": termo}],
+        )
+    except Exception as exc:  # noqa: BLE001
+        log.warning("medicamento_suggest.web.error", termo=termo, exc=str(exc))
+        return []
+    finally:
+        try:
+            await client.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+    try:
+        u = getattr(resp, "usage", None)
+        if u is not None:
+            log.info("medicamento_suggest.web.usage", termo=termo, model=_SUGGEST_MODEL,
+                     input_tokens=getattr(u, "input_tokens", None),
+                     output_tokens=getattr(u, "output_tokens", None))
+    except Exception:  # noqa: BLE001
+        pass
+
+    text = " ".join(
+        getattr(b, "text", "") for b in (resp.content or [])
+        if getattr(b, "type", "") == "text"
+    )
+    return _parse_names(text, max_names)
 
 
 async def _verify_against_anvisa(nome: str) -> Candidate | None:
@@ -264,6 +306,7 @@ async def _verify_against_anvisa(nome: str) -> Candidate | None:
 async def sugerir_nomes(
     termo: str,
     *,
+    tenant_id: str | None = None,
     max_candidates: int = 3,
     enable_web: bool = True,
 ) -> list[Candidate]:
@@ -271,8 +314,10 @@ async def sugerir_nomes(
     Devolve até `max_candidates` candidatos de correção para `termo`, deduplicados
     e priorizados (camada 1 primeiro). Nunca lança — retorna [] em qualquer falha.
 
-    O chamador (a tool) formata para o agente. O AGENTE deve apenas sugerir e
-    pedir confirmação — nunca substituir o nome sozinho.
+    Camada 1 é agnóstica de provedor (SQL puro). Camada 2 (normalização) roda no
+    LLM do `tenant_id` (respeita BYOK/OpenAI/Gemini/Ollama). Camada 3 (web) usa a
+    chave Anthropic disponível. O AGENTE só sugere e pede confirmação — nunca
+    substitui o nome sozinho.
     """
     termo_norm = " ".join((termo or "").lower().split())
     if not termo_norm:
@@ -289,23 +334,36 @@ async def sugerir_nomes(
             seen.add(k)
             results.append(c)
 
-    # Camada 1 — determinística.
-    for c in await _fuzzy_candidates(termo_norm, fetch_n):
-        _add(c)
-
-    # Camadas 2/3 — só se a camada 1 não deu candidatos suficientes (economiza
-    # custo: o caso comum é typo leve, resolvido pelo trigram).
-    if len(results) < max_candidates:
-        names = await _llm_candidate_names(
-            termo, enable_web=enable_web, max_names=max_candidates,
-        )
+    async def _verify_and_add(names: list[str]) -> None:
         for nome in names:
+            if len(results) >= max_candidates:
+                break
             verified = await _verify_against_anvisa(nome)
             if verified is not None:
                 _add(verified)
-            if len(results) >= max_candidates:
-                break
 
-    log.info("medicamento_suggest.done", termo=termo_norm,
-             n=len(results), web=enable_web)
+    # Camada 1 — determinística (qualquer provedor).
+    for c in await _fuzzy_candidates(termo_norm, fetch_n):
+        _add(c)
+
+    # Camadas 2/3 — só se a camada 1 não encheu (economiza custo: o caso comum é
+    # typo leve, resolvido pelo trigram). LLM resolvido uma vez.
+    used_web = False
+    if len(results) < max_candidates:
+        llmcfg = await _resolve_tenant_llm(tenant_id)
+
+        # Camada 2 — normalização no provedor do tenant.
+        await _verify_and_add(
+            await _normalize_with_llm(termo, llmcfg, max_candidates)
+        )
+
+        # Camada 3 — web search (Anthropic nativo), só se ainda faltam e há chave.
+        if len(results) < max_candidates and enable_web and llmcfg["anthropic_key"]:
+            used_web = True
+            await _verify_and_add(
+                await _web_search_names(termo, llmcfg["anthropic_key"], max_candidates)
+            )
+
+    log.info("medicamento_suggest.done", termo=termo_norm, n=len(results),
+             tenant_id=tenant_id, web_used=used_web)
     return results[:max_candidates]

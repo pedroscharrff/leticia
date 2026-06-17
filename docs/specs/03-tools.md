@@ -150,12 +150,16 @@ Pipeline (em `services/medicamento_suggest.py`), determinístico-first:
    `public.medicamentos_anvisa` e `public.medicamentos_referencia` (ambas já com
    índice GIN trigram). Piso `_FUZZY_FLOOR=0.30` (mais frouxo que o do bulário
    DE PROPÓSITO — aqui queremos os quase-matches que o bulário descartou).
-2. **LLM leve (Haiku)** normaliza a grafia torta — só roda se a camada 1 não
+2. **LLM leve** normaliza a grafia torta — roda no **provedor do próprio
+   tenant** (`load_tenant_llm_config` + factory `get_llm`/`get_llm_for_tenant`),
+   então respeita BYOK / OpenAI / Gemini / Ollama. Só dispara se a camada 1 não
    encheu `max_candidates` (economia de custo).
 3. **web search nativo do Claude** (`web_search_20250305`, opcional por config
-   `enable_web_search`) — último recurso. Usa o SDK `anthropic` direto (não passa
-   pelo `TokenUsageCallback` do LangChain; usage logada em
-   `medicamento_suggest.llm.usage`). Degrada com elegância se indisponível.
+   `enable_web_search`) — último recurso, específico da Anthropic. Usa a chave
+   Anthropic disponível (a do tenant se BYOK-Anthropic, senão a da plataforma);
+   sem nenhuma chave Anthropic, **pula a web** e as camadas 1+2 cobrem. Usa o SDK
+   `anthropic` direto (não há server-tool na factory; usage logada em
+   `medicamento_suggest.web.usage`). Degrada com elegância se indisponível.
 
 ⚠️ **INVARIANTE DE SEGURANÇA:** candidatos das camadas 2/3 são SEMPRE verificados
 contra a ANVISA (`bulario_repo.get_or_fetch`) antes de devolvidos — nunca se
@@ -207,6 +211,7 @@ Atualizar `_FIELD_TO_COLUMN` em `customer.py`. Se for coluna nova, criar migrati
 - **Não logar PII do cliente em plaintext** (CPF, endereço completo). Logue prefixo + flags.
 - **Não inventar variantes de embalagem em buscar_produto** — `vendedor._SYSTEM` REGRA 11. Tool retorna o que existe; LLM não pode oferecer "blister/frasco/ampola" que não vieram.
 - **Não deixar `sugerir_nome_medicamento` auto-corrigir.** A tool SUGERE; o agente tem que perguntar e esperar confirmação. Trocar o nome sozinho = risco de dispensar o remédio errado. E nunca usar `dados_medicamentos.csv` como dicionário de nomes (é correlatos/dispositivos, não medicamentos).
+- **Não declarar tool com `args_schema` SEM nenhum campo.** Um schema de `OBJECT` com `properties` vazio é aceito por Anthropic/OpenAI, mas o **Gemini rejeita em runtime** (`400 INVALID_ARGUMENT ... parameters.properties should be non-empty`). Tool sem payload (ex.: `encerrar_atendimento`) deve declarar ao menos um campo opcional inócuo. Mordeu o `_EndInput` em `flow_control.py` quando habilitamos BYOK Gemini.
 
 ## Loop tool-calling (pattern)
 
