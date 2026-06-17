@@ -108,8 +108,36 @@ o par SEM construir o LLM (mesma precedência do `_get`). `run_skill` usa
 > **Invariante de design:** o caminho **strong** deve permanecer byte-idêntico ao
 > histórico (sem andaime, sem bloco extra no prompt → cache intacto). Todo andaime
 > de modelo fraco (force-call determinístico, bloco de disciplina de tool) é GATED
-> por `tier == "weak"`. Não introduzir andaime que rode também no strong, salvo se
-> for no-op comprovado (ex.: force-call que só dispara quando a tool não foi chamada).
+> por `needs_tool_scaffolding`. Não introduzir andaime que rode também no strong,
+> salvo se for no-op comprovado (ex.: force-call que só dispara quando a tool não
+> foi chamada).
+
+### Gate de andaime: `needs_tool_scaffolding(provider, model)`
+
+`tier=="weak"` **OU** `provider ∈ {google, ollama}`. Por quê provider-aware: medição
+em prod mostrou que **mesmo `gemini-2.5-pro` (tier strong) falha em tool-calling** —
+dispara tools de fluxo (transferência) à toa e mistura tool de domínio + fluxo no
+mesmo turno. É comportamento da FAMÍLIA Google, não do tamanho. Anthropic/OpenAI
+grandes → `False` → caminho histórico intacto.
+
+Andaimes gated por esse gate (todos no-op/ausentes para strong):
+
+1. **Guarda domínio+fluxo no runtime** (`run_tool_loop(..., defer_premature_flow=True)`):
+   quando o modelo dispara tool de fluxo (handoff/escalate/end) JUNTO com tool de
+   domínio no mesmo turno, o sinal de fluxo é **adiado** — executa a de domínio, dá
+   ack inócuo no fluxo e CONTINUA o loop, deixando o modelo responder com o que
+   buscou. Sem isso, o runtime encerrava o turno e DESCARTAVA o resultado da tool
+   (sintoma real: "Quantos vem na caixa?" → buscava a bula mas respondia "posso
+   ajudar em algo mais?"). Fluxo sozinho continua sendo honrado na hora.
+2. **Bloco de disciplina de tool no prompt** (`run_skill`, VOLÁTIL → não toca o
+   prefixo cacheado): reforça "responda usando o resultado da tool; não transfira
+   no mesmo turno; não afirme produto/preço/pedido sem chamar a tool".
+
+> **Por que NÃO há force-call amplo de "consultou? então responde" no farmaceutico:**
+> a métrica `pct_sem_tool` é contaminada por turnos de condução legítimos (perguntas
+> "é cólica ou diarreia?", confirmações). Forçar tool nesses turnos regrediria o
+> fluxo. O force-call determinístico fica restrito a sinais inequívocos (ex.:
+> vendedor "fechou pedido" sem `anotar_pedido_balcao`).
 
 ## Invariantes
 

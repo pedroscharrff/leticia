@@ -133,6 +133,7 @@ async def run_tool_loop(
     *,
     empty_text_fallback: bool = True,
     post_loop_hook: PostLoopHook | None = None,
+    defer_premature_flow: bool = False,
 ) -> RuntimeResult:
     """Roda o tool-loop e devolve um RuntimeResult.
 
@@ -145,6 +146,18 @@ async def run_tool_loop(
     `post_loop_hook` roda APÓS o loop e ANTES do empty-text fallback — é onde o
     vendedor pluga o force-call de `anotar_pedido_balcao` e a extração de
     rascunho. Pode mutar o RuntimeResult.
+
+    `defer_premature_flow` (andaime p/ modelos fracos em tool-calling, ex. Gemini):
+    quando o modelo dispara uma tool de fluxo (handoff/escalate/end) JUNTO com
+    tools de domínio no MESMO turno, ele quase sempre errou — buscou a info E
+    pediu transferência ao mesmo tempo. Honrar o fluxo aqui descartaria o
+    resultado recém-buscado e encerraria o turno com texto genérico (sintoma
+    real medido em prod com Gemini). Com a flag ON, nesse caso o sinal de fluxo é
+    ADIADO: executa as tools de domínio, dá ack inócuo no tool_use de fluxo e
+    CONTINUA o loop, devolvendo o resultado pro modelo responder. O fluxo só é
+    honrado quando vier SOZINHO (intenção real). Default False = comportamento
+    histórico (Claude/OpenAI não precisam). Gated por
+    `llm.model_tier.needs_tool_scaffolding`.
     """
     result = RuntimeResult()
     try:
@@ -168,6 +181,18 @@ async def run_tool_loop(
 
             for tc in domain:
                 await _execute_domain_tool(tc, tool_map, lc_messages, result, result.iters_used)
+
+            # Guarda anti-confusão (Gemini/weak): fluxo + domínio no mesmo turno →
+            # adia o fluxo, deixa o modelo responder com o que buscou.
+            if defer_premature_flow and domain and flow:
+                for tc in flow:
+                    _ack_flow_tool(tc, lc_messages, result, result.iters_used)
+                    result.tool_calls_trace[-1]["deferred_flow"] = True
+                log.info("runtime.flow_deferred",
+                         flow=[tc.get("name") for tc in flow],
+                         domain=[tc.get("name") for tc in domain])
+                continue  # próximo turno: modelo responde usando o resultado
+
             for tc in flow:
                 _apply_flow_signal(tc, result)
                 _ack_flow_tool(tc, lc_messages, result, result.iters_used)

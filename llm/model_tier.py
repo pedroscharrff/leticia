@@ -98,3 +98,27 @@ def model_tier(provider: str | None, model: str | None) -> Tier:
 
     # 4. Desconhecido → strong (default seguro).
     return "strong"
+
+
+# Providers cujos modelos — EM QUALQUER tamanho — precisam de andaime de
+# tool-calling. Medição em prod (jun/2026): mesmo `gemini-2.5-pro` (tier strong)
+# dispara tools de fluxo (handoff/transferência) à toa e mistura tool de domínio
+# + fluxo no mesmo turno, descartando o resultado. É comportamento da FAMÍLIA,
+# não do tamanho. Anthropic/OpenAI grandes não apresentam isso.
+_SCAFFOLD_PROVIDERS = frozenset({"google", "ollama"})
+
+
+def needs_tool_scaffolding(provider: str | None, model: str | None) -> bool:
+    """True quando o modelo precisa de andaime determinístico de tool-calling.
+
+    GATE ÚNICO usado pelo runtime (guarda domínio+fluxo) e pelo PromptBuilder
+    (bloco de disciplina de tool). Critério: tier weak OU provider notoriamente
+    fraco em tool-calling (Google/Ollama, qualquer tamanho).
+
+    Invariante: para modelos fortes de Anthropic/OpenAI retorna False → caminho
+    histórico byte-idêntico (sem andaime, cache intacto).
+    """
+    prov = (provider or "").strip().lower()
+    if prov in _SCAFFOLD_PROVIDERS:
+        return True
+    return model_tier(provider, model) == "weak"

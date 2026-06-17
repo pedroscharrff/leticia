@@ -442,6 +442,14 @@ async def run_skill(
 
     allowed_targets = allowed_handoffs_for(skill_name)
 
+    # Tier/andaime do modelo deste skill (Fase C). Resolvido CEDO para (a) injetar
+    # o bloco de disciplina de tool no prompt e (b) ligar a guarda domínio+fluxo
+    # do runtime. Gate único provider-aware: Gemini/weak ON, Claude/GPT forte OFF
+    # → caminho forte byte-idêntico ao histórico. Cf. SPEC 08 §tier.
+    from llm.model_tier import needs_tool_scaffolding
+    _prov, _mdl, _tier = resolve_skill_tier(llm_factory, skill_name)
+    _scaffold = needs_tool_scaffolding(_prov, _mdl)
+
     pb = PromptBuilder(
         persona, skill_name,
         override=skill_prompts.get(skill_name) or None,
@@ -507,6 +515,24 @@ async def run_skill(
             "• Aja como a MESMA pessoa que escreveu o trecho acima."
         )
 
+    # ── Disciplina de tool (Fase C3) — SÓ para modelos que precisam de andaime ──
+    # Gemini/weak disparam tools de fluxo (transferência) à toa e respondem sem
+    # usar o que a tool de domínio retornou. Este bloco reforça o uso correto.
+    # É VOLÁTIL (não toca o prefixo cacheado) e GATED — o prompt de Claude/GPT
+    # forte fica byte-idêntico ao histórico. Só faz sentido quando há tools.
+    if _scaffold and (tools or enable_handoff or enable_escalate or enable_end):
+        pb.volatile(
+            "[DISCIPLINA DE FERRAMENTAS — crítico]\n"
+            "• Quando você consultar uma ferramenta, RESPONDA a pergunta do "
+            "cliente usando o RESULTADO dela. NÃO transfira nem encerre no MESMO "
+            "turno em que consultou algo.\n"
+            "• Use transferência para especialidade/atendente APENAS quando você "
+            "realmente NÃO conseguir resolver — NUNCA para uma dúvida que a "
+            "ferramenta já respondeu, nem como forma de encerrar.\n"
+            "• NUNCA afirme que um produto existe, sua dosagem/preço, ou que um "
+            "pedido foi anotado, sem ANTES chamar a ferramenta correspondente."
+        )
+
     system_prompt, volatile_prompt = pb.build()
     messages = _build_messages(state, system_prompt, volatile_prompt=volatile_prompt)
 
@@ -563,6 +589,7 @@ async def run_skill(
         from config import settings
         result = await run_tool_loop(
             llm, list(messages), all_tools, settings.skill_max_tool_iterations,
+            defer_premature_flow=_scaffold,
         )
         final_response   = result.final_text
         tool_calls_trace = result.tool_calls_trace
@@ -628,11 +655,8 @@ async def run_skill(
     skill_history.append(skill_name)
     handoff_count = state.get("handoff_count", 0)
 
-    # Tier do modelo que rodou este skill — observabilidade (Fase B). Permite
-    # correlacionar "% turnos sem tool" com strong/weak na análise. O gating de
-    # andaime (Fase C) lê o mesmo tier.
-    _prov, _mdl, _tier = resolve_skill_tier(llm_factory, skill_name)
-
+    # Tier/modelo deste skill (resolvido no topo do run_skill) — observabilidade:
+    # permite correlacionar "% turnos sem tool" com strong/weak/andaime na análise.
     import time as _time
     _trace_data: dict = {
         "chars": len(final_response or ""),
@@ -640,6 +664,7 @@ async def run_skill(
         "escalate": escalate,
         "model": f"{_prov}:{_mdl}" if _mdl else None,
         "tier": _tier,
+        "scaffold": _scaffold,
     }
     if all_tools:
         _trace_data["iters"] = iters_used
