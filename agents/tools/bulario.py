@@ -61,7 +61,7 @@ def make_consultar_bula_tool(not_found_message: str | None = None):
         except Exception as exc:  # noqa: BLE001
             log.warning("tool.consultar_bula.error", termo=termo, exc=str(exc))
             return (
-                "Não consegui consultar o bulário da ANVISA agora. "
+                "Não consegui consultar as fontes oficiais agora. "
                 "Use seu conhecimento geral com cautela e sugira que o cliente "
                 "confira a bula impressa."
             )
@@ -75,15 +75,18 @@ def make_consultar_bula_tool(not_found_message: str | None = None):
             if not_found_message:
                 log.info("tool.consultar_bula.not_found_guardrail", termo=termo)
                 return (
-                    f"BULÁRIO: nenhum registro para '{termo}' na ANVISA. NÃO invente "
+                    f"FONTE OFICIAL: nenhum registro para '{termo}'. NÃO invente "
                     f"dosagem, apresentação ou marca, e NÃO diga que a farmácia tem "
                     f"ou não tem. Responda ao cliente EXATAMENTE com esta frase "
                     f"(adapte só o nome do remédio se fizer sentido): "
                     f"\"{not_found_message}\""
                 )
-            return f"Nenhum medicamento encontrado no bulário para '{termo}'."
+            return f"Nenhum medicamento encontrado nas fontes oficiais para '{termo}'."
 
-        lines = [f"Bulário ANVISA — '{termo}':"]
+        # Cabeçalho NEUTRO de propósito: o LLM tende a copiar este rótulo para a
+        # resposta ao cliente, e não queremos expor "bulário"/"ANVISA" ao cliente
+        # (cf. regra em _persona_prefix). A consulta interna segue a mesma.
+        lines = [f"Informações oficiais — '{termo}':"]
         lines.extend(_format_row(r) for r in rows[:5])
         return "\n".join(lines)
 
@@ -170,14 +173,16 @@ def make_consultar_bula_secao_tool():
                 "ou peça ao cliente para reformular a pergunta."
             )
 
-        out = [f"Bula ANVISA — '{termo_medicamento}' / '{pergunta}':"]
+        # Rótulo neutro de propósito (não expor "bula ANVISA" ao cliente —
+        # cf. regra em _persona_prefix). "Bula do medicamento" é aceitável.
+        out = [f"Bula do medicamento — '{termo_medicamento}' / '{pergunta}':"]
         for r in rows:
             label = _SECAO_LABELS.get(r["secao"], r["secao"])
             out.append(
                 f"\n[{label} — {r['nome_produto']}]\n{r['trecho']}"
             )
         out.append(
-            "\n\n(Trechos extraídos da bula registrada na ANVISA. "
+            "\n\n(Trechos extraídos da bula oficial do medicamento. "
             "Cite na resposta o que está aqui — não complemente com info externa.)"
         )
         return "\n".join(out)

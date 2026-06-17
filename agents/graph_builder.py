@@ -93,10 +93,13 @@ def _make_llm_factory(cfg: TenantConfig):
     - "orchestrator" | "analyst" | "skill"  → papéis fixos
     - nome de skill (ex: "farmaceutico")    → usa SkillOverride se disponível
     """
-    def _get(role: str, provider: str | None = None, model: str | None = None) -> BaseChatModel:
-        """Retorna LLM para um role. `provider`/`model` opcionais permitem que
-        nodes (ex.: sentiment_analyzer com config própria) sobreponham o par
-        sem perder o caminho BYOK gerenciado aqui."""
+    def _resolve(role: str, provider: str | None = None, model: str | None = None) -> tuple[str, str]:
+        """Resolve o par (provider, model) para um role SEM construir o LLM.
+
+        Mesma precedência do `_get`: override ad-hoc do caller > SkillOverride do
+        tenant > default do role. Exposto como `llm_factory.resolve(role)` para
+        que skills/runtime descubram o tier do modelo (llm.model_tier) e decidam
+        sobre andaime — sem instanciar o cliente nem duplicar a lógica."""
         role_map = {
             "orchestrator": (cfg.orchestrator_provider, cfg.orchestrator_model),
             "analyst":      (cfg.analyst_provider,      cfg.analyst_model),
@@ -115,8 +118,13 @@ def _make_llm_factory(cfg: TenantConfig):
             base_provider, base_model = role_map.get(role, role_map["skill"])
 
         # Override ad-hoc do caller vence sobre o default do role
-        provider = provider or base_provider
-        model    = model    or base_model
+        return (provider or base_provider, model or base_model)
+
+    def _get(role: str, provider: str | None = None, model: str | None = None) -> BaseChatModel:
+        """Retorna LLM para um role. `provider`/`model` opcionais permitem que
+        nodes (ex.: sentiment_analyzer com config própria) sobreponham o par
+        sem perder o caminho BYOK gerenciado aqui."""
+        provider, model = _resolve(role, provider, model)
 
         if cfg.llm_mode == "byok" and cfg.llm_api_key:
             from llm.providers import get_llm_for_tenant
@@ -130,6 +138,8 @@ def _make_llm_factory(cfg: TenantConfig):
             from llm.providers import get_llm
             return get_llm(provider=provider, model=model)
 
+    # Expõe a resolução (sem construir o LLM) para quem precisa do tier do modelo.
+    _get.resolve = _resolve  # type: ignore[attr-defined]
     return _get
 
 

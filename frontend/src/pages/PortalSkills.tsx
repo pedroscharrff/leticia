@@ -18,7 +18,7 @@ const LLM_OPTIONS = [
   { value: "claude-sonnet-4-6",         label: "Claude Sonnet (balanceado)",  group: "Anthropic", provider: "anthropic" },
   { value: "gpt-4o-mini",               label: "GPT-4o Mini (rápido)",        group: "OpenAI",    provider: "openai"    },
   { value: "gpt-4o",                    label: "GPT-4o (avançado)",            group: "OpenAI",    provider: "openai"    },
-  { value: "gemini-2.0-flash",          label: "Gemini Flash (econômico)",    group: "Google",    provider: "google"    },
+  { value: "gemini-2.5-flash-lite",     label: "Gemini 2.5 Flash-Lite (econômico)", group: "Google", provider: "google"    },
   { value: "llama3.2",                  label: "Llama 3.2 (local/Ollama)",    group: "Ollama",    provider: "ollama"    },
   { value: "mistral",                   label: "Mistral (local/Ollama)",      group: "Ollama",    provider: "ollama"    },
 ];

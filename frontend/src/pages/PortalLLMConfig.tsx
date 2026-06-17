@@ -23,10 +23,12 @@ const MODEL_OPTIONS: Record<string, { value: string; label: string }[]> = {
     { value: "gpt-4o-mini", label: "GPT-4o Mini (rápido/barato)" },
     { value: "gpt-4o",      label: "GPT-4o (avançado)"           },
   ],
+  // A família Gemini 2.0 foi descontinuada na API (404 "no longer available").
+  // Ofertar só a 2.5, que é a atual GA. flash-lite = piso de custo.
   google: [
-    { value: "gemini-2.0-flash-lite", label: "Gemini 2.0 Flash-Lite (mais barato)" },
-    { value: "gemini-2.0-flash",      label: "Gemini 2.0 Flash (rápido)"           },
-    { value: "gemini-2.5-flash",      label: "Gemini 2.5 Flash (mais esperto)"     },
+    { value: "gemini-2.5-flash-lite", label: "Gemini 2.5 Flash-Lite (mais barato)" },
+    { value: "gemini-2.5-flash",      label: "Gemini 2.5 Flash (balanceado)"       },
+    { value: "gemini-2.5-pro",        label: "Gemini 2.5 Pro (mais esperto)"        },
   ],
   ollama: [
     { value: "llama3.2", label: "Llama 3.2" },

@@ -137,7 +137,7 @@ def get_llm_for_tenant(
 
 HAIKU = ("anthropic", "claude-haiku-4-5-20251001")
 SONNET = ("anthropic", "claude-sonnet-4-6")
-GEMINI_FLASH = ("google", "gemini-2.0-flash")
+GEMINI_FLASH = ("google", "gemini-2.5-flash")  # 2.0 foi descontinuado na API (404)
 # GPT-4o family (128K ctx)
 GPT4O_MINI = ("openai", "gpt-4o-mini")
 GPT4O = ("openai", "gpt-4o")

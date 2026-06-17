@@ -218,7 +218,7 @@ async def _describe_gemini(image_bytes: bytes, mime_type: str,
     model = settings.media_vision_model
     # Se o modelo configurado for um Claude, troca por um Gemini default
     if not model or "claude" in model.lower():
-        model = "gemini-2.0-flash"
+        model = "gemini-2.5-flash"  # 2.0 foi descontinuado na API (404); 2.5-flash tem visão
     url = (f"https://generativelanguage.googleapis.com/v1beta/models/"
            f"{model}:generateContent?key={settings.google_api_key}")
     body = {

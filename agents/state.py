@@ -43,6 +43,7 @@ class AgentState(TypedDict, total=False):
     handoff_count:   int                  # nº de handoffs nesta execução (limite p/ evitar loop)
     handoff_context: str                  # contexto passado entre skills (ex: nome do remédio)
     skill_history:   list[str]            # ordem dos skills executados nesta execução
+    model_tier:      str                  # "strong"|"weak" do modelo do skill (llm.model_tier) — gating de andaime
 
     # ── Commerce ──────────────────────────────────────────────────────────────
     cart:            dict[str, Any]      # {items: [], subtotal: float}

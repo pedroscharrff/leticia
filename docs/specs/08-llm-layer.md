@@ -84,6 +84,33 @@ baixa. **Não remover** os safety_settings sem mover essa proteção pra outro l
 vazio. Toda tool deve ter ≥1 campo no `args_schema` (ver SPEC 03 §Não fazer). Validado:
 as 22 tools de domínio + 3 de fluxo convertem limpo via `convert_to_genai_function_declarations`.
 
+## Tier de capacidade do modelo (`llm/model_tier.py`)
+
+`model_tier(provider, model) -> "strong" | "weak"` é a **fonte única** de "este
+modelo precisa de andaime?". Multi-tenant: cada tenant escolhe modelo livremente;
+os pequenos/baratos (Gemini *-flash/-lite, GPT *-mini/nano, Claude Haiku, locais)
+**chamam tools de forma pouco confiável**. Medição em prod (jun/2026): farmaceutico
+em `gemini-2.5-flash-lite` ficou com **82% dos turnos sem chamar tool**.
+
+- Classificação por **token** (split em `-`/`.`/`_`), não substring — senão `"mini"`
+  casaria dentro de `"geMINI"` e marcaria todo Gemini como weak. `gemini-2.5-pro`
+  → strong; `gemini-2.5-flash` → weak.
+- `ollama` é sempre weak. Modelo **desconhecido → strong** (default seguro: nunca
+  injeta andaime sob incerteza, nunca altera comportamento de modelo já validado).
+
+### Como descobrir o tier no caminho do agente
+
+`_make_llm_factory` expõe `llm_factory.resolve(role) -> (provider, model)` — resolve
+o par SEM construir o LLM (mesma precedência do `_get`). `run_skill` usa
+`agents/nodes/skills/_base.py::resolve_skill_tier(llm_factory, role)` e grava
+`model`/`tier` no trace do skill + `state["model_tier"]`.
+
+> **Invariante de design:** o caminho **strong** deve permanecer byte-idêntico ao
+> histórico (sem andaime, sem bloco extra no prompt → cache intacto). Todo andaime
+> de modelo fraco (force-call determinístico, bloco de disciplina de tool) é GATED
+> por `tier == "weak"`. Não introduzir andaime que rode também no strong, salvo se
+> for no-op comprovado (ex.: force-call que só dispara quando a tool não foi chamada).
+
 ## Invariantes
 
 1. **`get_llm` retorna instância cacheada** (`lru_cache(maxsize=32)`). Para BYOK, `get_llm_for_tenant` SEMPRE cria nova (não cachear chave do tenant).

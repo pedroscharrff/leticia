@@ -31,7 +31,7 @@ const LLM_OPTIONS = [
   { value: "claude-haiku-4-5-20251001", label: "Claude Haiku 4.5",       provider: "anthropic", group: "Anthropic" },
   { value: "gpt-4o",                    label: "GPT-4o",                  provider: "openai",    group: "OpenAI"    },
   { value: "gpt-4o-mini",              label: "GPT-4o Mini",             provider: "openai",    group: "OpenAI"    },
-  { value: "gemini-2.0-flash",          label: "Gemini Flash 2.0",       provider: "google",    group: "Google"    },
+  { value: "gemini-2.5-flash-lite",     label: "Gemini 2.5 Flash-Lite", provider: "google",    group: "Google"    },
   { value: "llama3.2",                  label: "Llama 3.2 (Ollama)",     provider: "ollama",    group: "Ollama"    },
   { value: "mistral",                   label: "Mistral (Ollama)",        provider: "ollama",    group: "Ollama"    },
 ];

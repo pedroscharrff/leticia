@@ -60,9 +60,10 @@ MODEL_CATALOG: dict[str, list[dict]] = {
         {"id": "o3",            "label": "o3",            "tier": "reasoning", "good_for": ["skill"]},
         {"id": "o4-mini",       "label": "o4-mini",       "tier": "reasoning", "good_for": ["skill"]},
     ],
+    # Família Gemini 2.0 foi descontinuada na API (404 "no longer available").
+    # Só a 2.5 é GA. flash-lite = piso de custo.
     "google": [
-        {"id": "gemini-2.0-flash-lite", "label": "Gemini 2.0 Flash-Lite", "tier": "fast",     "good_for": ["orchestrator", "analyst", "skill"]},
-        {"id": "gemini-2.0-flash",      "label": "Gemini 2.0 Flash",      "tier": "fast",     "good_for": ["orchestrator", "analyst", "skill"]},
+        {"id": "gemini-2.5-flash-lite", "label": "Gemini 2.5 Flash-Lite", "tier": "fast",     "good_for": ["orchestrator", "analyst", "skill"]},
         {"id": "gemini-2.5-flash",      "label": "Gemini 2.5 Flash",      "tier": "balanced", "good_for": ["orchestrator", "analyst", "skill"]},
         {"id": "gemini-2.5-pro",        "label": "Gemini 2.5 Pro",        "tier": "smart",    "good_for": ["skill"]},
     ],

@@ -95,6 +95,28 @@ from agents.skills_registry import PLAN_GATED_SKILLS as _PLAN_GATED_SKILLS
 _VALID_HANDOFF_TARGETS = set(_PLAN_GATED_SKILLS)
 
 
+def resolve_skill_tier(llm_factory, role: str) -> tuple[str, str, str]:
+    """Resolve (provider, model, tier) do modelo que vai rodar este role.
+
+    `tier` ∈ {"strong","weak"} (ver `llm.model_tier`) decide se aplicamos andaime
+    (force-call determinístico, bloco de disciplina de tool) para modelos fracos
+    — SEM tocar no caminho dos modelos fortes. Aqui (Fase B) só é gravado no
+    trace pra observabilidade; o gating de comportamento vem na Fase C.
+
+    Tolerante: se a factory não expõe `.resolve` (ex.: stubs de teste), assume
+    "strong" — default seguro, nunca injeta andaime sob incerteza."""
+    try:
+        resolve = getattr(llm_factory, "resolve", None)
+        if resolve is None:
+            return ("", "", "strong")
+        provider, model = resolve(role)
+        from llm.model_tier import model_tier
+        return (provider or "", model or "", model_tier(provider, model))
+    except Exception as _exc:  # noqa: BLE001
+        log.warning("skill.tier_resolve_failed", role=role, exc=str(_exc))
+        return ("", "", "strong")
+
+
 def _parse_handoff(text: str) -> tuple[str, str | None, str]:
     """
     Extrai marcador [[HANDOFF:skill:contexto]] do texto.
@@ -196,6 +218,21 @@ def _persona_prefix(persona: dict) -> str:
         "• NUNCA diga 'vou te passar para o farmacêutico/vendedor'.",
         "• NUNCA fale de si em 3ª pessoa.",
         "• Cliente NÃO sabe que existem agentes internos.",
+        # ── CANAIS DE ENTRADA (texto, áudio, imagem) ──────────────────────
+        "VOCÊ RECEBE TEXTO, ÁUDIO E IMAGEM:",
+        "• O cliente pode mandar mensagem de TEXTO, de ÁUDIO ou IMAGEM/FOTO.",
+        "• Áudios chegam já transcritos em texto e você CONSEGUE LER imagens "
+        "(foto de receita, caixa/cartela de remédio, exame, etc.). Trate-os "
+        "com naturalidade, como se tivesse ouvido o áudio ou visto a imagem — "
+        "não diga que 'não consegue ver/ouvir'.",
+        "• Se uma imagem vier ilegível/cortada ou um áudio vier vazio ou "
+        "truncado, peça gentilmente para o cliente reenviar ou descrever em texto.",
+        # ── LINGUAGEM AO FALAR DE FONTES (não citar bases internas) ────────
+        "AO FALAR DE INFORMAÇÃO DE MEDICAMENTO:",
+        "• NUNCA cite ao cliente as palavras 'bulário' nem 'ANVISA', nem o nome "
+        "de bases/órgãos internos que você consultou. Refira-se à origem apenas "
+        "como 'fontes oficiais', 'a bula do medicamento' ou 'informações do "
+        "fabricante'. (A consulta interna continua igual; só não exponha o termo.)",
         # ── BREVIDADE & CONDUÇÃO ──────────────────────────────────────────
         "═══════════════════════════════════════════════════════════════",
         "REGRAS DE CONVERSAÇÃO (críticas):",
@@ -591,11 +628,18 @@ async def run_skill(
     skill_history.append(skill_name)
     handoff_count = state.get("handoff_count", 0)
 
+    # Tier do modelo que rodou este skill — observabilidade (Fase B). Permite
+    # correlacionar "% turnos sem tool" com strong/weak na análise. O gating de
+    # andaime (Fase C) lê o mesmo tier.
+    _prov, _mdl, _tier = resolve_skill_tier(llm_factory, skill_name)
+
     import time as _time
     _trace_data: dict = {
         "chars": len(final_response or ""),
         "handoff_to": handoff_target,
         "escalate": escalate,
+        "model": f"{_prov}:{_mdl}" if _mdl else None,
+        "tier": _tier,
     }
     if all_tools:
         _trace_data["iters"] = iters_used
@@ -619,6 +663,8 @@ async def run_skill(
         # Atualiza selected_skill para refletir o skill que efetivamente respondeu
         "selected_skill":  handoff_target or state.get("selected_skill", skill_name),
         "end_conversation": end_conversation,
+        # Tier do modelo do skill — disponível p/ downstream (Fase C: gating de andaime).
+        "model_tier": _tier,
     }
     # Só propaga escalate quando ligado para este skill — não sobrescreve o flag
     # de outros caminhos (guardrails/vendedor) com False.

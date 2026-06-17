@@ -124,11 +124,11 @@ PLAN_SKILLS: dict[str, list[tuple]] = {
     "basic":      [("farmaceutico",   "claude-sonnet-4-6",         "anthropic")],
     "pro":        [("farmaceutico",   "claude-sonnet-4-6",         "anthropic"),
                    ("principio_ativo","claude-sonnet-4-6",         "anthropic"),
-                   ("genericos",      "gemini-2.0-flash",          "google"),
+                   ("genericos",      "gemini-2.5-flash-lite",     "google"),
                    ("vendedor",       "claude-sonnet-4-6",         "anthropic")],
     "enterprise": [("farmaceutico",   "claude-sonnet-4-6",         "anthropic"),
                    ("principio_ativo","claude-sonnet-4-6",         "anthropic"),
-                   ("genericos",      "gemini-2.0-flash",          "google"),
+                   ("genericos",      "gemini-2.5-flash-lite",     "google"),
                    ("vendedor",       "claude-sonnet-4-6",         "anthropic"),
                    ("recuperador",    "claude-haiku-4-5-20251001", "anthropic")],
 }
