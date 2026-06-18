@@ -93,14 +93,33 @@ def _apply_flow_signal(tc: dict, result: RuntimeResult) -> None:
 
 async def _execute_domain_tool(
     tc: dict, tool_map: dict, lc_messages: list, result: RuntimeResult, iter_label,
+    gate=None,
 ) -> None:
-    """Executa UMA tool de domínio e encadeia o ToolMessage. Tolerante a falha."""
+    """Executa UMA tool de domínio e encadeia o ToolMessage. Tolerante a falha.
+
+    `gate` (opcional): `async (tc) -> str | None`. Permite VETAR/transformar a
+    execução de uma tool ANTES de rodá-la — usado pelo gate determinístico de
+    confirmação de pedido (vendedor). Quando retorna string, ela vira o
+    tool_result (correção pro modelo) e a tool NÃO executa. None = executa normal.
+    """
     rec: dict = {"iter": iter_label, "name": tc.get("name"), "args": tc.get("args")}
     tool = tool_map.get(tc["name"])
     if not tool:
         rec["error"] = "tool_not_found"
         result.tool_calls_trace.append(rec)
         return
+    if gate is not None:
+        try:
+            blocked = await gate(tc)
+        except Exception as exc:  # noqa: BLE001
+            blocked = None
+            log.warning("runtime.tool_gate_failed", name=tc.get("name"), exc=str(exc))
+        if blocked is not None:
+            rec["gated"] = True
+            rec["result_preview"] = str(blocked)[:300]
+            lc_messages.append(ToolMessage(content=str(blocked), tool_call_id=tc["id"]))
+            result.tool_calls_trace.append(rec)
+            return
     try:
         out = await tool.ainvoke(tc["args"])
         result.last_tool_result = str(out)
@@ -134,6 +153,7 @@ async def run_tool_loop(
     empty_text_fallback: bool = True,
     post_loop_hook: PostLoopHook | None = None,
     defer_premature_flow: bool = False,
+    domain_tool_gate=None,
 ) -> RuntimeResult:
     """Roda o tool-loop e devolve um RuntimeResult.
 
@@ -180,7 +200,8 @@ async def run_tool_loop(
             domain, flow = _split_tool_calls(response.tool_calls)
 
             for tc in domain:
-                await _execute_domain_tool(tc, tool_map, lc_messages, result, result.iters_used)
+                await _execute_domain_tool(tc, tool_map, lc_messages, result, result.iters_used,
+                                           gate=domain_tool_gate)
 
             # Guarda anti-confusão (Gemini/weak): fluxo + domínio no mesmo turno →
             # adia o fluxo, deixa o modelo responder com o que buscou.

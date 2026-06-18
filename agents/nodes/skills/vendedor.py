@@ -542,14 +542,83 @@ async def vendedor_node(state: AgentState, llm_factory) -> AgentState:
     # Claude/GPT byte-idêntico. Medido em prod com gemini-2.5-pro.
     _SALES_DISCIPLINE = (
         "[DISCIPLINA DE VENDA — crítico]\n"
-        "• Colete o pedido COMPLETO antes de fechar. Depois de registrar CADA "
-        "item, pergunte 'Mais alguma coisa?' e ESPERE a resposta do cliente.\n"
-        "• Só vá para a confirmação e só chame a tool de anotar/finalizar o "
-        "pedido quando o cliente disser que NÃO quer mais nada ('só isso', "
-        "'não', 'pode fechar').\n"
-        "• NUNCA finalize/anote o pedido logo no primeiro item sem antes "
-        "perguntar se o cliente deseja mais alguma coisa."
+        "• Colete o pedido COMPLETO antes de fechar. Depois de cada item "
+        "definido, pergunte 'Mais alguma coisa?' e ESPERE a resposta.\n"
+        "• Um 'Sim' que responde a uma pergunta SUA de dado (dosagem, "
+        "apresentação, 'é isso mesmo?') NÃO é permissão para fechar o pedido — "
+        "é só a confirmação daquele dado. NÃO chame a tool de anotar por causa "
+        "dele.\n"
+        "• Antes de anotar/finalizar, faça SEMPRE o fechamento explícito: "
+        "repita o PEDIDO COMPLETO em uma mensagem ('Vou anotar seu pedido: "
+        "3x Neosaldina, 2x Amoxicilina 500mg. Posso fechar?') e ESPERE o "
+        "cliente confirmar ESSE fechamento.\n"
+        "• Só chame a tool de anotar/finalizar APÓS essa confirmação explícita "
+        "do pedido completo. NUNCA finalize no primeiro item nem no meio da "
+        "coleta de um novo item."
     )
+
+    # ── Plano B: gate DETERMINÍSTICO de confirmação de pedido (gated weak) ──────
+    # O reforço de prompt acima ajuda, mas modelo fraco ainda pode anotar cedo
+    # (ex.: lê um "Sim" de confirmação de dosagem como "fechar"). `anotar_pedido_
+    # balcao` INSERE em `orders` + dispara o transfer determinístico do worker —
+    # reverter depois seria apagar pedido do banco. Então BLOQUEAMOS antes de
+    # executar: a 1ª chamada com uma lista nova é vetada (modelo é instruído a
+    # confirmar o pedido completo); só a 2ª chamada, num turno POSTERIOR, com a
+    # MESMA lista (cliente confirmou) executa. Lista diferente → re-bloqueia
+    # (auto-corretivo). Snapshot no Redis sobrevive entre turnos; set local
+    # impede "confirmar" no mesmo turno. Falha de Redis = falha aberta (não pior
+    # que hoje). Claude/forte: gate desligado (_v_scaffold False).
+    _order_gate = None
+    if _v_scaffold:
+        from db.redis_client import get_redis as _get_redis_gate
+
+        def _snap_order(itens) -> str:
+            return "|".join(sorted(
+                f"{str(i.get('name', '')).strip().lower()}#{i.get('qty')}"
+                for i in (itens or []) if isinstance(i, dict)
+            ))
+
+        _confirm_key = f"order_confirm:{tenant_id}:{phone_num}"
+        _blocked_this_turn: set[str] = set()
+
+        def _block_msg(itens) -> str:
+            lista = "\n".join(
+                f"• {i.get('qty')}x {i.get('name')}"
+                for i in (itens or []) if isinstance(i, dict)
+            )
+            return (
+                "PEDIDO NÃO REGISTRADO — confirmação pendente. Você ainda NÃO "
+                "confirmou o pedido COMPLETO com o cliente. NÃO registre agora. "
+                "Envie ao cliente a lista completa e pergunte 'Posso fechar o "
+                f"pedido?':\n{lista}\nSó chame anotar_pedido_balcao DE NOVO depois "
+                "que o cliente confirmar explicitamente ESTE fechamento."
+            )
+
+        async def _order_gate(tc):  # noqa: ANN001
+            if tc.get("name") != "anotar_pedido_balcao":
+                return None
+            itens = (tc.get("args") or {}).get("itens") or []
+            snap = _snap_order(itens)
+            # Mesmo turno: se já bloqueamos esta lista agora, NÃO liberar — a
+            # confirmação tem que vir do cliente num próximo turno.
+            if snap in _blocked_this_turn:
+                return _block_msg(itens)
+            try:
+                r = _get_redis_gate()
+                prev = await r.get(_confirm_key)
+                if isinstance(prev, bytes):
+                    prev = prev.decode()
+                if prev and prev == snap:
+                    await r.delete(_confirm_key)  # cliente confirmou ESTA lista
+                    return None
+                await r.setex(_confirm_key, 900, snap)
+            except Exception as _gexc:  # noqa: BLE001
+                log.warning("vendedor.order_gate_redis_failed", exc=str(_gexc))
+                return None  # falha aberta — não bloqueia
+            _blocked_this_turn.add(snap)
+            log.info("vendedor.order_confirm_gate.blocked",
+                     tenant_id=tenant_id, items=len(itens))
+            return _block_msg(itens)
 
     # Pré-atendimento: handoff (single-hop) ao farmacêutico p/ validar na bula
     # só quando a capability está ON E o farmacêutico está ativo no tenant.
@@ -874,6 +943,16 @@ async def vendedor_node(state: AgentState, llm_factory) -> AgentState:
                     for tc in response2.tool_calls:
                         tool = tool_map.get(tc["name"])
                         rec: dict = {"iter": "forced", "name": tc.get("name"), "args": tc.get("args")}
+                        # O force-call NÃO pode furar o gate de confirmação: se o
+                        # pedido não foi confirmado, vetamos a execução forçada e o
+                        # modelo é levado a pedir a confirmação (response3 abaixo).
+                        _gated = await _order_gate(tc) if _order_gate is not None else None
+                        if _gated is not None:
+                            rec["gated"] = True
+                            rec["result_preview"] = str(_gated)[:300]
+                            lc_messages.append(_TM(content=str(_gated), tool_call_id=tc["id"]))
+                            result.tool_calls_trace.append(rec)
+                            continue
                         if tool:
                             try:
                                 r = await tool.ainvoke(tc["args"])
@@ -921,6 +1000,7 @@ async def vendedor_node(state: AgentState, llm_factory) -> AgentState:
             llm, list(messages), tools, settings.skill_max_tool_iterations,
             post_loop_hook=_vendedor_post_hook,
             defer_premature_flow=_v_scaffold,
+            domain_tool_gate=_order_gate,
         )
         final_response   = result.final_text
         tool_calls_trace = result.tool_calls_trace
