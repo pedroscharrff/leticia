@@ -186,6 +186,7 @@ async def _expire_one(
                 by="system:recovery_expired",
                 reason=f"expired_after_recovery:order={order_id}",
                 clear_history=True,
+                session_id=session_key,  # session_key É o session_id do agente
             )
         except Exception as exc:  # noqa: BLE001
             log.warning("expire.end_session_failed",

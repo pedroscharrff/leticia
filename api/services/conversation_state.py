@@ -248,6 +248,30 @@ async def close(
     return await get_state(tenant_id, phone)
 
 
+async def _clear_history_keys(
+    tenant_id: str, phone: str, session_id: str | None,
+) -> None:
+    """Apaga as chaves Redis de memória da conversa.
+
+    ⚠️ O agente (agents/nodes/context.py) grava/lê histórico em `hist:{session_id}`
+    e ownership em `owner:{session_id}`, onde `session_id` = id da plataforma OU
+    o telefone (NÃO necessariamente `{tenant_id}:{phone}`). Por anos o reset
+    apagava só `hist:{tenant_id}:{phone}` — chave que quase nunca existia — então
+    a memória NUNCA era zerada e a conversa nova "lembrava" do atendimento
+    anterior. Aqui apagamos a chave REAL (por session_id) + a legada (compat).
+    """
+    try:
+        redis = get_redis()
+        # Chave UNIFICADA (context._mem_keys): identidade estável (tenant,phone).
+        keys = [f"hist:{tenant_id}:{phone}", f"owner:{tenant_id}:{phone}"]
+        # Defesa: limpa também o keying antigo por session_id (entradas pré-migração).
+        if session_id:
+            keys += [f"hist:{session_id}", f"owner:{session_id}"]
+        await redis.delete(*keys)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 async def end_session(
     tenant_id: str,
     phone: str,
@@ -255,6 +279,7 @@ async def end_session(
     by: str,
     reason: str | None = None,
     clear_history: bool = True,
+    session_id: str | None = None,
 ) -> None:
     """Encerra a sessão SEM pausar a IA — o próximo contato vai detectar o
     marker `closed_at` e abrir um novo atendimento do zero.
@@ -284,11 +309,7 @@ async def end_session(
     await _invalidate_cache(tenant_id, phone)
 
     if clear_history:
-        try:
-            redis = get_redis()
-            await redis.delete(f"hist:{tenant_id}:{phone}")
-        except Exception:
-            pass
+        await _clear_history_keys(tenant_id, phone, session_id)
 
     log.info("convstate.ended", tenant=tenant_id, phone=phone[:4],
              by=by, reason=reason)
@@ -361,12 +382,17 @@ async def reset_session(
     *,
     by: str,
     reason: str | None = None,
+    session_id: str | None = None,
 ) -> None:
     """Zera a sessão da conversa: limpa pausa, closed_at e o histórico Redis.
 
     Usado quando o cliente envia palavra-chave de encerramento OU quando volta
     a falar após um handoff (closed_at marcado e janela de pausa expirada) —
     o próximo atendimento começa do zero.
+
+    `session_id`: chave REAL do histórico no Redis (`hist:{session_id}`). Sem ela,
+    só a chave legada `hist:{tenant_id}:{phone}` (quase sempre inexistente) era
+    apagada → memória vazava entre atendimentos. SEMPRE passe o session_id.
     """
     async with get_db_conn() as conn:
         await conn.execute(
@@ -387,12 +413,7 @@ async def reset_session(
         )
     await _invalidate_cache(tenant_id, phone)
 
-    try:
-        redis = get_redis()
-        # session_id padrão é "{tenant_id}:{phone}" (LangGraph thread_id)
-        await redis.delete(f"hist:{tenant_id}:{phone}")
-    except Exception:
-        pass
+    await _clear_history_keys(tenant_id, phone, session_id)
 
     log.info("convstate.reset", tenant=tenant_id, phone=phone[:4],
              by=by, reason=reason)

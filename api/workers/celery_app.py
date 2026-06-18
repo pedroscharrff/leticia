@@ -501,6 +501,7 @@ async def _maybe_close_or_reset_session(
     session_cfg: dict,
     *,
     text_sender,   # async (text: str) -> None — entrega a confirmação ao cliente
+    session_id: str | None = None,  # chave REAL do histórico Redis (hist:{session_id})
 ) -> bool:
     """Aplica o ciclo de vida da sessão antes de rodar o agente.
 
@@ -549,6 +550,7 @@ async def _maybe_close_or_reset_session(
                     tenant_id, phone,
                     by="auto:new_contact",
                     reason="post_close_new_contact",
+                    session_id=session_id,
                 )
                 log.info("session.reset_on_new_contact",
                          tenant=tenant_id, phone=phone[:4])
@@ -568,6 +570,7 @@ async def _maybe_close_or_reset_session(
             by="customer:keyword",
             reason=f"close_keyword:{matched}",
             clear_history=True,
+            session_id=session_id,
         )
     except Exception as exc:  # noqa: BLE001
         log.warning("session.close_via_keyword_failed",
@@ -747,6 +750,7 @@ async def _run_graph(
             tenant_id, phone, current_message,
             session_cfg,
             text_sender=_send_via_callback,
+            session_id=session_id,
         )
         if ended:
             return
@@ -939,6 +943,7 @@ async def _run_graph(
                     by="agent:end_marker",
                     reason="agent_end_conversation",
                     clear_history=True,
+                    session_id=session_id,
                 )
                 log.info("webhook.session.ended_by_agent", tenant=tenant_id,
                          phone_prefix=phone[:4])
@@ -1234,6 +1239,7 @@ async def _run_broker_flow(
             tenant_id, phone_clean, message,
             integration.get("session_config") or {},
             text_sender=_send_via_broker,
+            session_id=session_id,
         )
         if ended:
             # Persist como evento processado (skip do agente)
@@ -1469,6 +1475,7 @@ async def _run_broker_flow(
                 by="agent:end_marker",
                 reason="agent_end_conversation",
                 clear_history=True,
+                session_id=session_id,
             )
             log.info("broker.session.ended_by_agent", tenant=tenant_id,
                      phone_prefix=phone_clean[:4])

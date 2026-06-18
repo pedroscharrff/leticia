@@ -235,6 +235,7 @@ Criar task no estilo `process_*_message` + endpoint correspondente em `routers/`
 ## Regressões conhecidas / "Não fazer"
 
 - **Não esquecer `init_pool()` + `init_redis()` no início da task.** Worker é processo separado, sem pool pré-aberto.
+- **Ao zerar a sessão (`reset_session`/`end_session`), SEMPRE passar `session_id`.** O agente grava memória em `hist:{session_id}` e ownership em `owner:{session_id}` (`agents/nodes/context.py`), onde `session_id` = id da plataforma OU telefone — **NÃO** `{tenant_id}:{phone}`. Por anos o reset apagava só a chave legada `hist:{tenant_id}:{phone}` (inexistente) → a memória NUNCA era zerada e a conversa nova "lembrava" do atendimento anterior. `_clear_history_keys(tenant_id, phone, session_id)` apaga a chave real + a legada. Os call sites no worker propagam `session_id` (têm em escopo). Corrigido 2026-06-17.
 - **Não usar `task.delay` síncrono dentro do worker** pra encadear — use `apply_async` com countdown.
 - **Não levantar exceção em `_send_pre_handoff_offers` ou `send_order_summary`** — handoff já saiu, nada deve quebrar.
 - **Não re-acoplar `auto_pause_after_handoff` (closed_at) ao `handoff_result.ok` nem voltar o early-return de `pause_minutes <= 0`.** Era o bug do "resumo enviado mas ticket nunca finaliza": o resumo é gated em `do_handoff`, o close ficava gated em `ok` + `pause_minutes>0`. Finalização do ticket é determinística; pausa da IA é o que depende de `pause_minutes`.

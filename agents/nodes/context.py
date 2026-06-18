@@ -24,6 +24,25 @@ log = structlog.get_logger()
 _TTL_DEFAULT = 1800  # segundos (30 min) — fallback se DB/cache falhar
 
 
+def _mem_keys(state: AgentState) -> tuple[str, str]:
+    """Chaves Redis de memória da conversa: (hist_key, owner_key).
+
+    Identidade ESTÁVEL = (tenant_id, phone) — a MESMA que o ciclo de vida da
+    sessão usa para resetar (`services/conversation_state._clear_history_keys`).
+    Historicamente o agente keyava por `session_id` (id de plataforma OU phone),
+    enquanto o reset apagava `{tenant_id}:{phone}` → as chaves DIVERGIAM e a
+    memória NUNCA era zerada entre atendimentos (conversa nova "lembrava" do
+    pedido anterior). Unificado em (tenant_id, phone). Fallback para session_id
+    se faltar tenant/phone (degenerado — não deve ocorrer em prod).
+    """
+    tid = (state.get("tenant_id") or "").strip()
+    ph = (state.get("phone") or "").strip()
+    if tid and ph:
+        return f"hist:{tid}:{ph}", f"owner:{tid}:{ph}"
+    sid = state.get("session_id") or ""
+    return f"hist:{sid}", f"owner:{sid}"
+
+
 async def _resolve_session_ttl(tenant_id: str | None) -> int:
     """Lê session_ttl_minutes do tenant (default 30) e retorna em segundos.
 
@@ -69,6 +88,7 @@ async def load_context(state: AgentState) -> AgentState:
     tenant_id    = state["tenant_id"]
     schema_name  = state["schema_name"]
     max_messages = 10
+    hist_key, owner_key = _mem_keys(state)
 
     updates: dict = {}
 
@@ -76,7 +96,7 @@ async def load_context(state: AgentState) -> AgentState:
     try:
         from db.redis_client import get_redis
         redis = get_redis()
-        raw = await redis.get(f"hist:{session_id}")
+        raw = await redis.get(hist_key)
         messages = json.loads(raw) if raw else []
         # Trunca para as últimas N mensagens para economizar tokens
         updates["messages"] = messages[-max_messages:]
@@ -89,7 +109,7 @@ async def load_context(state: AgentState) -> AgentState:
     # aberta para None (sem owner → orchestrator reclassifica normalmente).
     try:
         from db.redis_client import get_redis
-        owner_raw = await get_redis().get(f"owner:{session_id}")
+        owner_raw = await get_redis().get(owner_key)
         if isinstance(owner_raw, bytes):
             owner_raw = owner_raw.decode()
         updates["current_owner"] = owner_raw or None
@@ -224,6 +244,7 @@ async def save_context(state: AgentState) -> AgentState:
     current_msg    = state.get("current_message", "")
     final_response = state.get("final_response", "")
     skill_used     = state.get("selected_skill", "unknown")
+    hist_key, owner_key = _mem_keys(state)
 
     # Atualiza histórico — evita persistir mensagens vazias (causariam 400 no Anthropic)
     messages = list(state.get("messages", []))
@@ -237,7 +258,7 @@ async def save_context(state: AgentState) -> AgentState:
         from db.redis_client import get_redis
         redis = get_redis()
         ttl_s = await _resolve_session_ttl(state.get("tenant_id"))
-        await redis.setex(f"hist:{session_id}", ttl_s, json.dumps(messages))
+        await redis.setex(hist_key, ttl_s, json.dumps(messages))
 
         # ── Sticky ownership: grava o dono (skill que respondeu) ou limpa ─────
         # Limpa quando o atendimento terminou/escalou/finalizou pedido — a
@@ -252,9 +273,9 @@ async def save_context(state: AgentState) -> AgentState:
                 or state.get("escalate")
                 or cart_just_finalized
             ):
-                await redis.delete(f"owner:{session_id}")
+                await redis.delete(owner_key)
             elif skill_used and skill_used != "unknown":
-                await redis.setex(f"owner:{session_id}", ttl_s, skill_used)
+                await redis.setex(owner_key, ttl_s, skill_used)
         except Exception as exc:
             log.warning("context.redis.owner_save_failed", session=session_id, exc=str(exc))
     except Exception as exc:
