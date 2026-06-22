@@ -286,22 +286,30 @@ async def orchestrator(state: AgentState, llm_factory) -> AgentState:
 
     system_prompt = _SYSTEM.format(skills_list=_build_skills_list(available_skills))
 
-    # Validação farmacêutica (pré-atendimento): quando a capability está ON e o
-    # farmacêutico está ativo, medicamento NOMEADO vai PRIMEIRO ao farmacêutico
-    # (override da regra 2) — ele confere a apresentação na bula da ANVISA
-    # (`consultar_bula`, cobre além do catálogo local) antes da coleta. Isso
-    # resolve de forma confiável o "vendedor inventa dosagem", colocando a
-    # decisão no classificador dedicado em vez de depender do vendedor lembrar
-    # de fazer o handoff.
+    # Validação farmacêutica — override "medicamento nomeado → farmaceutico".
+    # É uma feature de PRÉ-ATENDIMENTO (sem catálogo): o farmaceutico confere a
+    # apresentação na bula da ANVISA antes da coleta, evitando "vendedor inventa
+    # dosagem" quando NÃO há catálogo pra consultar.
+    #
+    # ⚠️ MODE-AWARE: só aplica quando NÃO há catálogo (`sales.stock_check` OFF).
+    # Quando EXISTE catálogo (Sheets/ERP), a regra 2 vale — "tem X?" vai ao
+    # VENDEDOR, que consulta o catálogo (fonte da verdade do que a loja carrega).
+    # Aplicar o override em modo catálogo fazia o farmaceutico enumerar
+    # apresentações DA BULA como se fossem estoque, e o vendedor desmentia depois
+    # (regressão real medida em prod, jun/2026). Com catálogo, a validação de
+    # apresentação já vem do próprio `buscar_produto` do vendedor (que pode, ele
+    # mesmo, fazer o single-hop ao farmaceutico via `sales.pharmacist_validation`).
+    # Cf. SPEC 01 §routing + SPEC 04 §"Os três modos".
     if "farmaceutico" in available_skills:
         try:
             from services import capabilities as cap_svc
-            if await cap_svc.is_enabled(
-                state.get("tenant_id"), "sales.pharmacist_validation"
-            ):
+            _tid = state.get("tenant_id")
+            _has_catalog = await cap_svc.is_enabled(_tid, "sales.stock_check")
+            _pharm_val   = await cap_svc.is_enabled(_tid, "sales.pharmacist_validation")
+            if _pharm_val and not _has_catalog:
                 system_prompt += (
                     "\n\n═══════════════════════════════════════════════════════\n"
-                    "OVERRIDE — VALIDAÇÃO FARMACÊUTICA ATIVA\n"
+                    "OVERRIDE — VALIDAÇÃO FARMACÊUTICA ATIVA (pré-atendimento)\n"
                     "═══════════════════════════════════════════════════════\n"
                     "Esta farmácia exige conferir o medicamento na bula antes de "
                     "anotar o pedido. Quando o cliente CITAR um MEDICAMENTO por "

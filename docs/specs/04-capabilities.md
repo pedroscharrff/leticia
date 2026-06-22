@@ -104,7 +104,7 @@ POST /portal/capabilities/{key}/toggle  → set_enabled(tenant, key, enabled, co
 | `inventory.track_stock` | OFF | basic | **Quantidade é autoritativa** (modo ERP). SÓ controla a leitura real de `stock_qty`: `[INTERNO: N un]`, `in_stock` por quantidade, "estou sem estoque". NÃO é o gate de "tem catálogo" — ver §"Os três modos" |
 | `sales.cross_sell` | OFF | pro | Sugere complementos via product_relations |
 | `sales.pre_handoff_offers` | OFF | basic | Manda ofertas vigentes ANTES de transferir |
-| `sales.pharmacist_validation` | OFF | basic | Pré-atendimento: medicamento nomeado vai ao farmacêutico p/ validar na bula antes de anotar (requer farmacêutico ativo). Config `not_found_message` (editável): frase enviada ao cliente quando o remédio não está no bulário da ANVISA — pede dosagem/apresentação em vez de inventar (mig 056) |
+| `sales.pharmacist_validation` | OFF | basic | Medicamento nomeado vai ao farmacêutico p/ validar na bula (requer farmacêutico ativo). **O override de roteamento no orchestrator SÓ vale em pré-atendimento** (`sales.stock_check` OFF, sem catálogo) — com catálogo, "tem X?" vai ao vendedor e a validação é vendedor-led via single-hop (SPEC 01 §routing mode-aware). Config `not_found_message` (editável): frase enviada ao cliente quando o remédio não está no bulário da ANVISA — pede dosagem/apresentação em vez de inventar (mig 056) |
 | `safety.availability_guard` | ON | basic | Detecta produto inventado pelo LLM |
 | `safety.price_guard` | ON | basic | Cruza preço citado com catálogo |
 | `safety.prescription_guard` | ON | basic | Bloqueia "não precisa receita" sobre tarja |

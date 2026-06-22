@@ -63,10 +63,16 @@ def build_graph_for_tenant(cfg: TenantConfig, redis) -> CompiledGraph
 ```
 START → load_context → ingest_media → sentiment_analyzer → orchestrator
       → <skill>       (pode emitir [[HANDOFF:X]] → vai pro skill X)
-      → safety_guard  (passthrough se track_stock=OFF, senão valida)
+      → safety_guard  (passthrough se SEM catálogo / sales.stock_check=OFF, senão valida)
       → analyst       (aprova → save_context → END; reprova → volta pro skill)
       → save_context → END
 ```
+
+### Roteamento mode-aware do orchestrator (validação farmacêutica)
+
+O orchestrator classifica por intenção (regras no `_SYSTEM`). A regra 2 manda **produto nomeado** ("tem Dipirona?", "quanto custa Tylenol?") → **vendedor**. Há UM override: quando `sales.pharmacist_validation` ON, medicamento nomeado vai ao **farmaceutico** (validar na bula antes de anotar).
+
+⚠️ **Esse override SÓ vale em pré-atendimento** (`sales.stock_check` OFF, sem catálogo). Com catálogo (Sheets/ERP) o override é **suprimido** → "tem X?" segue pro vendedor, que consulta o catálogo (fonte da verdade do que a loja carrega). Sem essa condição, o farmaceutico respondia disponibilidade enumerando apresentações **da bula** e o vendedor desmentia depois (regressão real, jun/2026). Em modo catálogo, o farmaceutico fica só para **sintoma** (regra 1) e **dúvida clínica** (regra 5); a validação de apresentação vem do `buscar_produto` do vendedor (que pode fazer o single-hop ao farmaceutico via `sales.pharmacist_validation`). Cf. SPEC 04 §"Os três modos".
 
 `sentiment_analyzer` (`agents/nodes/sentiment_analyzer.py`) é **passthrough quando a capability `intelligence.sentiment_analysis` está OFF** (early-return após 1 leitura cacheada de `is_enabled` — zero custo/latência). Quando ON: classifica o sentimento (Haiku), grava `sentiment`/`sentiment_score`/`sentiment_directive` (este último é injetado como bloco volátil nos skills) e, se `escalate_on_frustration` estiver ligado e o score passar do limiar, seta `escalate=True` (reusa o fluxo de escalação abaixo — NÃO cria caminho novo).
 
