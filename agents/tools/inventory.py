@@ -210,11 +210,14 @@ def make_add_to_cart_tool(schema_name: str, cart: dict):
     async def adicionar_ao_carrinho(produto: str, quantidade: int = 1) -> str:
         """
         Adiciona um produto ao carrinho do cliente.
-        Use quando o cliente confirmar que quer comprar um produto.
+        Use quando o cliente confirmar que quer comprar um produto E já tiver
+        informado a quantidade. Se o cliente NÃO disse quantas unidades quer,
+        pergunte "Quantas unidades?" ANTES de chamar — não assuma 1.
 
         Args:
             produto: Nome exato do produto a adicionar.
-            quantidade: Quantidade desejada (padrão: 1).
+            quantidade: Quantidade informada pelo cliente. NÃO invente: só passe
+                o número que o cliente declarou.
         """
         try:
             from db.postgres import get_db_conn

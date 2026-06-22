@@ -103,7 +103,9 @@ Vive em `agents/runtime.py` (`StockRecall` + `_maybe_force_stock_search`), NÃO 
 **Problema**: medição em prod (`llm/model_tier.py`) — `gemini-*-flash-lite` fica com ~82% dos turnos sem chamar tool. Havendo catálogo, isso vira "temos esse remédio" sem ter consultado o catálogo. O prompt (`stock_check_block`, SPEC 02) é ignorado pela LLM fraca; o `availability_guard` curto-circuita porque não houve busca. Nada segura.
 
 **Como funciona** (só quando fornecido `stock_recall` — o skill só fornece para LLM **fraca** (`needs_tool_scaffolding`) **E** existe catálogo (`sales.stock_check` ON)):
-1. Após o loop, checa `availability_guard.has_unverified_affirmation(final_text)` — afirmação de disponibilidade ("temos", "tem sim", "em estoque"…) sem negação. Reusa os MESMOS regex do guard (fonte única).
+1. Após o loop, checa `availability_guard.affirms_or_offers_availability(final_text)` — combina DOIS sinais:
+   - `has_unverified_affirmation`: afirmação direta ("temos", "tem sim", "em estoque"…) sem negação.
+   - `has_presentation_offer`: **oferta de apresentação** para escolher/comprar ("a dipirona vem em comprimido ou gotas, qual prefere?") — exige token de forma (comprimido/gotas/mg/apresentação…) **E** convite de compra (qual prefere/posso anotar/quantas…), sem negação. Esse vetor não tem "temos", então escapava do nº1 — era o farmaceutico enumerando apresentações DA BULA como se fossem estoque (caso real medido). Os dois exigem regex; fonte única no `availability_guard`.
 2. **Suprime** se `buscar_produto` já rodou no turno (guard cobre) OU se uma tool de carrinho/pedido rodou (`suppress_tools` — item já validado, evita atrito em reafirmação de fechamento).
 3. Senão: re-injeta uma `HumanMessage` forçando `buscar_produto`, executa a(s) busca(s), e regenera a resposta com instrução de usar APENAS o resultado. Se o modelo não buscar nem forçado → resposta segura ("deixa eu confirmar a disponibilidade…").
 4. Fail-open: qualquer exceção no andaime é logada e ignorada (não derruba a entrega).

@@ -180,10 +180,10 @@ async def _maybe_force_stock_search(
     populado, então o `safety_guard` downstream ainda cobre o caso de o modelo
     insistir em afirmar um produto que voltou sem match.
     """
-    from services.availability_guard import has_unverified_affirmation
+    from services.availability_guard import affirms_or_offers_availability
 
     txt = result.final_text or ""
-    if not txt.strip() or not has_unverified_affirmation(txt):
+    if not txt.strip() or not affirms_or_offers_availability(txt):
         return
 
     called = {tc.get("name") for tc in result.tool_calls_trace}

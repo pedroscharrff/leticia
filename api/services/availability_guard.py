@@ -79,6 +79,67 @@ def _mentions(haystack_norm: str, needle: str) -> bool:
     return False
 
 
+# Tokens de FORMA/APRESENTAÇÃO — sozinhos NÃO bastam (aparecem em resposta
+# clínica: "a dose é 500mg"). Só viram sinal de OFERTA junto de um convite de
+# compra/escolha (`_PURCHASE_CUE_PATTERNS`).
+_PRESENTATION_PATTERNS = [
+    r"\bcomprimidos?\b",
+    r"\bgotas?\b",
+    r"\bxarope\b",
+    r"\bc[aá]psulas?\b",
+    r"\bampolas?\b",
+    r"\bsach[eê]s?\b",
+    r"\bsuspens[aã]o\b",
+    r"\bsolu[cç][aã]o\s+oral\b",
+    r"\bvem\s+em\b",
+    r"\bapresenta[cç]",            # apresentação/apresentações
+    r"\bdosagens?\b",
+    r"\d+\s*mg\b",
+    r"\d+\s*ml\b",
+]
+
+# Convite a ESCOLHER/COMPRAR — distingue oferta de venda de resposta clínica.
+_PURCHASE_CUE_PATTERNS = [
+    r"\bqual\b[^.?!]*\bprefer",        # "qual ... prefere/preferência"
+    r"\bqual\b[^.?!]*\bquer\b",
+    r"\bqual\b[^.?!]*\bdeseja\b",
+    r"\bqual\s+(das|dos|deles|delas)\b",
+    r"\bposso\s+anot",                 # anotar
+    r"\bposso\s+adicionar\b",
+    r"\bposso\s+separar\b",
+    r"\bposso\s+incluir\b",
+    r"\bquantas?\s+(caixas?|unidades?|frascos?)\b",
+    r"\bpode\s+ser\s+ess",             # "pode ser esse/essa?"
+]
+
+
+def has_presentation_offer(response_text: str) -> bool:
+    """True quando a resposta OFERECE uma apresentação para o cliente escolher/
+    comprar (ex.: "a dipirona vem em comprimido ou gotas, qual prefere?") —
+    SEM negação clara. Exige DOIS sinais juntos (forma + convite de compra) para
+    não disparar em resposta clínica pura ("a dose é 500mg"). É o vetor que o
+    `has_unverified_affirmation` não pega: enumerar apresentações DA BULA como se
+    fossem o que a loja vende. Usado pelo force-recall (SPEC 10)."""
+    if not response_text:
+        return False
+    norm = _normalize(response_text)
+    if any(re.search(p, norm) for p in _NEGATION_PATTERNS):
+        return False  # agente admitiu indisponibilidade — confiamos
+    has_form = any(re.search(p, norm) for p in _PRESENTATION_PATTERNS)
+    has_cue  = any(re.search(p, norm) for p in _PURCHASE_CUE_PATTERNS)
+    return has_form and has_cue
+
+
+def affirms_or_offers_availability(response_text: str) -> bool:
+    """Sinal combinado do force-recall: afirmação direta de disponibilidade
+    (`has_unverified_affirmation`) OU oferta de apresentação para compra
+    (`has_presentation_offer`). Cf. SPEC 10 §força-busca de estoque."""
+    return (
+        has_unverified_affirmation(response_text)
+        or has_presentation_offer(response_text)
+    )
+
+
 def has_unverified_affirmation(response_text: str) -> bool:
     """True quando a resposta AFIRMA disponibilidade ("temos", "tem sim", "em
     estoque"...) sem negação clara — INDEPENDENTE de ter havido busca.

@@ -88,7 +88,10 @@ PLAYBOOK — etapas da conversa
      transferência interna) buscar alternativa. Não invente alternativa.
 
 2. Adicionar ao carrinho:
-   - Cliente confirma → chame `adicionar_ao_carrinho(produto, qty)`.
+   - ANTES de adicionar, confirme a QUANTIDADE. Se o cliente ainda NÃO disse
+     quantas unidades quer, pergunte "Quantas unidades?" e ESPERE a resposta —
+     NÃO assuma 1. Um "sim/quero/pode" confirma o PRODUTO, não a quantidade.
+   - Com produto E quantidade definidos → `adicionar_ao_carrinho(produto, qty)`.
    - Após adicionar, pergunte "Mais algum item?" — UMA pergunta só.
 
 3. Coleta de dados obrigatórios:
@@ -318,6 +321,33 @@ def _detect_item_listing(text: str) -> bool:
         return True
     matches = _ITEM_LINE_RE.findall(text)
     return len(matches) >= 2
+
+
+# ── Detecção de QUANTIDADE declarada pelo cliente (gate determinístico) ──────
+# Numeral por extenso (até dezenas — suficiente p/ farmácia). "um/uma" conta como
+# quantidade 1 declarada (não pesteia quem disse "quero uma dipirona").
+_QTY_WORD_RE = _re.compile(
+    r"\b(um|uma|uns|umas|dois|duas|tr[eê]s|quatro|cinco|seis|sete|oito|nove|dez|"
+    r"d[uú]zia|d[uú]zias|vinte|trinta|quarenta|cinquenta|cem|cento)\b",
+    _re.IGNORECASE,
+)
+# Unidade de DOSAGEM logo após um número → é dose, NÃO quantidade ("500mg").
+_DOSAGE_AFTER_RE = _re.compile(r"^\s*(mg|mcg|ml|g|grama|gramas|mililitros?)\b",
+                               _re.IGNORECASE)
+
+
+def _stated_quantity(text: str) -> bool:
+    """Heurística determinística: o cliente declarou uma QUANTIDADE neste texto?
+    Dígito que NÃO seja dosagem (exclui '500mg') OU numeral por extenso. Usado
+    pelo gate de quantidade do vendedor (modo normal, gated weak)."""
+    t = (text or "").lower()
+    if not t:
+        return False
+    for m in _re.finditer(r"\d+", t):
+        if _DOSAGE_AFTER_RE.match(t[m.end():m.end() + 8]):
+            continue  # número de dosagem, não quantidade
+        return True
+    return bool(_QTY_WORD_RE.search(t))
 
 
 # ── Extração estruturada via Haiku (schema forçado, sem agência) ─────────────
@@ -554,7 +584,11 @@ async def vendedor_node(state: AgentState, llm_factory) -> AgentState:
         "cliente confirmar ESSE fechamento.\n"
         "• Só chame a tool de anotar/finalizar APÓS essa confirmação explícita "
         "do pedido completo. NUNCA finalize no primeiro item nem no meio da "
-        "coleta de um novo item."
+        "coleta de um novo item.\n"
+        "• QUANTIDADE: NUNCA adicione/anote um item assumindo 1 unidade. Um "
+        "'sim/quero/pode' confirma o PRODUTO, não a QUANTIDADE. Se o cliente "
+        "não disse QUANTAS unidades quer, PERGUNTE 'Quantas unidades?' e ESPERE "
+        "a resposta antes de adicionar ou anotar."
     )
 
     # ── Plano B: gate DETERMINÍSTICO de confirmação de pedido (gated weak) ──────
@@ -594,8 +628,41 @@ async def vendedor_node(state: AgentState, llm_factory) -> AgentState:
                 "que o cliente confirmar explicitamente ESTE fechamento."
             )
 
+        def _qty_block_msg(produto) -> str:
+            p = str(produto or "esse item").strip() or "esse item"
+            return (
+                f"QUANTIDADE PENDENTE — NÃO adicione ainda. O cliente confirmou o "
+                f"PRODUTO ({p}), mas NÃO disse QUANTAS unidades quer. Um 'sim/"
+                f"quero/pode' confirma o produto, não a quantidade. Pergunte ao "
+                f"cliente 'Quantas unidades de {p} você quer?' e ESPERE a resposta. "
+                f"Só chame adicionar_ao_carrinho DEPOIS que ele informar a quantidade."
+            )
+
         async def _order_gate(tc):  # noqa: ANN001
-            if tc.get("name") != "anotar_pedido_balcao":
+            name = tc.get("name")
+            # ── Gate de quantidade (modo normal) — andaime weak ─────────────
+            # Veta adicionar_ao_carrinho de item NOVO quando o cliente não
+            # declarou a quantidade: a LLM fraca pula a etapa e assume qty=1
+            # (sintoma real). qty>1 ou item já no carrinho (ajuste) passam livres.
+            if name == "adicionar_ao_carrinho":
+                args = tc.get("args") or {}
+                try:
+                    _qty = int(args.get("quantidade") or 1)
+                except (TypeError, ValueError):
+                    _qty = 1
+                _produto = str(args.get("produto") or "").strip().lower()
+                _in_cart = any(
+                    _produto and _produto in str(it.get("name", "")).lower()
+                    for it in (cart.get("items") or [])
+                )
+                if _qty > 1 or _in_cart:
+                    return None  # quantidade explícita (>1) ou ajuste de item
+                if _stated_quantity(state.get("current_message", "")):
+                    return None  # cliente declarou a quantidade nesta mensagem
+                log.info("vendedor.qty_gate.blocked",
+                         tenant_id=tenant_id, produto=_produto)
+                return _qty_block_msg(args.get("produto"))
+            if name != "anotar_pedido_balcao":
                 return None
             itens = (tc.get("args") or {}).get("itens") or []
             snap = _snap_order(itens)

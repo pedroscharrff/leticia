@@ -161,7 +161,14 @@ Andaimes gated por esse gate (todos no-op/ausentes para strong):
    reusa o regex do guard) e FORÇA `buscar_produto`, regenerando a resposta a partir
    do resultado real. Suprime quando carrinho/pedido já mexeu no turno (item
    validado). Fornecido por `farmaceutico` (via `run_skill(verify_stock_affirmation=
-   track_stock)`) e `vendedor` (modo normal). Detalhe em SPEC 10 §força-busca de estoque.
+   has_catalog)`) e `vendedor` (modo normal). Detalhe em SPEC 10 §força-busca de estoque.
+6. **Gate de quantidade no `vendedor`** (`domain_tool_gate`/`_order_gate`, gated weak):
+   modelo fraco pula a etapa de quantidade e chama `adicionar_ao_carrinho` com o
+   default `qty=1` quando o cliente só confirmou o PRODUTO ("Sim"). O gate veta o add
+   de item novo quando `_stated_quantity(current_message)` é False e `qty<=1` (item
+   já no carrinho ou `qty>1` passam livres), devolvendo correção que manda perguntar
+   "Quantas unidades?". `_stated_quantity` é determinístico (dígito não-dosagem OU
+   numeral por extenso). Reforçado no playbook + `_SALES_DISCIPLINE`. Cf. SPEC 02 §vendedor.
 
 > **Por que NÃO há force-call amplo de "consultou? então responde" no farmaceutico:**
 > a métrica `pct_sem_tool` é contaminada por turnos de condução legítimos (perguntas
