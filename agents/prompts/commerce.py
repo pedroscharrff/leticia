@@ -42,6 +42,22 @@ def shipping_block() -> str:
     )
 
 
+def cep_lookup_block() -> str:
+    return (
+        f"{_DIV}\n"
+        "AUTOCOMPLETAR ENDEREÇO POR CEP\n"
+        f"{_DIV}\n"
+        "Você TEM a tool `consultar_cep(cep)`. Assim que o cliente informar um\n"
+        "CEP, CHAME essa tool ANTES de pedir o resto do endereço. Mostre a\n"
+        "rua, bairro e cidade encontrados e PEÇA ao cliente apenas para\n"
+        "confirmar e informar o NÚMERO e o COMPLEMENTO (o CEP não traz isso).\n"
+        "Depois que o cliente confirmar, salve tudo de uma vez com\n"
+        "`salvar_dados_cliente`. NÃO pergunte rua/bairro/cidade que o CEP já\n"
+        "trouxe — só confirme. Se a tool disser que o CEP é inválido ou não foi\n"
+        "encontrado, aí sim peça o endereço completo manualmente."
+    )
+
+
 def pix_block(auto_send: bool = True) -> str:
     auto = (
         "Sempre que `finalizar_pedido` retornar um número de pedido com\n"

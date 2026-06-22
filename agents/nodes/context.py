@@ -56,18 +56,44 @@ def _apply_signature(text: str, state: AgentState) -> str:
     não faz sentido assinar uma mensagem de "vou te transferir" ou um resumo
     pós-handoff. Idempotente: não duplica se o texto já termina com a assinatura.
     """
+    sid = state.get("session_id")
     body = (text or "").strip()
     if not body:
+        log.info("signature.skip", session=sid, reason="empty_response")
         return text
-    if state.get("escalate") or state.get("end_conversation") or state.get("handoff_to"):
+    # Pula mensagens que NÃO são "resposta normal": transferência humana
+    # (escalate), encerramento (end_conversation), handoff entre skills e o
+    # recibo de pedido fechado (`cart.just_finalized` — vira a mensagem de
+    # transferência no worker, ver [[reference_transfer_and_offers_flow]]).
+    # Assinar qualquer um deles polui a mensagem de handoff/recibo.
+    cart_finalized = bool((state.get("cart") or {}).get("just_finalized"))
+    if (
+        state.get("escalate")
+        or state.get("end_conversation")
+        or state.get("handoff_to")
+        or cart_finalized
+    ):
+        reason = (
+            "escalate" if state.get("escalate")
+            else "end_conversation" if state.get("end_conversation")
+            else "handoff_to" if state.get("handoff_to")
+            else "cart_just_finalized"
+        )
+        log.info("signature.skip", session=sid, reason=reason)
         return text
     persona = state.get("persona") or {}
     signature = (persona.get("signature") or "").strip()
     if not signature:
+        # Caso MAIS comum de "não saiu assinatura": coluna vazia no DB.
+        # has_persona ajuda a distinguir "persona não carregou" de "campo vazio".
+        log.info("signature.skip", session=sid, reason="no_signature",
+                 has_persona=bool(persona))
         return text
     # Dedupe defensivo: se a LLM (por mímica do histórico) já assinou, não repete.
     if body.endswith(signature):
+        log.info("signature.skip", session=sid, reason="already_present")
         return text
+    log.info("signature.applied", session=sid, sig_len=len(signature))
     return f"{body}\n\n{signature}"
 
 

@@ -60,11 +60,14 @@ def make_buscar_produto_tool(schema_name: str, tenant_id: str, cart: dict):
 | Tool | Args | Side effect | Retorna |
 |---|---|---|---|
 | `salvar_dados_cliente(campos)` | dict com chaves PT (`nome/cpf/cep/rua/...`) ou EN | upsert em `customers` + muta `customer` no state | Confirmação + estado atual |
+| `consultar_cep(cep)` | CEP (com/sem hífen) | nenhum (read-only, ViaCEP) | Rua/bairro/cidade/UF p/ o agente confirmar + pedir número/complemento |
 | `consultar_pedido(codigo)` | código (vazio = mais recente do telefone) | nenhum | Status amigável + itens + total |
 | `cancelar_pedido(numero_pedido)` | código | marca `cancelled` em `orders` | Confirmação |
 | `editar_pedido(numero_pedido, adicionar, remover, nova_observacao)` | | atualiza `orders` (apenas se status=pending) | Confirmação |
 
 `_FIELD_TO_COLUMN` mapeia chaves PT/EN → colunas reais. Adicionar campo novo = atualizar esse dict.
+
+**`consultar_cep`** chama o ViaCEP (`api/services/viacep.py`, GET público sem auth) para autocompletar o endereço assim que o cliente informa o CEP — o agente confirma rua/bairro/cidade e só coleta número/complemento, deixando o atendimento mais fluido. É **read-only** (invariante #4): NÃO grava no banco; o salvamento continua via `salvar_dados_cliente` após o cliente confirmar. A tool + o bloco de prompt `cep_lookup_block()` (em `prompts/commerce.py`) só entram no vendedor modo normal quando a farmácia coleta endereço — gate `_collects_address`: `cep` em `required_fields`, OU `ask_delivery`, OU capability `delivery.shipping_by_cep`. Falha fechada: ViaCEP fora do ar / CEP inexistente → a tool instrui o agente a pedir o endereço manualmente.
 
 ### `balcao.py` — Modo pré-atendimento
 

@@ -142,6 +142,63 @@ def make_save_customer_tool(schema_name: str, phone: str, customer: dict):
     return salvar_dados_cliente
 
 
+def make_consultar_cep_tool(schema_name: str, phone: str, customer: dict):
+    """
+    Consulta o endereço de um CEP no ViaCEP para autocompletar o cadastro.
+
+    READ-ONLY (invariante #4 da SPEC 03): NÃO escreve no banco. Retorna o
+    endereço encontrado para o agente CONFIRMAR com o cliente; o salvamento
+    fica a cargo de `salvar_dados_cliente` após a confirmação (o cliente ainda
+    precisa informar número e complemento, que o CEP não traz).
+    """
+    @tool
+    async def consultar_cep(cep: str) -> str:
+        """
+        Consulta o endereço (rua, bairro, cidade, estado) de um CEP brasileiro.
+        Use SEMPRE que o cliente informar um CEP, ANTES de pedir o restante do
+        endereço — assim você já mostra a rua/bairro/cidade encontrados e o
+        cliente só confirma e informa o número e o complemento.
+
+        Args:
+            cep: CEP do cliente (com ou sem hífen, ex.: '01310-100').
+
+        Returns:
+            O endereço encontrado para você confirmar com o cliente, ou um aviso
+            de CEP inválido/não encontrado (aí peça o endereço manualmente).
+        """
+        from services.viacep import lookup_cep, normalize_cep
+
+        if normalize_cep(cep) is None:
+            return (
+                f"CEP '{cep}' inválido (precisa ter 8 dígitos). "
+                "Peça ao cliente para reenviar."
+            )
+
+        res = await lookup_cep(cep)
+        if res is None:
+            return (
+                f"Não encontrei o endereço do CEP {cep} na base dos Correios. "
+                "Peça o endereço completo ao cliente (rua, bairro, cidade, UF) "
+                "e salve com salvar_dados_cliente."
+            )
+
+        # Não loga endereço completo em plaintext (PII) — só o CEP.
+        log.info("tool.consultar_cep.ok", phone=phone, cep=res.cep)
+
+        return (
+            f"Endereço encontrado para o CEP {res.cep}:\n"
+            f"  • Rua: {res.logradouro or '(não informado pelo CEP)'}\n"
+            f"  • Bairro: {res.bairro or '(não informado pelo CEP)'}\n"
+            f"  • Cidade: {res.localidade}/{res.uf}\n"
+            "CONFIRME esse endereço com o cliente e peça o NÚMERO e o "
+            "COMPLEMENTO (o CEP não traz). Depois de confirmado, salve tudo "
+            "com salvar_dados_cliente (cep, rua, bairro, cidade, estado, "
+            "numero, complemento)."
+        )
+
+    return consultar_cep
+
+
 def make_consultar_pedido_tool(schema_name: str, phone: str):
     """
     Consulta o status de um pedido pelo código único (o ID curto entregue ao

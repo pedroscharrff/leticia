@@ -1540,9 +1540,15 @@ async def _run_broker_flow(
                 forward_response = {"_text": resp.text[:2000]}
 
             if 200 <= resp.status_code < 300:
+                # status 200 da TalkFarma/ClickMassa = "requisição recebida", NÃO
+                # "entregue no WhatsApp". Logamos o CORPO da resposta + um trecho
+                # do payload enviado para diagnosticar "200 mas não chega" (ex.:
+                # instância WhatsApp desconectada, número inválido, campo errado).
                 log.info("broker.flow.forwarded",
                          tenant=tenant_id, url=integration["reply_url"],
-                         status=resp.status_code)
+                         status=resp.status_code,
+                         response_preview=str(forward_response)[:500],
+                         sent_body_preview=str(reply_body)[:500])
             else:
                 forward_error = f"Gateway externo retornou {resp.status_code}"
                 log.warning("broker.flow.forward_bad_status",
@@ -1568,8 +1574,16 @@ async def _run_broker_flow(
             headers = {str(k): str(v) for k, v in
                        (integration.get("reply_headers") or {}).items() if k and v}
             async with httpx.AsyncClient(timeout=15) as client:
-                await client.request(method, integration["reply_url"],
-                                     json=body, headers=headers)
+                resp = await client.request(method, integration["reply_url"],
+                                            json=body, headers=headers)
+            try:
+                _resp_body = resp.json()
+            except Exception:
+                _resp_body = {"_text": resp.text[:2000]}
+            log.info("broker.flow.post_handoff_forwarded",
+                     tenant=tenant_id, status=resp.status_code,
+                     response_preview=str(_resp_body)[:500],
+                     sent_body_preview=str(body)[:500])
 
         await _send_post_handoff_messages(
             tenant_id,

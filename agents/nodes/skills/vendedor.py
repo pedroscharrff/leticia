@@ -762,6 +762,18 @@ async def vendedor_node(state: AgentState, llm_factory) -> AgentState:
             if caps["shipping"]:
                 pb.section(_commerce.shipping_block())
 
+            # Autocompletar endereço por CEP (ViaCEP) — ativa quando a farmácia
+            # coleta endereço: CEP é campo obrigatório, entrega ativa no
+            # fechamento, ou frete por CEP ligado. Bloco ESTÁVEL (depende só da
+            # config do tenant) → prefixo cacheado.
+            _collects_address = (
+                "cep" in (sales_config.get("required_fields") or [])
+                or bool(sales_config.get("ask_delivery"))
+                or caps["shipping"]
+            )
+            if _collects_address:
+                pb.section(_commerce.cep_lookup_block())
+
             if caps["pix"]:
                 pix_cfg = cap_config.get("pix", {})
                 auto_send = pix_cfg.get("auto_send_after_confirm", True)
@@ -880,6 +892,7 @@ async def vendedor_node(state: AgentState, llm_factory) -> AgentState:
                 make_consultar_pedido_tool,
                 make_cancel_order_tool,
                 make_edit_order_tool,
+                make_consultar_cep_tool,
             )
             tools = [
                 make_inventory_tool(schema_name, tenant_id, cart=cart),
@@ -895,6 +908,10 @@ async def vendedor_node(state: AgentState, llm_factory) -> AgentState:
                 make_cancel_order_tool(schema_name, phone_num),
                 make_edit_order_tool(schema_name, phone_num),
             ]
+            # Autocompletar endereço por CEP — só quando a farmácia coleta
+            # endereço (mesmo gate do bloco de prompt cep_lookup_block).
+            if _collects_address:
+                tools.append(make_consultar_cep_tool(schema_name, phone_num, customer))
 
             try:
                 from agents.tools.sales_extras import (
