@@ -30,6 +30,16 @@ desconhecido nunca quebra, vira string vazia):
     {preco_unit}   — preço unitário formatado (R$ x,xx)
     {preco_total}  — preço unitário × quantidade formatado
     {preco}        — alias de {preco_unit}
+
+Blocos DETERMINÍSTICOS de pagamento e entrega (não dependem do LLM):
+  • Forma de pagamento — sai de `cart["payment"]` (gravado por
+    `finalizar_pedido` → `cart.last_order.payment`). Renderizada como
+    "{payment_label}: {payment}" SÓ quando há valor (omitida em
+    pré-atendimento, onde não há forma de pagamento real).
+  • Endereço de entrega — sai de `cart["address"]` (montado deterministicamente
+    pelo worker a partir do cadastro do cliente em `_cart_for_summary`).
+    Renderizada como "{address_label}: {address}" SÓ quando há endereço.
+Ambos são "quando houver": string vazia → linha omitida, sem ruído.
 """
 from __future__ import annotations
 
@@ -47,6 +57,11 @@ _DEFAULTS = {
     "show_total":    True,
     "total_label":   "*Total*",
     "footer_text":   "",
+    # Linhas determinísticas opcionais (renderizadas só quando há dado).
+    "show_payment":  True,
+    "payment_label": "*Pagamento*",
+    "show_address":  True,
+    "address_label": "*Entrega*",
 }
 
 
@@ -172,6 +187,22 @@ def build_summary_text(cart: dict | None, config: dict | None) -> str | None:
         total_val = subtotal if isinstance(subtotal, (int, float)) and subtotal else computed_total
         total_label = (cfg.get("total_label") or "Total").strip()
         lines.append(f"{total_label}: {_fmt_brl(total_val)}")
+
+    # ── Forma de pagamento (DETERMINÍSTICA — "quando houver") ────────────────
+    # Vem de `cart["payment"]` (finalizar_pedido grava em last_order.payment).
+    # Pré-atendimento não tem forma real → string vazia → linha omitida.
+    payment = (cart.get("payment") or "").strip() if isinstance(cart, dict) else ""
+    if cfg.get("show_payment", True) and payment:
+        pay_label = (cfg.get("payment_label") or "Pagamento").strip()
+        lines.append(f"{pay_label}: {payment}")
+
+    # ── Endereço de entrega (DETERMINÍSTICO — "quando houver") ───────────────
+    # Vem de `cart["address"]`, montado pelo worker a partir do cadastro do
+    # cliente. Sem endereço (retirada / cadastro vazio) → linha omitida.
+    address = (cart.get("address") or "").strip() if isinstance(cart, dict) else ""
+    if cfg.get("show_address", True) and address:
+        addr_label = (cfg.get("address_label") or "Entrega").strip()
+        lines.append(f"{addr_label}: {address}")
 
     footer = (cfg.get("footer_text") or "").strip()
     if footer:

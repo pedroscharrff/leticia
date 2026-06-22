@@ -237,6 +237,10 @@ export interface OrderSummaryConfig {
   item_template: string;
   show_total:    boolean;
   total_label:   string;
+  show_payment:  boolean;
+  payment_label: string;
+  show_address:  boolean;
+  address_label: string;
   footer_text:   string;
   is_default:    boolean;
   defaults:      Omit<OrderSummaryConfig, "is_default" | "defaults" | "placeholders" | "enabled">;
@@ -249,6 +253,10 @@ export interface OrderSummaryConfigPatch {
   item_template?: string | null;
   show_total?:    boolean | null;
   total_label?:   string | null;
+  show_payment?:  boolean | null;
+  payment_label?: string | null;
+  show_address?:  boolean | null;
+  address_label?: string | null;
   footer_text?:   string | null;
 }
 

@@ -169,6 +169,7 @@ Criado em `create_tenant_schema()`:
 | 043 | session_close_keywords |
 | 044 | order_summary capability + category safety |
 | 045-046 | safety guards v2 (availability/price/prescription/delivery) |
+| 070 | order_summary: campos pagamento + endereço (estende 044) |
 
 ## Convenções de nomes
 

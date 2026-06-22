@@ -645,21 +645,38 @@ def _cart_for_summary(final_state: dict | None) -> dict | None:
     if not final_state:
         return None
     cart = final_state.get("cart") or {}
+
+    # Endereço de entrega — montado DETERMINISTICAMENTE do cadastro do cliente
+    # (não depende do LLM). '' quando não há endereço → o resumo omite a linha.
+    address = ""
+    try:
+        from services.sales_config import format_customer_address
+        address = format_customer_address(final_state.get("customer") or {})
+    except Exception as exc:  # noqa: BLE001 — endereço é opcional, nunca quebra
+        log.warning("order_summary.address_format_failed", exc=str(exc))
+
     last = cart.get("last_order")
     if isinstance(last, dict) and last.get("items"):
+        # "balcao" é sentinela do pré-atendimento (anotar_pedido_balcao), não uma
+        # forma de pagamento real → não exibir no resumo.
+        payment = last.get("payment") or ""
+        if payment == "balcao":
+            payment = ""
         return {
             "items":    _normalize_cart_items_pt(last.get("items") or []),
             "subtotal": last.get("subtotal") or 0,
             # Campos extras que o template do resumo pode usar no futuro
             "discount": last.get("discount") or 0,
             "total":    last.get("total")    or 0,
-            "payment":  last.get("payment")  or "",
+            "payment":  payment,
+            "address":  address,
             "order_id": last.get("id")       or "",
         }
     # Pré-atendimento: cart bruto, normaliza items pra PT
     return {
         "items":    _normalize_cart_items_pt(cart.get("items") or []),
         "subtotal": cart.get("subtotal") or 0,
+        "address":  address,
     }
 
 

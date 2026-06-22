@@ -24,6 +24,10 @@ type Draft = {
   item_template: string;
   show_total:    boolean;
   total_label:   string;
+  show_payment:  boolean;
+  payment_label: string;
+  show_address:  boolean;
+  address_label: string;
   footer_text:   string;
 };
 
@@ -55,6 +59,10 @@ export function PortalResumoPedido() {
       item_template: c.item_template,
       show_total:    c.show_total,
       total_label:   c.total_label,
+      show_payment:  c.show_payment,
+      payment_label: c.payment_label,
+      show_address:  c.show_address,
+      address_label: c.address_label,
       footer_text:   c.footer_text,
     };
   }
@@ -105,7 +113,8 @@ export function PortalResumoPedido() {
       // null em todos os campos → backend remove os overrides e herda do catálogo
       const updated = await updateOrderSummaryConfig({
         header_text: null, item_template: null, show_total: null,
-        total_label: null, footer_text: null,
+        total_label: null, show_payment: null, payment_label: null,
+        show_address: null, address_label: null, footer_text: null,
       });
       setCfg(updated);
       setDraft(toDraft(updated));
@@ -120,6 +129,10 @@ export function PortalResumoPedido() {
     draft.item_template !== cfg.item_template ||
     draft.show_total    !== cfg.show_total    ||
     draft.total_label   !== cfg.total_label   ||
+    draft.show_payment  !== cfg.show_payment  ||
+    draft.payment_label !== cfg.payment_label ||
+    draft.show_address  !== cfg.show_address  ||
+    draft.address_label !== cfg.address_label ||
     draft.footer_text   !== cfg.footer_text
   );
 
@@ -215,6 +228,46 @@ export function PortalResumoPedido() {
                   ainda não temos preço.
                 </div>
 
+                <div style={{ display: "grid",
+                              gridTemplateColumns: "auto 1fr", gap: 12,
+                              alignItems: "center", marginTop: 12 }}>
+                  <label style={{ display: "flex", alignItems: "center", gap: 8,
+                                  fontSize: 13, color: "#e5e5e5" }}>
+                    <input type="checkbox" checked={draft.show_payment}
+                           onChange={(e) => patch("show_payment", e.target.checked)} />
+                    Mostrar pagamento
+                  </label>
+                  <input type="text" value={draft.payment_label}
+                         onChange={(e) => patch("payment_label", e.target.value)}
+                         disabled={!draft.show_payment}
+                         placeholder="Rótulo do pagamento (ex: *Pagamento*)"
+                         style={{ ...inputStyle,
+                                  opacity: draft.show_payment ? 1 : 0.5 }} />
+                </div>
+
+                <div style={{ display: "grid",
+                              gridTemplateColumns: "auto 1fr", gap: 12,
+                              alignItems: "center", marginTop: 12 }}>
+                  <label style={{ display: "flex", alignItems: "center", gap: 8,
+                                  fontSize: 13, color: "#e5e5e5" }}>
+                    <input type="checkbox" checked={draft.show_address}
+                           onChange={(e) => patch("show_address", e.target.checked)} />
+                    Mostrar endereço
+                  </label>
+                  <input type="text" value={draft.address_label}
+                         onChange={(e) => patch("address_label", e.target.value)}
+                         disabled={!draft.show_address}
+                         placeholder="Rótulo do endereço (ex: *Entrega*)"
+                         style={{ ...inputStyle,
+                                  opacity: draft.show_address ? 1 : 0.5 }} />
+                </div>
+                <div style={{ fontSize: 11, color: "#6b7280", marginTop: 4 }}>
+                  Pagamento e endereço aparecem <strong>só quando houver o dado</strong>:
+                  a forma de pagamento sai do fechamento (some no pré-atendimento) e
+                  o endereço sai do cadastro do cliente (some em pedidos de retirada).
+                  Ambos são preenchidos automaticamente — sem o robô interpretar nada.
+                </div>
+
                 <Field label="Rodapé (opcional)"
                        hint="Última linha. Pode ficar vazio.">
                   <textarea value={draft.footer_text}
@@ -288,6 +341,7 @@ export function PortalResumoPedido() {
                          fontSize: 13 }}>
               <li>Logo após a transferência para o atendente humano, em qualquer modo (ERP ou pré-atendimento).</li>
               <li>Em pré-atendimento (sem catálogo), o resumo só lista nome + quantidade — os preços e o total ficam para o atendente confirmar no balcão.</li>
+              <li>A <strong>forma de pagamento</strong> aparece quando o pedido foi fechado com pagamento definido (some no pré-atendimento). O <strong>endereço de entrega</strong> aparece quando o cliente tem endereço no cadastro (some em pedidos de retirada). Os dois são preenchidos automaticamente, sem depender da interpretação do robô.</li>
               <li>Carrinho vazio → nenhuma mensagem é enviada (sem ruído).</li>
               <li>Se você desligar a função em "Recursos do seu Robô", nenhuma mensagem é enviada — independente do que está salvo aqui.</li>
             </ul>

@@ -172,6 +172,32 @@ Quando `handoff_was_executed=True`, `_send_post_handoff_messages` despacha os do
 
 Cada bloco em try/except — falha num não cancela o outro nem derruba o handoff.
 
+#### Conteúdo do resumo — itens + pagamento + endereço (determinístico)
+
+`_cart_for_summary(final_state)` monta o `cart` que vai pro `build_summary_text`.
+Além de itens/subtotal, popula **forma de pagamento** e **endereço de entrega**
+de forma 100% DETERMINÍSTICA (sem o LLM emitir nada):
+
+| Campo | Fonte | "Quando houver" |
+|---|---|---|
+| `payment`  | `cart.last_order.payment` (gravado por `finalizar_pedido`) | Pré-atendimento grava o sentinela `"balcao"` → o worker zera → linha omitida. Sem forma definida → vazio → omitido. |
+| `address`  | `format_customer_address(final_state.customer)` (helper em `sales_config.py`) | Cadastro sem endereço (retirada / cliente novo) → `""` → linha omitida. |
+
+`build_summary_text` renderiza `{payment_label}: {payment}` e `{address_label}:
+{address}` logo após o Total e antes do rodapé — **só quando o valor é não-vazio**.
+Gates de exibição na config da capability (mig 070): `show_payment`/`payment_label`
+e `show_address`/`address_label`. Tudo editável no portal (`PortalResumoPedido`).
+
+Por que determinístico: o endereço/pagamento já foram coletados/validados antes
+do fechamento; reapresentá-los via template (e não pedindo ao LLM "escreva o
+resumo") elimina alucinação de endereço/forma e mantém o texto estável e cacheável.
+
+⚠️ **Limitação conhecida (melhoria futura):** o resumo não distingue
+ENTREGA × RETIRADA — mostra o endereço sempre que o cliente *tem* um cadastrado,
+mesmo num pedido de retirada. `finalizar_pedido` ainda não captura a escolha
+entrega/retirada. Quando capturar, gatear `address` nisso. Ver
+`docs/order-summary-enrichment.md`.
+
 ⚠️ **Ordem de ENVIO ≠ ordem de ENTREGA.** Ofertas com mídia saem direto pela API
 do canal (ex. ClickMassa `base_url`); o resumo sai pelo `reply_url` (n8n/forward).
 Transportes distintos + WhatsApp entrega mídia mais devagar que texto = o resumo

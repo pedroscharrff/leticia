@@ -174,6 +174,15 @@ def _format_known_address(customer: dict | None) -> str:
     return ", ".join(parts)
 
 
+def format_customer_address(customer: dict | None) -> str:
+    """Linha legível do endereço do cliente (rua, nº, complemento, bairro,
+    cidade/UF, CEP) ou '' se não houver nenhum campo de endereço.
+
+    Pública — usada pelo resumo do pedido (`order_summary`) para inserir o
+    endereço de entrega de forma DETERMINÍSTICA, sem depender do LLM."""
+    return _format_known_address(customer)
+
+
 def build_known_address_hint(config: dict, customer: dict | None) -> str:
     """Linha VOLÁTIL (depende do customer) com o endereço já cadastrado, para o
     agente confirmar em vez de pedir do zero. Só vale no modo completo c/

@@ -979,11 +979,24 @@ ORDER_SUMMARY_PLACEHOLDERS = [
 ]
 
 
+# Campos do template editáveis. Fonte única para os merges/loops abaixo —
+# adicionar campo novo = incluir aqui + no model + no schema da migration.
+ORDER_SUMMARY_FIELDS = (
+    "header_text", "item_template", "show_total", "total_label",
+    "show_payment", "payment_label", "show_address", "address_label",
+    "footer_text",
+)
+
+
 class OrderSummaryConfigOut(BaseModel):
     header_text:    str
     item_template:  str
     show_total:     bool
     total_label:    str
+    show_payment:   bool
+    payment_label:  str
+    show_address:   bool
+    address_label:  str
     footer_text:    str
     is_default:     bool                 # nenhum campo foi customizado
     defaults:       dict                 # do catálogo — usado pelo "Restaurar"
@@ -996,6 +1009,10 @@ class OrderSummaryConfigIn(BaseModel):
     item_template:  str | None = None
     show_total:     bool | None = None
     total_label:    str | None = None
+    show_payment:   bool | None = None
+    payment_label:  str | None = None
+    show_address:   bool | None = None
+    address_label:  str | None = None
     footer_text:    str | None = None
 
 
@@ -1005,6 +1022,10 @@ class OrderSummaryPreviewIn(BaseModel):
     item_template:  str | None = None
     show_total:     bool | None = None
     total_label:    str | None = None
+    show_payment:   bool | None = None
+    payment_label:  str | None = None
+    show_address:   bool | None = None
+    address_label:  str | None = None
     footer_text:    str | None = None
     # Sample por padrão; quando fornecido um session_key real, busca cart.
     session_key:    str | None = None
@@ -1041,19 +1062,21 @@ async def _get_order_summary_defaults() -> dict:
     defaults.setdefault("item_template", "• {quantidade}x {nome} — {preco_total}")
     defaults.setdefault("show_total",    True)
     defaults.setdefault("total_label",   "*Total*")
+    defaults.setdefault("show_payment",  True)
+    defaults.setdefault("payment_label", "*Pagamento*")
+    defaults.setdefault("show_address",  True)
+    defaults.setdefault("address_label", "*Entrega*")
     defaults.setdefault("footer_text",   "")
     return defaults
 
 
 def _merge_summary_cfg(saved: dict, defaults: dict) -> dict:
     """Para cada campo do template, prefere o tenant, cai pro default."""
-    return {
-        "header_text":   saved.get("header_text",   defaults["header_text"]),
-        "item_template": saved.get("item_template", defaults["item_template"]),
-        "show_total":    bool(saved.get("show_total", defaults["show_total"])),
-        "total_label":   saved.get("total_label",   defaults["total_label"]),
-        "footer_text":   saved.get("footer_text",   defaults["footer_text"]),
-    }
+    merged = {k: saved.get(k, defaults[k]) for k in ORDER_SUMMARY_FIELDS}
+    # Campos booleanos precisam de coerção (config pode trazer string/None).
+    for b in ("show_total", "show_payment", "show_address"):
+        merged[b] = bool(merged[b])
+    return merged
 
 
 @order_summary_router.get("/config", response_model=OrderSummaryConfigOut)
@@ -1066,7 +1089,7 @@ async def get_order_summary_config(user: TenantUser) -> OrderSummaryConfigOut:
 
     is_default = all(
         tenant_cfg.get(k) is None or tenant_cfg.get(k) == defaults.get(k)
-        for k in ("header_text", "item_template", "show_total", "total_label", "footer_text")
+        for k in ORDER_SUMMARY_FIELDS
     )
 
     enabled = False
@@ -1087,19 +1110,23 @@ async def get_order_summary_config(user: TenantUser) -> OrderSummaryConfigOut:
 def _render_summary_preview(cfg: dict, *, no_prices: bool) -> str:
     """Renderiza o resumo com cart sample. Função pura — sem I/O."""
     from services.order_summary import build_summary_text
+    # Endereço sample p/ demonstrar a linha de entrega em ambos os modos.
+    address = "Av. Paulista, 1000, Bela Vista, São Paulo/SP, CEP 01310-100"
     if no_prices:
+        # Pré-atendimento: sem preço e sem forma de pagamento (resolvidos no balcão).
         items = [
             {"nome": "Dipirona 500mg",      "quantidade": 2, "preco": 0},
             {"nome": "Soro fisiológico",    "quantidade": 1, "preco": 0},
         ]
-        subtotal = 0
+        cart = {"items": items, "subtotal": 0, "address": address}
     else:
         items = [
             {"nome": "Dipirona 500mg", "quantidade": 2, "preco": 7.50},
             {"nome": "Tylenol",        "quantidade": 1, "preco": 18.90},
         ]
-        subtotal = 33.90
-    return build_summary_text({"items": items, "subtotal": subtotal}, cfg) or ""
+        cart = {"items": items, "subtotal": 33.90,
+                "payment": "PIX", "address": address}
+    return build_summary_text(cart, cfg) or ""
 
 
 @order_summary_router.put("/config", response_model=OrderSummaryConfigOut)
@@ -1116,11 +1143,8 @@ async def update_order_summary_config(
     # quebrado em prod (igual ao /template do abandoned_cart).
     defaults = await _get_order_summary_defaults()
     candidate = {
-        "header_text":   payload.header_text   if payload.header_text   is not None else defaults["header_text"],
-        "item_template": payload.item_template if payload.item_template is not None else defaults["item_template"],
-        "show_total":    payload.show_total    if payload.show_total    is not None else defaults["show_total"],
-        "total_label":   payload.total_label   if payload.total_label   is not None else defaults["total_label"],
-        "footer_text":   payload.footer_text   if payload.footer_text   is not None else defaults["footer_text"],
+        k: (getattr(payload, k) if getattr(payload, k) is not None else defaults[k])
+        for k in ORDER_SUMMARY_FIELDS
     }
     try:
         _render_summary_preview(candidate, no_prices=False)
@@ -1136,7 +1160,7 @@ async def update_order_summary_config(
     new_config = dict(cap.get("config") or {})
     # Para cada campo: valor != default → grava override; igual ao default →
     # remove a chave do override (mantém a config esparsa, como em SPEC 04).
-    for key in ("header_text", "item_template", "show_total", "total_label", "footer_text"):
+    for key in ORDER_SUMMARY_FIELDS:
         value = getattr(payload, key)
         if value is None:
             new_config.pop(key, None)
@@ -1177,7 +1201,7 @@ async def preview_order_summary(
     saved = await cap_svc.get_config(user.tenant_id, ORDER_SUMMARY_KEY) or {}
     merged = _merge_summary_cfg(saved, defaults)
     # Sobrescreve com o que veio no payload (campos None mantêm o salvo)
-    for k in ("header_text", "item_template", "show_total", "total_label", "footer_text"):
+    for k in ORDER_SUMMARY_FIELDS:
         v = getattr(payload, k)
         if v is not None:
             merged[k] = v
