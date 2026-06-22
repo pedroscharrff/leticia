@@ -1051,14 +1051,24 @@ async def vendedor_node(state: AgentState, llm_factory) -> AgentState:
         # `_v_scaffold` (andaime p/ Gemini/weak) já resolvido no topo do skill.
         # Liga a guarda domínio+fluxo do runtime (não descartar resultado de tool
         # ao transferir no mesmo turno). No-op para Claude/GPT forte.
-        from agents.runtime import run_tool_loop
+        from agents.runtime import run_tool_loop, StockRecall
         from config import settings
         llm = llm_factory("skill")
+        # Force-recall de estoque (andaime weak): só no modo normal (ERP,
+        # stock_check ON) — em pré-atendimento não há catálogo autoritativo.
+        # Suprime quando carrinho/pedido foi mexido no turno (item já validado).
+        _stock_recall = None
+        if _v_scaffold and not use_preattendimento:
+            _stock_recall = StockRecall(
+                search_tool="buscar_produto",
+                suppress_tools=("adicionar_ao_carrinho", "finalizar_pedido"),
+            )
         result = await run_tool_loop(
             llm, list(messages), tools, settings.skill_max_tool_iterations,
             post_loop_hook=_vendedor_post_hook,
             defer_premature_flow=_v_scaffold,
             domain_tool_gate=_order_gate,
+            stock_recall=_stock_recall,
         )
         final_response   = result.final_text
         tool_calls_trace = result.tool_calls_trace

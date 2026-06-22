@@ -67,6 +67,26 @@ class RuntimeResult:
 PostLoopHook = Callable[..., Awaitable[None]]
 
 
+@dataclass
+class StockRecall:
+    """Config do andaime de força-busca (force-recall) para LLM fraca em modo
+    ERP (`inventory.track_stock` ON). Cf. SPEC 10 §força-busca de estoque.
+
+    Problema que resolve: a LLM fraca afirma "temos esse remédio" SEM chamar
+    `buscar_produto` neste turno. O `availability_guard` NÃO pega esse caso —
+    ele cruza a afirmação contra `_search_results_this_turn`, que fica VAZIO
+    quando a tool nunca rodou (curto-circuita como "limpo"). Aqui o runtime
+    detecta a afirmação não-verificada e FORÇA a busca antes de o cliente ver.
+
+    `search_tool`: nome da tool de catálogo (`buscar_produto`).
+    `suppress_tools`: tools de carrinho/pedido que, se rodaram no turno, indicam
+        que o item JÁ foi validado antes — não re-forçamos (evita atrito em
+        reafirmação de fechamento). Escolha do produto: suprimir nesse caso.
+    """
+    search_tool: str = "buscar_produto"
+    suppress_tools: tuple[str, ...] = ()
+
+
 # ── Helpers de tool execution ─────────────────────────────────────────────────
 
 def _split_tool_calls(tool_calls: list[dict]) -> tuple[list[dict], list[dict]]:
@@ -142,6 +162,103 @@ def _ack_flow_tool(tc: dict, lc_messages: list, result: RuntimeResult, iter_labe
     })
 
 
+async def _maybe_force_stock_search(
+    stock_recall: StockRecall,
+    lc_messages: list,
+    llm,
+    llm_with_tools,
+    tools: list,
+    result: RuntimeResult,
+) -> None:
+    """Andaime weak-LLM (ERP): se o modelo AFIRMOU disponibilidade sem ter
+    chamado `buscar_produto` neste turno, FORÇA a busca e regenera a resposta
+    a partir do resultado real. Roda só quando `stock_recall` é fornecido (o
+    skill só fornece quando weak + `inventory.track_stock` ON). Cf. SPEC 10.
+
+    Defense-in-depth: após a busca forçada, `_search_results_this_turn` fica
+    populado, então o `safety_guard` downstream ainda cobre o caso de o modelo
+    insistir em afirmar um produto que voltou sem match.
+    """
+    from services.availability_guard import has_unverified_affirmation
+
+    txt = result.final_text or ""
+    if not txt.strip() or not has_unverified_affirmation(txt):
+        return
+
+    called = {tc.get("name") for tc in result.tool_calls_trace}
+    if stock_recall.search_tool in called:
+        return  # já buscou neste turno → guard determinístico cobre o resto
+    if called & set(stock_recall.suppress_tools):
+        return  # item já validado (carrinho/pedido) → afirmação legítima
+
+    log.warning("runtime.stock_affirmation_without_search",
+                search_tool=stock_recall.search_tool,
+                final_preview=txt[:200])
+
+    lc_messages.append(HumanMessage(content=(
+        "[INSTRUÇÃO INTERNA DO SISTEMA — não é o cliente falando]\n"
+        "⚠️ Você afirmou que a farmácia TEM um produto sem chamar "
+        f"`{stock_recall.search_tool}` neste turno. Em modo de estoque "
+        "autoritativo você NÃO pode afirmar disponibilidade sem consultar o "
+        "catálogo — o estoque pode ter mudado.\n\n"
+        f"AGORA: chame `{stock_recall.search_tool}` para CADA item/medicamento "
+        "que você afirmou ter. Use o nome base (sem dosagem). NÃO escreva texto "
+        "antes — só a(s) tool call(s)."
+    )))
+    response2 = await llm_with_tools.ainvoke(lc_messages)
+
+    searched = any(
+        tc.get("name") == stock_recall.search_tool
+        for tc in (response2.tool_calls or [])
+    )
+    if not searched:
+        # Modelo não buscou nem forçado → não deixamos a afirmação vazar.
+        log.error("runtime.stock_recall_failed",
+                  tool_calls=[tc.get("name") for tc in (response2.tool_calls or [])])
+        result.final_text = (
+            "Deixa eu confirmar a disponibilidade certinho antes de te garantir. "
+            "Pode me dizer o nome do medicamento que você precisa?"
+        )
+        return
+
+    lc_messages.append(response2)
+    tool_map = {t.name: t for t in tools}
+    for tc in response2.tool_calls:
+        rec: dict = {"iter": "stock_recall", "name": tc.get("name"), "args": tc.get("args")}
+        # Só executamos a tool de busca; qualquer outra (fluxo etc.) recebe ack
+        # inócuo — o provider exige um tool_result para cada tool_use.
+        if tc.get("name") != stock_recall.search_tool:
+            lc_messages.append(ToolMessage(content="ok", tool_call_id=tc["id"]))
+            rec["skipped"] = True
+            result.tool_calls_trace.append(rec)
+            continue
+        tool = tool_map.get(tc["name"])
+        if tool is None:
+            rec["error"] = "tool_not_found"
+            lc_messages.append(ToolMessage(content="ok", tool_call_id=tc["id"]))
+            result.tool_calls_trace.append(rec)
+            continue
+        try:
+            out = await tool.ainvoke(tc["args"])
+            result.last_tool_result = str(out)
+            rec["result_preview"] = str(out)[:300]
+            lc_messages.append(ToolMessage(content=str(out), tool_call_id=tc["id"]))
+        except Exception as exc:  # noqa: BLE001
+            rec["error"] = str(exc)
+            lc_messages.append(ToolMessage(content="erro ao buscar", tool_call_id=tc["id"]))
+            log.warning("runtime.stock_recall_tool_failed", exc=str(exc))
+        result.tool_calls_trace.append(rec)
+
+    lc_messages.append(HumanMessage(content=(
+        "Agora responda ao cliente em 1-3 frases usando APENAS o que "
+        f"`{stock_recall.search_tool}` retornou. Se algum item voltou SEM "
+        "resultado, diga honestamente que vai confirmar com o atendente — NÃO "
+        "afirme que tem. Termine com UMA pergunta."
+    )))
+    response3 = await llm.ainvoke(lc_messages)
+    result.final_text = _extract_text(response3.content) or result.final_text
+
+
 # ── Loop principal ────────────────────────────────────────────────────────────
 
 async def run_tool_loop(
@@ -154,6 +271,7 @@ async def run_tool_loop(
     post_loop_hook: PostLoopHook | None = None,
     defer_premature_flow: bool = False,
     domain_tool_gate=None,
+    stock_recall: StockRecall | None = None,
 ) -> RuntimeResult:
     """Roda o tool-loop e devolve um RuntimeResult.
 
@@ -236,6 +354,20 @@ async def run_tool_loop(
                 lc_messages=lc_messages, llm=llm,
                 llm_with_tools=llm_with_tools, tools=tools, result=result,
             )
+
+        # Força-busca de estoque (andaime weak-LLM em modo ERP): roda DEPOIS do
+        # post_loop_hook (não conflita — o force-call do vendedor é do
+        # pré-atendimento, onde stock_recall é None) e ANTES do empty-text
+        # fallback. Não roda quando houve sinal de fluxo (handoff/escalate/end):
+        # nesses casos a fala é da transição, não uma afirmação de disponibilidade.
+        if stock_recall is not None and not broke_on_signal and not result.handoff_to:
+            try:
+                await _maybe_force_stock_search(
+                    stock_recall, lc_messages, llm, llm_with_tools, tools, result,
+                )
+            except Exception as exc:  # noqa: BLE001
+                # Fail-open: nunca derruba a entrega por causa do andaime.
+                log.warning("runtime.stock_recall_errored", exc=str(exc))
 
         # Empty-text fallback: se o turno terminou só com tool call e sem texto,
         # força uma fala curta ao cliente. Pulamos quando há handoff (a outra

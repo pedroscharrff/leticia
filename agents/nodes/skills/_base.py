@@ -411,6 +411,7 @@ async def run_skill(
     enable_handoff: bool = False,
     enable_escalate: bool = False,
     enable_end: bool = False,
+    verify_stock_affirmation: bool = False,
 ) -> AgentState:
     """
     Executa um skill genérico.
@@ -426,6 +427,10 @@ async def run_skill(
             Default False = comportamento histórico (skill não faz handoff/
             escalation/end via tool). O parser de marcadores continua como rede
             de segurança independentemente destas flags.
+        verify_stock_affirmation: liga o force-recall de estoque do runtime —
+            só tem efeito quando o modelo é fraco (`_scaffold`) E há a tool
+            `buscar_produto` bindada. O skill clínico (farmaceutico) passa True
+            em modo ERP. Cf. SPEC 10 §força-busca de estoque.
 
     Montagem do prompt via PromptBuilder: persona (porta única _persona_prefix) +
     base/override + flow + extra = ESTÁVEL (prefixo cacheado); memória do cliente,
@@ -588,11 +593,26 @@ async def run_skill(
     elif all_tools:
         # Tool-loop compartilhado (runtime). Import preguiçoso evita ciclo
         # _base ↔ runtime. O runtime captura tools de domínio E sinais de fluxo.
-        from agents.runtime import run_tool_loop
+        from agents.runtime import run_tool_loop, StockRecall
         from config import settings
+        # Force-recall de estoque (andaime weak): só quando o modelo é fraco,
+        # o skill pediu a verificação E a tool de catálogo está bindada. Suprime
+        # quando uma tool de carrinho/pedido roda no turno (item já validado).
+        _tool_names = {getattr(t, "name", None) for t in all_tools}
+        _stock_recall = None
+        if _scaffold and verify_stock_affirmation and "buscar_produto" in _tool_names:
+            _CART_ORDER_TOOLS = (
+                "adicionar_ao_carrinho", "finalizar_pedido",
+                "anotar_pedido_balcao", "registrar_itens_interesse",
+            )
+            _stock_recall = StockRecall(
+                search_tool="buscar_produto",
+                suppress_tools=tuple(t for t in _CART_ORDER_TOOLS if t in _tool_names),
+            )
         result = await run_tool_loop(
             llm, list(messages), all_tools, settings.skill_max_tool_iterations,
             defer_premature_flow=_scaffold,
+            stock_recall=_stock_recall,
         )
         final_response   = result.final_text
         tool_calls_trace = result.tool_calls_trace

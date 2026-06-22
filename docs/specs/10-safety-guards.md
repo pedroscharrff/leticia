@@ -91,6 +91,26 @@ Cobre tanto `vendedor` quanto `farmaceutico` em modo ERP — ambos têm `buscar_
 
 Quando dispara: regenerou resposta inteira com "Não encontrei esse produto especificamente — me dá um momento que peço pro atendente confirmar".
 
+> ⚠️ **Ponto cego coberto pelo force-recall (abaixo).** `detect_hallucinations` curto-circuita quando `search_results` está VAZIO (`if not search_results: return []`). Logo ele NÃO pega o pior caso: a LLM fraca que afirma "temos" **sem nunca chamar `buscar_produto`** neste turno. Esse caso é fechado ANTES, no runtime, pela **força-busca de estoque** — que força a tool e repopula `search_results`, deixando este guard como segunda linha.
+
+## Força-busca de estoque (runtime, andaime weak-LLM)
+
+Vive em `agents/runtime.py` (`StockRecall` + `_maybe_force_stock_search`), NÃO em `services/*_guard.py` — é um **andaime de tool-calling**, não um guard pós-texto, e roda dentro do tool-loop (após `post_loop_hook`, antes do empty-text fallback).
+
+**Problema**: medição em prod (`llm/model_tier.py`) — `gemini-*-flash-lite` fica com ~82% dos turnos sem chamar tool. Em modo ERP, isso vira "temos esse remédio" sem ter consultado o catálogo. O prompt (`stock_check_block`, SPEC 02) é ignorado pela LLM fraca; o `availability_guard` curto-circuita porque não houve busca. Nada segura.
+
+**Como funciona** (só quando fornecido `stock_recall` — o skill só fornece para LLM **fraca** (`needs_tool_scaffolding`) **E** `inventory.track_stock` ON):
+1. Após o loop, checa `availability_guard.has_unverified_affirmation(final_text)` — afirmação de disponibilidade ("temos", "tem sim", "em estoque"…) sem negação. Reusa os MESMOS regex do guard (fonte única).
+2. **Suprime** se `buscar_produto` já rodou no turno (guard cobre) OU se uma tool de carrinho/pedido rodou (`suppress_tools` — item já validado, evita atrito em reafirmação de fechamento).
+3. Senão: re-injeta uma `HumanMessage` forçando `buscar_produto`, executa a(s) busca(s), e regenera a resposta com instrução de usar APENAS o resultado. Se o modelo não buscar nem forçado → resposta segura ("deixa eu confirmar a disponibilidade…").
+4. Fail-open: qualquer exceção no andaime é logada e ignorada (não derruba a entrega).
+
+**Gating por skill**:
+- `farmaceutico` → `run_skill(..., verify_stock_affirmation=track_stock)`. `run_skill` só ativa quando `_scaffold` E há `buscar_produto` bindada.
+- `vendedor` (modo normal) → passa `StockRecall(suppress_tools=("adicionar_ao_carrinho","finalizar_pedido"))` direto ao `run_tool_loop`, gated por `_v_scaffold and not use_preattendimento`.
+
+**Defense-in-depth**: a busca forçada repopula `cart._search_results_this_turn`, então o `safety_guard` downstream ainda cruza a resposta regenerada — se o modelo insistir em afirmar um item sem match, o `availability_guard` reescreve.
+
 ### `price_guard`
 
 Regex `R\$\s*\d+[.,]\d{2}` pega preços na resposta. Cruza com `search_results[].preco` — tolerância R$ 0,01.
@@ -146,6 +166,8 @@ Pra um guard que sempre quer reescrever a resposta (estilo availability), retorn
 - **Não rodar safety_guard no modo pré-atendimento.** O umbrella já faz curto-circuito; não tente "filtrar levemente" — vai gerar atrito sem benefício.
 - **Não trocar a ordem (prescription → price → availability → delivery) sem revisar a lógica de composição.** Severidade orienta a composição.
 - **Não aplicar correção quando `final_response` está vazio.** Curto-circuito no início do umbrella node.
+- **Não tratar "sem busca neste turno" como seguro no `availability_guard`.** O guard pós-texto curto-circuita com `search_results` vazio DE PROPÓSITO (sem busca não há o que cruzar). O caso "afirmou sem buscar" é responsabilidade do **force-recall no runtime** (`StockRecall`), não do guard. Não tente "consertar" o guard pra cobrir isso — ele cruza, não força.
+- **Não ligar o force-recall para modelo forte.** `stock_recall` só é fornecido quando `needs_tool_scaffolding` é True (Gemini/weak/local). Claude/GPT forte: caminho byte-idêntico, sem re-prompt extra.
 - **Sugestão de nome de medicamento NUNCA é auto-correção.** O recurso `attendance.medication_name_suggestion` (tool `sugerir_nome_medicamento`, SPEC 03) só OFERECE candidatos — o agente tem que perguntar ("Você quis dizer X?") e esperar a confirmação do cliente. Trocar o nome sozinho = risco de dispensar o remédio errado. Candidatos de LLM/web são sempre verificados contra a ANVISA antes de chegarem ao cliente.
 
 ## Testes manuais úteis

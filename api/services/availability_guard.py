@@ -79,6 +79,27 @@ def _mentions(haystack_norm: str, needle: str) -> bool:
     return False
 
 
+def has_unverified_affirmation(response_text: str) -> bool:
+    """True quando a resposta AFIRMA disponibilidade ("temos", "tem sim", "em
+    estoque"...) sem negação clara — INDEPENDENTE de ter havido busca.
+
+    É o sinal usado pelo andaime de force-recall do runtime (LLM fraca em modo
+    ERP que afirma "temos" SEM chamar `buscar_produto` neste turno — caso que o
+    `detect_hallucinations` NÃO cobre porque `search_results` vem vazio). Pura,
+    determinística; reusa os MESMOS patterns do guard (fonte única do regex —
+    SPEC 10 §não duplicar). Conservadora no sentido oposto: aqui falso-positivo
+    só custa um re-prompt de busca (recuperável), então toleramos.
+    """
+    if not response_text:
+        return False
+    norm = _normalize(response_text)
+    if not any(re.search(p, norm) for p in _AFFIRMATION_PATTERNS):
+        return False
+    if any(re.search(p, norm) for p in _NEGATION_PATTERNS):
+        return False
+    return True
+
+
 def detect_hallucinations(
     response_text: str,
     search_results: list[dict] | None,

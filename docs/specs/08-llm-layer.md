@@ -153,12 +153,23 @@ Andaimes gated por esse gate (todos no-op/ausentes para strong):
    sempre `allow_payment=False, allow_delivery=False` (resolvido no balcão). Se
    algum campo de endereço é obrigatório OU a entrega está ON, a allowlist permite
    o endereço (não cria falso bloqueio). Strong path intacto (gated + volátil).
+5. **Force-recall de estoque no runtime** (`StockRecall` + `_maybe_force_stock_search`,
+   `runtime.py`, gated): modelo fraco em modo ERP afirma "temos esse remédio" SEM
+   ter chamado `buscar_produto` no turno. O prompt (`stock_check_block`) é ignorado
+   e o `availability_guard` (SPEC 10) curto-circuita porque sem busca não há o que
+   cruzar. O runtime detecta a afirmação não-verificada (`has_unverified_affirmation`,
+   reusa o regex do guard) e FORÇA `buscar_produto`, regenerando a resposta a partir
+   do resultado real. Suprime quando carrinho/pedido já mexeu no turno (item
+   validado). Fornecido por `farmaceutico` (via `run_skill(verify_stock_affirmation=
+   track_stock)`) e `vendedor` (modo normal). Detalhe em SPEC 10 §força-busca de estoque.
 
 > **Por que NÃO há force-call amplo de "consultou? então responde" no farmaceutico:**
 > a métrica `pct_sem_tool` é contaminada por turnos de condução legítimos (perguntas
 > "é cólica ou diarreia?", confirmações). Forçar tool nesses turnos regrediria o
 > fluxo. O force-call determinístico fica restrito a sinais inequívocos (ex.:
-> vendedor "fechou pedido" sem `anotar_pedido_balcao`).
+> vendedor "fechou pedido" sem `anotar_pedido_balcao`; ou afirmação de disponibilidade
+> "temos" sem `buscar_produto` — item 5 acima). A condição de gatilho é uma FRASE
+> inequívoca de afirmação, não a métrica bruta de "não chamou tool".
 
 ## Invariantes
 

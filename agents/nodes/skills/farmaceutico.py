@@ -307,4 +307,8 @@ async def farmaceutico_node(state: AgentState, llm_factory) -> AgentState:
         tools=tools,
         enable_handoff=True,
         enable_end=True,
+        # Modo ERP: força `buscar_produto` se a LLM fraca afirmar "temos" sem
+        # consultar o catálogo neste turno. No-op p/ Claude/GPT forte e em
+        # pré-atendimento (track_stock OFF). Cf. SPEC 10 §força-busca de estoque.
+        verify_stock_affirmation=track_stock,
     )
