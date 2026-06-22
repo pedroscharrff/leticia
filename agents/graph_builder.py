@@ -226,7 +226,7 @@ def build_graph_for_tenant(cfg: TenantConfig, redis: Any = None):
     graph.add_node("guardrails",   guard_node)   # sempre presente (safety net)
     # Umbrella de validators pós-LLM (availability + price + prescription +
     # delivery, todos capability-gated; passthrough total em pré-atendimento
-    # via `inventory.track_stock` OFF — sempre seguro estar no grafo).
+    # via `sales.stock_check` OFF / sem catálogo — sempre seguro estar no grafo).
     graph.add_node("safety_guard", safety_guard)
 
     # Nodes de skill (apenas os ativos do tenant)

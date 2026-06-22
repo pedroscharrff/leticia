@@ -80,7 +80,7 @@ SKILLS: dict[str, SkillDefinition] = {
         description="dúvidas farmacêuticas, bulas, posologia, interações, sintomas",
         node_path="agents.nodes.skills.farmaceutico:farmaceutico_node",
         allowed_handoffs=("vendedor", "genericos", "principio_ativo"),
-        capabilities=("inventory.track_stock", "sales.pharmacist_validation"),
+        capabilities=("sales.stock_check", "inventory.track_stock", "sales.pharmacist_validation"),
     ),
     "principio_ativo": SkillDefinition(
         name="principio_ativo",

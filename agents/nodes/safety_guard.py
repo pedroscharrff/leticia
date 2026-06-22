@@ -4,10 +4,20 @@ agents/nodes/safety_guard.py
 Validador determinístico pós-LLM, umbrella de TODOS os safety guards. Roda
 DEPOIS de qualquer skill, ANTES do analyst.
 
-Curto-circuito #1 — modo pré-atendimento (capability `inventory.track_stock`
-OFF): passthrough total. O fluxo de balcão é "anotar pedido + transferir",
-sem catálogo autoritativo, sem preços precisos, sem checagem de receita.
-Forçar guards aqui só atrapalha.
+Curto-circuito #1 — modo pré-atendimento (capability `sales.stock_check` OFF,
+i.e. SEM catálogo): passthrough total. O fluxo de balcão é "anotar pedido +
+transferir", sem catálogo, sem preços, sem checagem de receita. Forçar guards
+aqui só atrapalha.
+
+IMPORTANTE: o gate é "catálogo existe" (`sales.stock_check`), NÃO "estoque
+autoritativo" (`inventory.track_stock`). Em modo Sheets/CSV (`stock_check` ON,
+`track_stock` OFF) HÁ catálogo — o vendedor consulta, o farmaceutico consulta —
+então os guards de cruzamento (produto inventado, preço) DEVEM rodar. Gatear em
+`track_stock` deixava o modo Sheets sem nenhuma validação (regressão histórica:
+farmaceutico afirmava "temos X" pela bula e ninguém cruzava com o catálogo). Os
+guards já lidam com o modo Sheets: `buscar_produto` presume disponível sem
+`track_stock`, então `availability_guard` só flagga "produto inventado" (não
+"sem estoque"). Cf. SPEC 04 §modos + SPEC 10.
 
 Curto-circuito #2 — cada sub-guard é gated pela sua capability própria
 (`safety.availability_guard`, `safety.price_guard`,
@@ -28,8 +38,10 @@ import structlog
 log = structlog.get_logger()
 
 
-# Capability que indica "modo normal" (ERP). OFF = pré-atendimento → passthrough.
-_TRACK_STOCK_CAPABILITY = "inventory.track_stock"
+# Capability que indica "existe catálogo" (modo Sheets OU ERP). OFF = pré-
+# atendimento (sem catálogo) → passthrough. NÃO usar `inventory.track_stock`
+# aqui: ele é só "quantidade autoritativa" e deixaria o modo Sheets sem guards.
+_CATALOG_CAPABILITY = "sales.stock_check"
 
 _AVAILABILITY_CAP   = "safety.availability_guard"
 _PRICE_CAP          = "safety.price_guard"
@@ -43,11 +55,11 @@ async def safety_guard(state: dict[str, Any]) -> dict[str, Any]:
     if not response:
         return state
 
-    # ── Curto-circuito #1: modo pré-atendimento ─────────────────────────────
+    # ── Curto-circuito #1: pré-atendimento (sem catálogo) ───────────────────
     try:
         from services import capabilities as cap_svc
-        if not await cap_svc.is_enabled(tenant_id, _TRACK_STOCK_CAPABILITY):
-            # Pré-atendimento: passthrough. Fluxo curto e enxuto.
+        if not await cap_svc.is_enabled(tenant_id, _CATALOG_CAPABILITY):
+            # Sem catálogo (pré-atendimento): passthrough. Fluxo curto e enxuto.
             return state
     except Exception as exc:  # noqa: BLE001
         log.warning("safety_guard.mode_check_failed",

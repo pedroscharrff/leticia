@@ -226,10 +226,14 @@ DIRETRIZES
 async def farmaceutico_node(state: AgentState, llm_factory) -> AgentState:
     """Skill farmacêutico — dúvidas sobre medicamentos, com acesso à bula ANVISA.
 
-    Quando o tenant está em modo ERP (`inventory.track_stock` ON), também
-    recebe `buscar_produto` para conferir o catálogo ANTES de recomendar
-    qualquer medicamento por nome. Em pré-atendimento (capability OFF) o
-    comportamento histórico é mantido — sem consulta a catálogo.
+    Sempre que EXISTE catálogo (`sales.stock_check` ON — modo Sheets/CSV OU ERP),
+    recebe `buscar_produto` para conferir o catálogo ANTES de afirmar que a
+    farmácia tem um medicamento. O gate é "catálogo existe", NÃO "estoque
+    autoritativo" (`inventory.track_stock`): em modo Sheets a bula confirma que o
+    remédio EXISTE no mundo, mas só o catálogo diz se a LOJA o carrega — sem essa
+    consulta o farmaceutico afirmava disponibilidade pela bula e contradizia o
+    vendedor (regressão real medida em prod, jun/2026). Em pré-atendimento
+    (`sales.stock_check` OFF — sem catálogo) o comportamento histórico é mantido.
     """
     tenant_id   = state.get("tenant_id")
     schema_name = state.get("schema_name")
@@ -241,7 +245,11 @@ async def farmaceutico_node(state: AgentState, llm_factory) -> AgentState:
     # o consultar_bula passa a instruir o agente a pedir a dosagem/apresentação
     # ao cliente (mensagem configurável por tenant) em vez de inventar.
     not_found_message: str | None = None
-    track_stock = False
+    # "Catálogo existe" = `sales.stock_check` ON (modo Sheets OU ERP). É o gate
+    # certo p/ consultar o catálogo — NÃO `inventory.track_stock` (que é só
+    # "quantidade autoritativa", ERP). A própria `buscar_produto` lê track_stock
+    # internamente e, sem ele, presume disponível (modo Sheets). Cf. SPEC 04 §modos.
+    has_catalog = False
     # Sugestão de nome ("Você quis dizer…?"): ON por default. Resolvemos a
     # config (nº de candidatos, busca web) aqui e só bindamos a tool quando ligada.
     name_suggestion_on = False
@@ -249,7 +257,7 @@ async def farmaceutico_node(state: AgentState, llm_factory) -> AgentState:
     suggest_enable_web = True
     try:
         from services import capabilities as cap_svc
-        track_stock = await cap_svc.is_enabled(tenant_id, "inventory.track_stock")
+        has_catalog = await cap_svc.is_enabled(tenant_id, "sales.stock_check")
         if await cap_svc.is_enabled(tenant_id, "sales.pharmacist_validation"):
             cfg = await cap_svc.get_config(tenant_id, "sales.pharmacist_validation")
             not_found_message = (
@@ -291,7 +299,7 @@ async def farmaceutico_node(state: AgentState, llm_factory) -> AgentState:
             enable_web=suggest_enable_web,
         ))
 
-    if track_stock and schema_name:
+    if has_catalog and schema_name:
         from agents.prompts.clinical import stock_check_block
         tools.append(make_inventory_tool(schema_name, tenant_id, cart=cart))
         base_system = _SYSTEM + stock_check_block()
@@ -307,8 +315,8 @@ async def farmaceutico_node(state: AgentState, llm_factory) -> AgentState:
         tools=tools,
         enable_handoff=True,
         enable_end=True,
-        # Modo ERP: força `buscar_produto` se a LLM fraca afirmar "temos" sem
-        # consultar o catálogo neste turno. No-op p/ Claude/GPT forte e em
-        # pré-atendimento (track_stock OFF). Cf. SPEC 10 §força-busca de estoque.
-        verify_stock_affirmation=track_stock,
+        # Catálogo existe (Sheets ou ERP): força `buscar_produto` se a LLM fraca
+        # afirmar "temos" sem consultar o catálogo neste turno. No-op p/ Claude/
+        # GPT forte e em pré-atendimento (sem catálogo). Cf. SPEC 10 §força-busca.
+        verify_stock_affirmation=has_catalog,
     )

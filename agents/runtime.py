@@ -69,8 +69,9 @@ PostLoopHook = Callable[..., Awaitable[None]]
 
 @dataclass
 class StockRecall:
-    """Config do andaime de força-busca (force-recall) para LLM fraca em modo
-    ERP (`inventory.track_stock` ON). Cf. SPEC 10 §força-busca de estoque.
+    """Config do andaime de força-busca (force-recall) para LLM fraca quando
+    EXISTE catálogo (`sales.stock_check` ON — Sheets OU ERP). Cf. SPEC 10
+    §força-busca de estoque.
 
     Problema que resolve: a LLM fraca afirma "temos esse remédio" SEM chamar
     `buscar_produto` neste turno. O `availability_guard` NÃO pega esse caso —
@@ -173,7 +174,7 @@ async def _maybe_force_stock_search(
     """Andaime weak-LLM (ERP): se o modelo AFIRMOU disponibilidade sem ter
     chamado `buscar_produto` neste turno, FORÇA a busca e regenera a resposta
     a partir do resultado real. Roda só quando `stock_recall` é fornecido (o
-    skill só fornece quando weak + `inventory.track_stock` ON). Cf. SPEC 10.
+    skill só fornece quando weak + há catálogo / `sales.stock_check` ON). Cf. SPEC 10.
 
     Defense-in-depth: após a busca forçada, `_search_results_this_turn` fica
     populado, então o `safety_guard` downstream ainda cobre o caso de o modelo

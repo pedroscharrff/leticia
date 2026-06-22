@@ -13,8 +13,10 @@ api/services/delivery_guard.py           # "frete grátis" sem regra
 ```
 
 Tudo gated por:
-- `inventory.track_stock` (modo ERP) — passthrough total em pré-atendimento
+- **`sales.stock_check` (existe catálogo)** — passthrough total quando OFF (pré-atendimento, sem catálogo). **NÃO** gatear em `inventory.track_stock`: ele é só "quantidade autoritativa" (ERP) e está OFF no modo Sheets/CSV, que TEM catálogo. Gatear em `track_stock` deixava o modo Sheets (default de todos os tenants hoje) sem nenhum guard — o farmaceutico afirmava "temos X" pela bula e ninguém cruzava com o catálogo (regressão real, jun/2026).
 - Cada guard tem sua capability própria (`safety.<nome>_guard`, default ON)
+
+> **Os três modos e o gate certo** (cf. SPEC 04 §modos): pré-atendimento = `sales.stock_check` OFF (sem catálogo → passthrough). Sheets/CSV = `stock_check` ON + `track_stock` OFF (catálogo existe, quantidade não-autoritativa → guards rodam; `buscar_produto` presume disponível, então `availability_guard` só flagga "produto inventado", nunca "sem estoque"). ERP = ambos ON (catálogo + quantidade real → tudo roda, incluindo "sem estoque").
 
 ## Filosofia
 
@@ -43,8 +45,9 @@ Issue shape: `{"product": str, "expected": ..., "got": ..., "kind": "..."}`.
 
 ```python
 async def safety_guard(state) -> state:
-    # Curto-circuito 1: modo pré-atendimento
-    if not await capabilities.is_enabled(tenant_id, "inventory.track_stock"):
+    # Curto-circuito 1: pré-atendimento (sem catálogo). Gate = sales.stock_check,
+    # NÃO inventory.track_stock (que deixaria o modo Sheets sem guards).
+    if not await capabilities.is_enabled(tenant_id, "sales.stock_check"):
         return state  # passthrough
 
     response = state.final_response
@@ -87,7 +90,7 @@ async def safety_guard(state) -> state:
 
 Detecta produto **citado na resposta** que NÃO está em `search_results`. Cruza nomes com fuzzy matching (já consultado neste turno via `buscar_produto`).
 
-Cobre tanto `vendedor` quanto `farmaceutico` em modo ERP — ambos têm `buscar_produto` e populam `cart._search_results_this_turn`. Em pré-atendimento o umbrella já curto-circuita antes.
+Cobre tanto `vendedor` quanto `farmaceutico` sempre que há catálogo (Sheets OU ERP) — ambos têm `buscar_produto` e populam `cart._search_results_this_turn`. Em pré-atendimento (sem catálogo) o umbrella já curto-circuita antes.
 
 Quando dispara: regenerou resposta inteira com "Não encontrei esse produto especificamente — me dá um momento que peço pro atendente confirmar".
 
@@ -97,16 +100,16 @@ Quando dispara: regenerou resposta inteira com "Não encontrei esse produto espe
 
 Vive em `agents/runtime.py` (`StockRecall` + `_maybe_force_stock_search`), NÃO em `services/*_guard.py` — é um **andaime de tool-calling**, não um guard pós-texto, e roda dentro do tool-loop (após `post_loop_hook`, antes do empty-text fallback).
 
-**Problema**: medição em prod (`llm/model_tier.py`) — `gemini-*-flash-lite` fica com ~82% dos turnos sem chamar tool. Em modo ERP, isso vira "temos esse remédio" sem ter consultado o catálogo. O prompt (`stock_check_block`, SPEC 02) é ignorado pela LLM fraca; o `availability_guard` curto-circuita porque não houve busca. Nada segura.
+**Problema**: medição em prod (`llm/model_tier.py`) — `gemini-*-flash-lite` fica com ~82% dos turnos sem chamar tool. Havendo catálogo, isso vira "temos esse remédio" sem ter consultado o catálogo. O prompt (`stock_check_block`, SPEC 02) é ignorado pela LLM fraca; o `availability_guard` curto-circuita porque não houve busca. Nada segura.
 
-**Como funciona** (só quando fornecido `stock_recall` — o skill só fornece para LLM **fraca** (`needs_tool_scaffolding`) **E** `inventory.track_stock` ON):
+**Como funciona** (só quando fornecido `stock_recall` — o skill só fornece para LLM **fraca** (`needs_tool_scaffolding`) **E** existe catálogo (`sales.stock_check` ON)):
 1. Após o loop, checa `availability_guard.has_unverified_affirmation(final_text)` — afirmação de disponibilidade ("temos", "tem sim", "em estoque"…) sem negação. Reusa os MESMOS regex do guard (fonte única).
 2. **Suprime** se `buscar_produto` já rodou no turno (guard cobre) OU se uma tool de carrinho/pedido rodou (`suppress_tools` — item já validado, evita atrito em reafirmação de fechamento).
 3. Senão: re-injeta uma `HumanMessage` forçando `buscar_produto`, executa a(s) busca(s), e regenera a resposta com instrução de usar APENAS o resultado. Se o modelo não buscar nem forçado → resposta segura ("deixa eu confirmar a disponibilidade…").
 4. Fail-open: qualquer exceção no andaime é logada e ignorada (não derruba a entrega).
 
 **Gating por skill**:
-- `farmaceutico` → `run_skill(..., verify_stock_affirmation=track_stock)`. `run_skill` só ativa quando `_scaffold` E há `buscar_produto` bindada.
+- `farmaceutico` → `run_skill(..., verify_stock_affirmation=has_catalog)` (`has_catalog = sales.stock_check`). `run_skill` só ativa quando `_scaffold` E há `buscar_produto` bindada.
 - `vendedor` (modo normal) → passa `StockRecall(suppress_tools=("adicionar_ao_carrinho","finalizar_pedido"))` direto ao `run_tool_loop`, gated por `_v_scaffold and not use_preattendimento`.
 
 **Defense-in-depth**: a busca forçada repopula `cart._search_results_this_turn`, então o `safety_guard` downstream ainda cruza a resposta regenerada — se o modelo insistir em afirmar um item sem match, o `availability_guard` reescreve.
@@ -131,7 +134,7 @@ Quando dispara: prepend "Vou conferir o frete com o atendente."
 
 ## Invariantes
 
-1. **Passthrough total em modo pré-atendimento.** Balcão humano valida tudo — guard só atrapalha.
+1. **Passthrough total só em pré-atendimento (sem catálogo = `sales.stock_check` OFF).** Balcão humano valida tudo — guard só atrapalha. Em modo Sheets (catálogo, `track_stock` OFF) os guards RODAM. Não confundir "sem `track_stock`" com "pré-atendimento".
 2. **Cada guard em try/except independente.** Falha de um não impede os outros.
 3. **Composição de correções**: availability domina (substitui), outras prepend em ordem.
 4. **Fail-open**: erro no service de capabilities ou no guard → passthrough (segurança operacional > correctness em edge case).

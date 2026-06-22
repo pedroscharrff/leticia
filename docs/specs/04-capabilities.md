@@ -100,8 +100,8 @@ POST /portal/capabilities/{key}/toggle  → set_enabled(tenant, key, enabled, co
 
 | Key | Default | Plano min | O que faz |
 |---|---|---|---|
-| `inventory.track_stock` | OFF | basic | Liga modo ERP (vs pré-atendimento) |
-| `sales.stock_check` | ON | basic | Vendedor consulta estoque real |
+| `sales.stock_check` | ON | basic | **Existe catálogo** de produtos (vendedor sai do pré-atendimento; farmaceutico e guards consultam o catálogo). É o gate de "tem catálogo?", usado por TODA a máquina de consulta de catálogo. Ver §"Os três modos" |
+| `inventory.track_stock` | OFF | basic | **Quantidade é autoritativa** (modo ERP). SÓ controla a leitura real de `stock_qty`: `[INTERNO: N un]`, `in_stock` por quantidade, "estou sem estoque". NÃO é o gate de "tem catálogo" — ver §"Os três modos" |
 | `sales.cross_sell` | OFF | pro | Sugere complementos via product_relations |
 | `sales.pre_handoff_offers` | OFF | basic | Manda ofertas vigentes ANTES de transferir |
 | `sales.pharmacist_validation` | OFF | basic | Pré-atendimento: medicamento nomeado vai ao farmacêutico p/ validar na bula antes de anotar (requer farmacêutico ativo). Config `not_found_message` (editável): frase enviada ao cliente quando o remédio não está no bulário da ANVISA — pede dosagem/apresentação em vez de inventar (mig 056) |
@@ -116,6 +116,20 @@ POST /portal/capabilities/{key}/toggle  → set_enabled(tenant, key, enabled, co
 | `attendance.time_aware_greeting` | OFF | basic | Injeta hora/período (bloco volátil) p/ saudação correta (mig 061) |
 | `attendance.medication_name_suggestion` | **ON** | basic | "Você quis dizer…?": quando `consultar_bula` não acha o medicamento (provável typo), binda `sugerir_nome_medicamento` em `farmaceutico`/`principio_ativo` para OFERECER correções. Pipeline fuzzy nas bases reais → Haiku → web search nativo, sempre verificado contra a ANVISA. Config: `enable_web_search` (bool), `max_candidates` (1–5). Nunca auto-corrige — confirmação do cliente obrigatória (mig 069) |
 | `intelligence.sentiment_analysis` | OFF | pro | Nó `sentiment_analyzer` classifica o sentimento antes do orchestrator; injeta diretiva volátil de adaptação nos skills e, opcionalmente, escala para humano (reusa `escalate`). Config: **`provider_model`** (dropdown único `"provider\|model"` — enum de pares válidos garante que provider+model NUNCA fiquem incompatíveis; catálogo espelha `llm/providers.py`), `labels`, `analyst_instructions`, `escalate_on_frustration`, `escalation_threshold`, `escalation_labels`, `transfer_message` (texto opcional usado SÓ quando a transferência foi disparada por sentimento — outros gatilhos seguem o `transfer_message` do `handoff_config`), `history_turns` (mig 063). O par escolhido passa pelo `llm_factory` → respeita BYOK do tenant. A origem da escalação é marcada via `state["escalate_reason"]="sentiment"` e o worker (`_resolve_sentiment_transfer_message`) escolhe a mensagem certa. |
+
+## Os três modos de operação (gate de estoque) ⚠️
+
+Duas capabilities **independentes** definem como o bot lida com produto. Confundi-las foi regressão real (jun/2026): o farmaceutico e os guards gateavam em `inventory.track_stock` quando deviam gatear em `sales.stock_check`, deixando o modo Sheets sem proteção.
+
+| Modo | `sales.stock_check` | `inventory.track_stock` | Catálogo? | Quantidade? | Comportamento |
+|---|---|---|---|---|---|
+| **Pré-atendimento** | OFF | OFF | ❌ | — | Bot só anota pedido + transfere. Sem catálogo, sem preço, sem guards. |
+| **Sheets/CSV** | **ON** | OFF | ✅ | ❌ não-autoritativa | Catálogo existe (vendedor E farmaceutico consultam); guards rodam. `buscar_produto` **presume disponível** (não cita quantidade). `availability_guard` só flagga "produto inventado". |
+| **ERP** | ON | **ON** | ✅ | ✅ autoritativa | Tudo do Sheets + quantidade real: `[INTERNO: N un]`, "estou sem estoque", `availability_guard` flagga "out_of_stock". |
+
+**Regra de ouro:** "tem catálogo a consultar?" → **`sales.stock_check`**. "a quantidade é verdade?" → **`inventory.track_stock`**. Qualquer código que consulta catálogo (farmaceutico `buscar_produto` + `stock_check_block`, `safety_guard`, force-recall do runtime) gateia em `sales.stock_check`. Só leitura de quantidade gateia em `inventory.track_stock`. Cf. SPEC 02 §farmaceutico, SPEC 10, [[reference_three_operating_modes]].
+
+> **Dívida**: as duas flags podem divergir num estado inválido (ex.: ERP com catálogo OFF). Idealmente `inventory.track_stock` declararia `depends_on: ["sales.stock_check"]` no catálogo. Ainda não feito.
 
 ## Pontos de extensão
 

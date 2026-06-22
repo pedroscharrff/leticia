@@ -12,17 +12,21 @@ _DIV = "════════════════════════
 
 
 def stock_check_block() -> str:
-    """Anexado ao prompt do farmaceutico SÓ quando `inventory.track_stock` ON
-    (modo ERP — estoque autoritativo). Em pré-atendimento o agente não tem fonte
-    da verdade, então o bloco não entra. Cf. SPEC 02 §farmaceutico."""
+    """Anexado ao prompt do farmaceutico sempre que EXISTE catálogo
+    (`sales.stock_check` ON — modo Sheets/CSV OU ERP). Em pré-atendimento (sem
+    catálogo) o agente não tem fonte da verdade, então o bloco não entra. A bula
+    confirma que o remédio EXISTE; só o catálogo diz se a LOJA o carrega — daí a
+    regra. Cf. SPEC 02 §farmaceutico + SPEC 04 §modos."""
     return (
         "\n"
         f"{_DIV}\n"
-        "CONFERIR ESTOQUE ANTES DE RECOMENDAR PRODUTO (modo ERP ativo)\n"
+        "CONFERIR O CATÁLOGO ANTES DE AFIRMAR QUE A LOJA TEM O PRODUTO\n"
         f"{_DIV}\n"
-        "Esta farmácia tem estoque autoritativo. Você NÃO pode sugerir um produto\n"
-        "pelo nome comercial sem antes confirmar que ele existe no catálogo —\n"
-        "sugerir algo que não temos frustra o cliente e quebra a venda no balcão.\n"
+        "Esta farmácia tem um CATÁLOGO de produtos. A bula da ANVISA confirma que\n"
+        "um medicamento EXISTE no mundo — NÃO que esta loja o tenha. Você NÃO pode\n"
+        "dizer que a farmácia tem um produto sem antes confirmar no catálogo via\n"
+        "`buscar_produto` — afirmar pela bula algo que não está no catálogo frustra\n"
+        "o cliente e o vendedor desmente depois.\n"
         "\n"
         "REGRA DURA (não tem exceção):\n"
         "Você NÃO pode afirmar que a farmácia \"tem\", \"temos\", \"tem opções\",\n"
