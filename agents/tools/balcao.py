@@ -202,7 +202,7 @@ def _normalize_itens(itens: list[dict]) -> list[dict]:
     return out
 
 
-def _registrar_itens_interesse(cart: dict, itens: list[dict]) -> str:
+def _registrar_itens_interesse(cart: dict, itens: list[dict], *, merge: bool = False) -> str:
     """
     Persiste a lista de interesse do cliente no `cart` em memória SEM finalizar.
 
@@ -215,7 +215,22 @@ def _registrar_itens_interesse(cart: dict, itens: list[dict]) -> str:
     isso é exclusivo de `anotar_pedido_balcao` (fechamento + handoff).
     """
     items_clean = _normalize_itens(itens)
-    if not items_clean:
+    # Remoções explícitas (qty<=0 no input CRU) — só relevantes em merge. Lidas
+    # do cru porque `_normalize_itens` força qty>=1 (perderia o sinal de remover).
+    removals: set[str] = set()
+    if merge:
+        for raw in (itens or []):
+            if not isinstance(raw, dict):
+                continue
+            nm = str(raw.get("name") or raw.get("produto") or "").strip().lower()
+            q = raw.get("qty", raw.get("quantidade"))
+            try:
+                if nm and q is not None and int(q) <= 0:
+                    removals.add(nm)
+            except (TypeError, ValueError):
+                pass
+
+    if not items_clean and not removals:
         return (
             "Nenhum item válido informado. "
             "Pergunte ao cliente o que deseja antes de registrar."
@@ -226,6 +241,8 @@ def _registrar_itens_interesse(cart: dict, itens: list[dict]) -> str:
     # à toa. Reset entre turnos é automático (load_context reconstrói o cart do
     # banco e descarta esta key). Mesmo padrão de `adicionar_ao_carrinho`.
     sig = "|".join(f"{i['name'].lower()}:{i['qty']}" for i in items_clean)
+    if removals:
+        sig += "|rm:" + ",".join(sorted(removals))
     calls_seen = cart.setdefault("_calls_this_turn", [])
     if sig in calls_seen:
         return (
@@ -235,12 +252,30 @@ def _registrar_itens_interesse(cart: dict, itens: list[dict]) -> str:
         )
     calls_seen.append(sig)
 
-    # SUBSTITUI a lista de interesse (a tool recebe sempre a lista completa).
-    cart["items"]    = items_clean
+    if merge:
+        # MERGE (upsert por nome) — para modelos fracos que chamam a tool com só
+        # o item NOVO em vez da lista inteira (Gemini): sem isso, cada chamada
+        # SUBSTITUI e apaga os itens anteriores ("a IA esqueceu um item").
+        # Idempotente se o modelo mandar a lista completa. qty<=0 remove o item.
+        by_name: dict[str, dict] = {
+            i["name"].strip().lower(): dict(i)
+            for i in (cart.get("items") or []) if isinstance(i, dict) and i.get("name")
+        }
+        for it in items_clean:
+            by_name[it["name"].strip().lower()] = it
+        for nm in removals:
+            by_name.pop(nm, None)
+        items_final = list(by_name.values())
+    else:
+        # SUBSTITUI a lista (comportamento histórico: a tool recebe a lista
+        # completa; permite remover item por omissão). Usado por modelos fortes.
+        items_final = items_clean
+
+    cart["items"]    = items_final
     cart["subtotal"] = 0.0
 
-    log.info("balcao.itens_interesse_registrados", items=len(items_clean))
-    items_list = "\n".join(f"• {i['qty']}x {i['name']}" for i in items_clean)
+    log.info("balcao.itens_interesse_registrados", items=len(items_final), merge=merge)
+    items_list = "\n".join(f"• {i['qty']}x {i['name']}" for i in items_final)
     return (
         "ITENS_REGISTRADOS:OK (rascunho salvo — pedido NÃO finalizado)\n"
         f"Lista atual:\n{items_list}"
@@ -252,6 +287,8 @@ def _registrar_itens_interesse(cart: dict, itens: list[dict]) -> str:
 def make_registrar_itens_interesse_tool(
     schema_name: str,
     cart: dict,
+    *,
+    merge: bool = False,
 ) -> StructuredTool:
     """
     Tool de RASCUNHO para o vendedor em pré-atendimento.
@@ -261,11 +298,22 @@ def make_registrar_itens_interesse_tool(
     e persistido por `save_context` — é o que permite recuperar o carrinho se o
     cliente sumir antes de confirmar. Distinta de `anotar_pedido_balcao`, que é
     terminal (cria order + handoff).
+
+    `merge=True` (modelos fracos em tool-calling, ex. Gemini): acumula por nome
+    em vez de substituir — o modelo pode mandar só o item NOVO sem apagar os
+    anteriores. `qty<=0` remove. Cf. SPEC 02 §vendedor + SPEC 08 §gate.
     """
 
     async def _run(itens: list[dict]) -> str:
-        return _registrar_itens_interesse(cart, itens)
+        return _registrar_itens_interesse(cart, itens, merge=merge)
 
+    _how = (
+        "Pode passar só o item NOVO/alterado — a lista é acumulada por nome "
+        "(não apaga os anteriores; qty 0 remove)."
+        if merge else
+        "Chame sempre que o cliente acrescentar/mudar um item, passando a lista "
+        "ATUAL completa."
+    )
     return StructuredTool.from_function(
         coroutine=_run,
         name="registrar_itens_interesse",
@@ -273,9 +321,8 @@ def make_registrar_itens_interesse_tool(
             "Salva/atualiza a lista de itens que o cliente quer ENQUANTO você "
             "coleta o pedido. NÃO finaliza e NÃO transfere ao balcão — serve só "
             "para registrar o interesse (e permitir recuperação se o cliente "
-            "sumir). Chame sempre que o cliente acrescentar/mudar um item, "
-            "passando a lista ATUAL completa. Para FECHAR o pedido, use "
-            "`anotar_pedido_balcao` (essa sim é a tool terminal)."
+            f"sumir). {_how} Para FECHAR o pedido, use `anotar_pedido_balcao` "
+            "(essa sim é a tool terminal)."
         ),
         args_schema=RegistrarItensInput,
     )

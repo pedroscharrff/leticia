@@ -690,8 +690,35 @@ async def vendedor_node(state: AgentState, llm_factory) -> AgentState:
                     f"Continuando atendimento iniciado: {prev_response[:200]}"
                 )
 
+            # Rascunho atual do pedido — VOLÁTIL. No pré-atendimento o cart NÃO
+            # era mostrado ao modelo (diferente do modo normal), então ele
+            # dependia só do histórico e ESQUECIA itens já coletados. Renderizar
+            # a lista corrente (de registrar_itens_interesse) é o que mantém o
+            # modelo ciente do pedido inteiro — base para listar/confirmar certo.
+            _draft = (cart.get("items") or []) if isinstance(cart, dict) else []
+            if _draft:
+                _draft_lines = "\n".join(
+                    f"  • {i.get('qty')}x {i.get('name')}"
+                    for i in _draft if isinstance(i, dict) and i.get("name")
+                )
+                pb.volatile(
+                    "PEDIDO EM ANDAMENTO (rascunho já coletado — itens que o "
+                    "cliente JÁ pediu nesta conversa; não os perca):\n"
+                    f"{_draft_lines}"
+                )
+
             if _v_scaffold:
                 pb.volatile(_SALES_DISCIPLINE)
+                # Allowlist estrita de dados (modelo fraco ignora "NÃO pergunte
+                # endereço"). No pré-atendimento NUNCA há pagamento/entrega — tudo
+                # isso é resolvido no balcão. Gated → caminho forte intacto.
+                try:
+                    from services.sales_config import build_field_discipline_block
+                    pb.volatile(build_field_discipline_block(
+                        sales_config, allow_payment=False, allow_delivery=False,
+                    ))
+                except Exception as _exc:  # noqa: BLE001
+                    log.warning("vendedor.pre_field_discipline_failed", exc=str(_exc))
 
             system_prompt, volatile_prompt = pb.build()
             messages = _build_messages(state, system_prompt, volatile_prompt=volatile_prompt)
@@ -707,7 +734,7 @@ async def vendedor_node(state: AgentState, llm_factory) -> AgentState:
             tools = [
                 make_save_customer_tool(schema_name, phone_num, customer),
                 make_consultar_pedido_tool(schema_name, phone_num),
-                make_registrar_itens_interesse_tool(schema_name, cart),
+                make_registrar_itens_interesse_tool(schema_name, cart, merge=_v_scaffold),
                 make_anotar_pedido_balcao_tool(schema_name, phone_num, customer, cart),
             ]
 
@@ -823,6 +850,20 @@ async def vendedor_node(state: AgentState, llm_factory) -> AgentState:
 
             if _v_scaffold:
                 pb.volatile(_SALES_DISCIPLINE)
+                # Allowlist estrita de dados (modelo fraco ignora "NÃO pergunte
+                # endereço" do build_checkout_flow_block). Respeita o checkout_mode
+                # e os flags ask_payment/ask_delivery do tenant. Gated → caminho
+                # forte intacto.
+                try:
+                    from services.sales_config import build_field_discipline_block
+                    _co_mode = (sales_config.get("checkout_mode") or "completo").lower()
+                    _allow_pay = _co_mode != "coleta" and bool(sales_config.get("ask_payment", True))
+                    _allow_del = _co_mode != "coleta" and bool(sales_config.get("ask_delivery", False))
+                    pb.volatile(build_field_discipline_block(
+                        sales_config, allow_payment=_allow_pay, allow_delivery=_allow_del,
+                    ))
+                except Exception as _exc:  # noqa: BLE001
+                    log.warning("vendedor.field_discipline_failed", exc=str(_exc))
 
             system_prompt, volatile_prompt = pb.build()
             messages = _build_messages(state, system_prompt, volatile_prompt=volatile_prompt)

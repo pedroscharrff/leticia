@@ -266,6 +266,73 @@ def build_checkout_flow_block(config: dict) -> str:
     return "\n".join(lines)
 
 
+# Campos de endereço/entrega — usados pelo reforço de allowlist (modelos fracos)
+# para decidir se PODE perguntar endereço (só quando algum deles é obrigatório
+# OU a entrega está ativa no fechamento).
+ADDRESS_FIELDS = frozenset({"cep", "rua", "numero", "complemento", "bairro", "cidade", "estado"})
+
+
+def build_field_discipline_block(
+    config: dict,
+    *,
+    allow_payment: bool,
+    allow_delivery: bool,
+) -> str:
+    """Allowlist ESTRITA dos dados que o agente PODE pedir — reforço para modelos
+    fracos (Gemini/Ollama/weak) que ignoram instruções negativas do tipo
+    "NÃO pergunte endereço".
+
+    Modelos fortes (Claude/GPT) já obedecem o `build_checkout_flow_block`/bloco de
+    campos obrigatórios, então este bloco é GATED por `needs_tool_scaffolding` no
+    call site (vendedor.py) e injetado como VOLÁTIL — o prefixo cacheado do
+    caminho forte fica byte-idêntico. Cf. SPEC 08 §andaime de tool-calling.
+
+    `allow_payment`/`allow_delivery` vêm do call site (já consideram checkout_mode
+    e o modo pré-atendimento, onde ambos são sempre False).
+    """
+    required: list[str] = config.get("required_fields") or []
+    allowed_labels = [
+        ALLOWED_FIELDS.get(k, {"label": k})["label"] for k in required
+    ]
+    if allow_payment:
+        allowed_labels.append("Forma de pagamento")
+    if allow_delivery:
+        allowed_labels.append("Entrega/retirada e endereço de entrega")
+
+    has_address_required = any(k in ADDRESS_FIELDS for k in required)
+
+    lines = [
+        "═══════════════════════════════════════════════════════════════",
+        "DADOS QUE VOCÊ PODE PEDIR — LISTA FECHADA (definida pela farmácia)",
+        "═══════════════════════════════════════════════════════════════",
+    ]
+    if allowed_labels:
+        lines.append(
+            "Os ÚNICOS dados que você pode solicitar ao cliente são: "
+            + "; ".join(allowed_labels) + "."
+        )
+    else:
+        lines.append(
+            "Esta farmácia NÃO exige nenhum dado de cadastro. NÃO peça dados "
+            "pessoais — apenas conduza o pedido."
+        )
+    lines.append(
+        "NÃO pergunte NENHUM dado fora dessa lista, mesmo que pareça padrão de "
+        "farmácia. Pedir um dado não-listado é ERRO."
+    )
+    forbid = []
+    if not allow_delivery and not has_address_required:
+        forbid.append(
+            "endereço, CEP, bairro, cidade, ou se é entrega/retirada (isso é "
+            "resolvido no balcão — NÃO pergunte)"
+        )
+    if not allow_payment:
+        forbid.append("forma de pagamento")
+    if forbid:
+        lines.append("Em especial, NÃO pergunte: " + "; ".join(forbid) + ".")
+    return "\n".join(lines)
+
+
 def build_sales_config_block(config: dict, customer: dict | None) -> str:
     """
     Builds the dynamic prompt block injected into the vendedor agent system

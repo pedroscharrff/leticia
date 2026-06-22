@@ -196,7 +196,11 @@ def _persona_prefix(persona: dict) -> str:
     vocabulary = persona.get("vocabulary_level") or ""
     depth      = persona.get("explanation_depth") or ""
     greeting  = persona.get("greeting_template") or ""
-    signature = persona.get("signature") or ""
+    # NOTA: `signature` NÃO é renderizada no prompt. Ela é anexada de forma
+    # DETERMINÍSTICA à resposta em save_context (agents/nodes/context.py),
+    # depois da LLM. Manter a instrução aqui fazia a LLM "às vezes" assinar
+    # (era "opcional, no fim de respostas longas") — e como as respostas são
+    # curtas por design, quase nunca saía. Ver [[project_persona_phantom_fields]].
     playbook  = persona.get("conversation_playbook") or ""
     forbidden = persona.get("forbidden_topics") or ""
     catch     = persona.get("catchphrases") or []
@@ -292,8 +296,7 @@ def _persona_prefix(persona: dict) -> str:
         parts.append("Bordões da marca (use com moderação): " + "; ".join(str(c) for c in catch))
     if greeting:
         parts.append(f"Saudação preferida (use no PRIMEIRO contato): {greeting}")
-    if signature:
-        parts.append(f"Assinatura opcional (no fim de respostas longas): {signature}")
+    # `signature` é anexada deterministicamente em save_context — NÃO vai no prompt.
 
     # ── Contexto da farmácia (loja física + canais) ───────────────────────
     # Bloco estável — vai no prefixo cacheado. Mude no portal → próximo turno

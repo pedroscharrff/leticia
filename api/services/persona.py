@@ -173,8 +173,8 @@ def build_persona_block(persona: dict) -> str:
     if persona.get("forbidden_topics"):
         parts.append("**Tópicos proibidos:**\n" + persona["forbidden_topics"].strip())
 
-    if persona.get("signature"):
-        parts.append(f"**Assinatura (opcional, no fim de respostas longas):** {persona['signature']}")
+    # `signature` NÃO entra no prompt — é anexada deterministicamente à resposta
+    # em save_context (agents/nodes/context.py), depois da LLM.
 
     parts.append(
         "Mantenha SEMPRE essa identidade. Nunca diga que é uma IA, "

@@ -141,6 +141,18 @@ Andaimes gated por esse gate (todos no-op/ausentes para strong):
    A regra já existe no `_SYSTEM`/`_SYSTEM_PRE_ATENDIMENTO` (Etapa 2); isto só a
    REFORÇA para quem precisa. Não é bug do worker nem do END — é o modelo fraco
    ignorando o fluxo multi-step.
+4. **Allowlist estrita de dados no `vendedor`** (`build_field_discipline_block`,
+   `services/sales_config.py`, VOLÁTIL, gated): modelos fracos ignoram instruções
+   NEGATIVAS ("NÃO pergunte endereço/entrega") — o `build_checkout_flow_block` com
+   `ask_delivery=False` já diz isso, mas o Gemini pede endereço mesmo assim
+   (sintoma real: bot pedindo endereço de entrega sem o tenant ter configurado).
+   No pré-atendimento o problema é pior: NÃO há bloco de fechamento, então nada
+   proíbe a pergunta. O reforço converte a regra negativa numa LISTA FECHADA do
+   que o agente PODE pedir (required_fields + pagamento/entrega só se ativos),
+   respeitando `checkout_mode`/`ask_payment`/`ask_delivery`. Pré-atendimento passa
+   sempre `allow_payment=False, allow_delivery=False` (resolvido no balcão). Se
+   algum campo de endereço é obrigatório OU a entrega está ON, a allowlist permite
+   o endereço (não cria falso bloqueio). Strong path intacto (gated + volátil).
 
 > **Por que NÃO há force-call amplo de "consultou? então responde" no farmaceutico:**
 > a métrica `pct_sem_tool` é contaminada por turnos de condução legítimos (perguntas

@@ -43,6 +43,34 @@ def _mem_keys(state: AgentState) -> tuple[str, str]:
     return f"hist:{sid}", f"owner:{sid}"
 
 
+def _apply_signature(text: str, state: AgentState) -> str:
+    """Anexa a assinatura da persona (`/portal/persona`) à resposta — de forma
+    DETERMINÍSTICA, depois da LLM.
+
+    A assinatura NÃO passa mais pelo prompt (era uma instrução "opcional, no fim
+    de respostas longas" que a LLM quase nunca cumpria, já que as respostas são
+    curtas por design). Aqui ela é colada direto no texto enviado ao cliente.
+
+    Escopo (decisão de produto): SÓ respostas normais. Pula transferência para
+    humano (`escalate`), encerramento (`end_conversation`) e respostas vazias —
+    não faz sentido assinar uma mensagem de "vou te transferir" ou um resumo
+    pós-handoff. Idempotente: não duplica se o texto já termina com a assinatura.
+    """
+    body = (text or "").strip()
+    if not body:
+        return text
+    if state.get("escalate") or state.get("end_conversation") or state.get("handoff_to"):
+        return text
+    persona = state.get("persona") or {}
+    signature = (persona.get("signature") or "").strip()
+    if not signature:
+        return text
+    # Dedupe defensivo: se a LLM (por mímica do histórico) já assinou, não repete.
+    if body.endswith(signature):
+        return text
+    return f"{body}\n\n{signature}"
+
+
 async def _resolve_session_ttl(tenant_id: str | None) -> int:
     """Lê session_ttl_minutes do tenant (default 30) e retorna em segundos.
 
@@ -246,6 +274,11 @@ async def save_context(state: AgentState) -> AgentState:
     skill_used     = state.get("selected_skill", "unknown")
     hist_key, owner_key = _mem_keys(state)
 
+    # Assinatura determinística (persona). `outbound` = o que o cliente recebe
+    # (com assinatura); `final_response` puro vai pro histórico do Redis para a
+    # LLM NÃO ver a assinatura e passar a mimetizá-la (geraria duplicata).
+    outbound = _apply_signature(final_response, state)
+
     # Atualiza histórico — evita persistir mensagens vazias (causariam 400 no Anthropic)
     messages = list(state.get("messages", []))
     if (current_msg or "").strip():
@@ -362,7 +395,7 @@ async def save_context(state: AgentState) -> AgentState:
                 """,
                 session_id,
                 current_msg,
-                final_response,
+                outbound,
                 skill_used,
                 phone_clean,
                 int(usage["tokens_in"]),
@@ -373,4 +406,4 @@ async def save_context(state: AgentState) -> AgentState:
     except Exception as exc:
         log.warning("context.db.save_failed", session=session_id, exc=str(exc))
 
-    return {**state, "messages": messages}
+    return {**state, "messages": messages, "final_response": outbound}
