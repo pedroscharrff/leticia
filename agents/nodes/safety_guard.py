@@ -124,7 +124,10 @@ async def safety_guard(state: dict[str, Any]) -> dict[str, Any]:
             from services.delivery_guard import (
                 detect_delivery_issues, build_correction_message as _bld_del,
             )
-            issues = await detect_delivery_issues(response, tenant_id=tenant_id)
+            quote = cart.get("_shipping_quote_this_turn")
+            issues = await detect_delivery_issues(
+                response, tenant_id=tenant_id, quote=quote,
+            )
             if issues:
                 corrections.append(_bld_del(issues))
                 issues_log["delivery"] = issues

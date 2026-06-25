@@ -23,6 +23,10 @@ class Settings(BaseSettings):
     anthropic_api_key: str = ""
     google_api_key: str = ""
     openai_api_key: str = ""
+    # Google Maps Platform (Distance Matrix) — chave SEPARADA da google_api_key
+    # (que é da GenAI/Gemini). Usada pelo frete por distância no modo 'google'
+    # (rota real de rua). Vazia = só haversine disponível.
+    google_maps_api_key: str = ""
     ollama_base_url: str = "http://localhost:11434"
 
     # App

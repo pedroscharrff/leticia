@@ -49,7 +49,11 @@ from routers.orders import router as orders_router
 from routers.order_status_messages import router as order_status_messages_router
 from routers.broker import ingest_router as broker_ingest_router, portal_router as broker_portal_router
 from routers.capabilities import portal_router as capabilities_portal_router, admin_router as capabilities_admin_router
-from routers.shipping_rules import router as shipping_rules_router
+from routers.shipping_rules import (
+    router as shipping_rules_router,
+    origin_router as shipping_origin_router,
+    tiers_router as shipping_tiers_router,
+)
 from routers.offers import router as offers_router
 from routers.payments_webhook import router as payments_webhook_router
 from routers.payments import payments_router, recovery_router, order_summary_router
@@ -173,6 +177,8 @@ app.include_router(broker_portal_router)
 app.include_router(capabilities_portal_router)
 app.include_router(capabilities_admin_router)
 app.include_router(shipping_rules_router)
+app.include_router(shipping_origin_router)
+app.include_router(shipping_tiers_router)
 app.include_router(offers_router)
 app.include_router(payments_webhook_router)
 app.include_router(payments_router)

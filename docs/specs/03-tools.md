@@ -178,7 +178,7 @@ medicamentos — não usar como dicionário).
 | Tool | Capability | Args | Retorna |
 |---|---|---|---|
 | `recomendar_complementos(produto)` | `sales.cross_sell` | nome | Sugestões via `product_relations` (filtra alergias) |
-| `calcular_frete(cep, subtotal)` | `delivery.shipping_by_cep` | cep, subtotal | Valor + prazo + "frete grátis" se aplicável |
+| `calcular_frete(cep, subtotal)` | `delivery.shipping_by_cep` | cep, subtotal | Valor + prazo + "frete grátis" se aplicável (modo CEP **ou** distância) |
 | `gerar_link_pix(numero_pedido, valor_total)` | `payments.pix_asaas` | numero, valor | Copia-cola PIX via Asaas (pede CPF se falta) |
 | `registrar_alergia(substancia)` | `attendance.customer_memory` | | Persiste em `customers.allergies` |
 | `registrar_medicamento_continuo(nome, dose, frequencia)` | `attendance.customer_memory` | | Persiste em `customers.continuous_meds` |
@@ -197,6 +197,37 @@ medicamentos — não usar como dicionário).
 ### Adicionar campo aceito em `salvar_dados_cliente`
 
 Atualizar `_FIELD_TO_COLUMN` em `customer.py`. Se for coluna nova, criar migration adicionando coluna em `customers` (via `create_tenant_schema` + função de upgrade para tenants existentes).
+
+### `calcular_frete` — dois modelos de precificação
+
+A tool decide o modelo pela linha do tenant em `public.tenant_shipping_origin`
+(`mode`):
+
+- **`cep_table`** (default, legado): faixas de CEP → valor fixo
+  (`public.tenant_shipping_rules`). Match pela faixa **mais específica** (menor
+  amplitude `cep_end - cep_start`) que contém o CEP — corrige o bug histórico em
+  que uma faixa larga "capital" mascarava uma faixa estreita "centro".
+- **`distance`**: mede a distância origem↔destino e aplica a **menor** faixa de
+  raio (`public.tenant_shipping_distance_tiers`) cujo `max_distance_km` cobre a
+  distância. Acima da maior faixa → "fora da área de entrega" (NÃO inventa valor).
+  Sem distância medível/sem faixa → **fallback** para `cep_table`. A **fonte da
+  distância** é `tenant_shipping_origin.distance_source`:
+    - `haversine` (default, grátis): geocoda origem+destino (BrasilAPI v2 →
+      fallback AwesomeAPI, cache 24h) e mede linha reta.
+    - `google`: rota REAL de rua via Google Distance Matrix
+      (`geocoding.google_distance_km`, chave **da plataforma**
+      `settings.google_maps_api_key`, cache 24h por origem+CEP). Sem chave ou
+      falha da API → cai para haversine automaticamente.
+
+**Anti-promessa-errada (integra com o `delivery_guard`, SPEC 10):** quando recebe
+`cart`, a tool grava o orçamento computado em `cart["_shipping_quote_this_turn"]`
+(`{kind, valor, free, free_threshold, distance_km, ...}`). O `delivery_guard`
+cruza a resposta do agente contra esse orçamento — pega "frete grátis" prometido
+abaixo do mínimo e valor/entrega afirmados quando o CEP está fora de área.
+
+Portal: tela **Frete & Entrega** (`PortalEntregas.tsx`) tem seletor de modo +
+origem + faixas. Endpoints: `/portal/shipping-origin` (GET/PUT, PUT geocoda),
+`/portal/shipping-tiers` (CRUD), `/portal/shipping-rules` (CRUD legado).
 
 ### Adicionar provider de PIX além de Asaas
 

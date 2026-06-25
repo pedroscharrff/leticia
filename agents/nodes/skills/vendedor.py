@@ -1000,6 +1000,7 @@ async def vendedor_node(state: AgentState, llm_factory) -> AgentState:
                         tenant_id or "",
                         default_eta_days=int(sh_cfg.get("default_eta_days", 3)),
                         free_above=float(sh_cfg.get("free_above", 0)),
+                        cart=cart,
                     ))
                 if caps["customer_memory"]:
                     tools.extend(make_customer_memory_tools(schema_name, phone_num, customer))

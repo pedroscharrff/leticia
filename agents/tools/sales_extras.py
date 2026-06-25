@@ -130,20 +130,53 @@ def _cep_to_int(cep: str) -> int | None:
         return None
 
 
-def make_shipping_tool(tenant_id: str, *, default_eta_days: int, free_above: float):
-    """Tool de cálculo de frete por CEP.
+def _effective_free(gratis_rule, free_above: float) -> float | None:
+    """Threshold de frete grátis: o da regra ganha; senão o global do tenant.
+    `0`/None = desativado em ambos os níveis."""
+    local = float(gratis_rule) if gratis_rule is not None else None
+    if local not in (None, 0):
+        return local
+    return free_above if free_above > 0 else None
+
+
+def make_shipping_tool(
+    tenant_id: str,
+    *,
+    default_eta_days: int,
+    free_above: float,
+    cart: dict | None = None,
+):
+    """Tool de cálculo de frete (por faixa de CEP OU por distância/raio).
+
+    O modo é decidido pela linha do tenant em `public.tenant_shipping_origin`
+    (`mode = 'cep_table' | 'distance'`). Em `distance`, mede a distância real
+    origem↔CEP-do-cliente (geocoding + haversine) e aplica a menor faixa de raio
+    cadastrada que ainda cobre a distância; sem origem geocodificada ou sem
+    faixa, cai para a tabela de CEP (fallback resiliente).
 
     Args do factory:
-        tenant_id:        id do tenant para consultar tenant_shipping_rules.
-        default_eta_days: prazo retornado quando nenhum range bate.
-        free_above:       frete grátis acima de R$ X (0 = desativado).
+        tenant_id:        id do tenant (consulta as tabelas globais de frete).
+        default_eta_days: prazo retornado quando nenhuma regra bate.
+        free_above:       frete grátis acima de R$ X global (0 = desativado).
+        cart:             se fornecido, o orçamento calculado é gravado em
+                          `cart["_shipping_quote_this_turn"]` para o delivery_guard
+                          cruzar o valor que o agente escrever (anti-promessa-errada).
     """
+
+    def _stash(quote: dict) -> None:
+        if cart is not None:
+            try:
+                cart["_shipping_quote_this_turn"] = quote
+            except Exception:  # noqa: BLE001 — nunca quebra o turno por causa do guard
+                pass
 
     @tool
     async def calcular_frete(cep: str, subtotal: float) -> str:
         """
-        Calcula o frete para o CEP do cliente baseado nas regras cadastradas.
-        Use SEMPRE que o cliente fornecer o CEP, antes de fechar o pedido.
+        Calcula o frete para o CEP do cliente com base nas regras cadastradas
+        pela farmácia (faixa de CEP ou distância). Use SEMPRE que o cliente
+        fornecer o CEP, antes de fechar o pedido. Informe ao cliente EXATAMENTE
+        o valor e o prazo que esta tool retornar — não estime por conta própria.
 
         Args:
             cep:      CEP do cliente (com ou sem hífen).
@@ -151,60 +184,182 @@ def make_shipping_tool(tenant_id: str, *, default_eta_days: int, free_above: flo
         """
         cep_int = _cep_to_int(cep)
         if cep_int is None:
+            _stash({"kind": "invalid"})
             return f"CEP '{cep}' inválido. Peça ao cliente para reenviar."
 
+        sub = float(subtotal or 0)
+
+        # ── Modo? (origem do tenant) ──────────────────────────────────────────
+        origin = None
         try:
             from db.postgres import get_db_conn
             async with get_db_conn() as conn:
-                rows = await conn.fetch(
-                    """
-                    SELECT label, cep_start, cep_end, valor, prazo_dias, gratis_acima
-                      FROM public.tenant_shipping_rules
-                     WHERE tenant_id = $1 AND active = TRUE
-                     ORDER BY sort_order, valor
-                    """,
+                origin = await conn.fetchrow(
+                    "SELECT mode, distance_source, lat, lng "
+                    "FROM public.tenant_shipping_origin WHERE tenant_id = $1",
                     tenant_id,
                 )
         except Exception as exc:
-            log.warning("tool.calcular_frete.db_error", exc=str(exc))
-            return "Não consegui calcular o frete agora — vou pedir para o atendente confirmar."
+            log.warning("tool.calcular_frete.origin_error", exc=str(exc))
 
-        match = None
-        for r in rows:
-            start = _cep_to_int(r["cep_start"])
-            end   = _cep_to_int(r["cep_end"])
-            if start is None or end is None:
-                continue
-            if start <= cep_int <= end:
-                match = r
-                break
+        mode = (origin["mode"] if origin else None) or "cep_table"
 
-        if not match:
-            return (
-                f"Não encontrei regra de entrega para o CEP {cep}. "
-                f"Prazo estimado: {default_eta_days} dias úteis. "
-                f"Confirmaremos o valor exato com o atendente."
+        if mode == "distance" and origin and origin["lat"] is not None:
+            dist_result = await _frete_por_distancia(
+                tenant_id, origin, cep, cep_int, sub,
+                default_eta_days, free_above, _stash,
             )
+            if dist_result is not None:
+                return dist_result
+            # fallback: distância indisponível (geocode falhou / sem faixas) →
+            # tenta a tabela de CEP antes de desistir.
 
-        valor = float(match["valor"] or 0)
-        prazo = int(match["prazo_dias"] or default_eta_days)
-        gratis_rule = match.get("gratis_acima")
-        gratis_threshold = float(gratis_rule) if gratis_rule is not None else None
-        # `free_above` global do tenant ganha de None local; threshold local sobrescreve.
-        effective_free = gratis_threshold if gratis_threshold not in (None, 0) else (
-            free_above if free_above > 0 else None
+        return await _frete_por_cep(
+            tenant_id, cep, cep_int, sub, default_eta_days, free_above, _stash,
         )
 
-        sub = float(subtotal or 0)
-        if effective_free is not None and sub >= effective_free:
-            return (f"Entrega GRÁTIS para {match['label']} (CEP {cep}) — "
-                    f"prazo: {prazo} dias úteis. (Frete grátis acima de R$ {effective_free:.2f}.)")
-
-        return (f"Frete para {match['label']} (CEP {cep}): "
-                f"R$ {valor:.2f} — prazo: {prazo} dias úteis. "
-                f"Novo total com frete: R$ {sub + valor:.2f}.")
-
     return calcular_frete
+
+
+async def _frete_por_distancia(
+    tenant_id, origin, cep, cep_int, sub,
+    default_eta_days, free_above, stash,
+) -> str | None:
+    """Calcula por raio. Retorna a mensagem, ou None se não foi possível
+    (sem distância do cliente / sem faixas) — para o caller cair no fallback CEP."""
+    from services.geocoding import geocode_cep, haversine_km, google_distance_km
+
+    o_lat, o_lng = float(origin["lat"]), float(origin["lng"])
+    source = (origin["distance_source"] if "distance_source" in origin else None) or "haversine"
+
+    distance = None
+    # Rota real (Google Distance Matrix) quando o tenant escolheu E há chave.
+    if source == "google":
+        try:
+            from config import settings
+            api_key = getattr(settings, "google_maps_api_key", "") or ""
+        except Exception:  # noqa: BLE001
+            api_key = ""
+        if api_key:
+            distance = await google_distance_km(o_lat, o_lng, cep, api_key=api_key)
+
+    # Haversine (linha reta) — default e fallback do Google.
+    if distance is None:
+        dest = await geocode_cep(cep)
+        if dest is None:
+            return None  # não conseguiu medir → fallback CEP
+        distance = haversine_km(o_lat, o_lng, dest.lat, dest.lng)
+
+    try:
+        from db.postgres import get_db_conn
+        async with get_db_conn() as conn:
+            tiers = await conn.fetch(
+                """
+                SELECT label, max_distance_km, valor, prazo_dias, gratis_acima
+                  FROM public.tenant_shipping_distance_tiers
+                 WHERE tenant_id = $1 AND active = TRUE
+                 ORDER BY max_distance_km ASC
+                """,
+                tenant_id,
+            )
+    except Exception as exc:
+        log.warning("tool.calcular_frete.tiers_error", exc=str(exc))
+        return None
+
+    if not tiers:
+        return None  # modo distância ligado mas sem faixas → fallback CEP
+
+    # Menor faixa cujo teto ainda cobre a distância.
+    match = next((t for t in tiers if distance <= float(t["max_distance_km"])), None)
+
+    if match is None:
+        max_km = float(tiers[-1]["max_distance_km"])
+        stash({"kind": "out_of_area", "distance_km": round(distance, 1),
+               "max_km": max_km})
+        return (
+            f"O CEP {cep} está a ~{distance:.1f} km da farmácia, além da nossa "
+            f"área de entrega (até {max_km:.0f} km). Não consigo calcular um frete "
+            f"para esse endereço — vou pedir para o atendente verificar a "
+            f"possibilidade de entrega."
+        )
+
+    valor = float(match["valor"] or 0)
+    prazo = int(match["prazo_dias"] or default_eta_days)
+    free = _effective_free(match["gratis_acima"], free_above)
+    is_free = free is not None and sub >= free
+
+    stash({"kind": "distance", "valor": valor, "free": is_free,
+           "free_threshold": free, "distance_km": round(distance, 1),
+           "label": match["label"]})
+
+    if is_free:
+        return (f"Você está a ~{distance:.1f} km da farmácia ({match['label']}). "
+                f"Entrega GRÁTIS — prazo: {prazo} dias úteis. "
+                f"(Frete grátis acima de R$ {free:.2f}.)")
+
+    return (f"Você está a ~{distance:.1f} km da farmácia ({match['label']}). "
+            f"Frete: R$ {valor:.2f} — prazo: {prazo} dias úteis. "
+            f"Novo total com frete: R$ {sub + valor:.2f}.")
+
+
+async def _frete_por_cep(
+    tenant_id, cep, cep_int, sub, default_eta_days, free_above, stash,
+) -> str:
+    """Modelo legado: faixa de CEP → valor fixo. Também serve de fallback do
+    modo distância quando o geocoding falha."""
+    try:
+        from db.postgres import get_db_conn
+        async with get_db_conn() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT label, cep_start, cep_end, valor, prazo_dias, gratis_acima
+                  FROM public.tenant_shipping_rules
+                 WHERE tenant_id = $1 AND active = TRUE
+                 ORDER BY sort_order, valor
+                """,
+                tenant_id,
+            )
+    except Exception as exc:
+        log.warning("tool.calcular_frete.db_error", exc=str(exc))
+        stash({"kind": "error"})
+        return "Não consegui calcular o frete agora — vou pedir para o atendente confirmar."
+
+    # Faixa mais ESPECÍFICA (menor amplitude) que contém o CEP — evita que uma
+    # faixa larga "capital" mascare uma faixa estreita "centro" mais barata.
+    match = None
+    best_span = None
+    for r in rows:
+        start = _cep_to_int(r["cep_start"])
+        end   = _cep_to_int(r["cep_end"])
+        if start is None or end is None or not (start <= cep_int <= end):
+            continue
+        span = end - start
+        if best_span is None or span < best_span:
+            match, best_span = r, span
+
+    if not match:
+        stash({"kind": "no_rule"})
+        return (
+            f"Não encontrei regra de entrega para o CEP {cep}. "
+            f"Prazo estimado: {default_eta_days} dias úteis. "
+            f"Confirmaremos o valor exato com o atendente."
+        )
+
+    valor = float(match["valor"] or 0)
+    prazo = int(match["prazo_dias"] or default_eta_days)
+    free = _effective_free(match["gratis_acima"], free_above)
+    is_free = free is not None and sub >= free
+
+    stash({"kind": "cep", "valor": valor, "free": is_free,
+           "free_threshold": free, "label": match["label"]})
+
+    if is_free:
+        return (f"Entrega GRÁTIS para {match['label']} (CEP {cep}) — "
+                f"prazo: {prazo} dias úteis. (Frete grátis acima de R$ {free:.2f}.)")
+
+    return (f"Frete para {match['label']} (CEP {cep}): "
+            f"R$ {valor:.2f} — prazo: {prazo} dias úteis. "
+            f"Novo total com frete: R$ {sub + valor:.2f}.")
 
 
 # ── PIX no chat (Asaas) ─────────────────────────────────────────────────────

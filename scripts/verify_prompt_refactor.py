@@ -81,7 +81,11 @@ def verify_commerce_equality() -> None:
             "fornecer o CEP de entrega, ANTES de fechar o pedido, CHAME essa tool\n"
             "passando o CEP e o subtotal atual do carrinho. Comunique valor + prazo\n"
             "+ total final em UMA frase. Se o tool retornar 'frete grátis', destaque\n"
-            "isso para o cliente."
+            "isso para o cliente.\n"
+            "IMPORTANTE: informe EXATAMENTE o valor e o prazo que o tool retornar — "
+            "NUNCA estime, arredonde ou prometa frete grátis por conta própria. "
+            "Se o tool disser que o CEP está FORA DA ÁREA de entrega, NÃO invente um "
+            "valor: avise o cliente que vai confirmar a entrega com o atendente."
         )
 
     def orig_mem():

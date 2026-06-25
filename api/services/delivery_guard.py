@@ -1,13 +1,20 @@
 """
 services/delivery_guard.py
 
-MVP: detecta quando o agente promete "frete grátis" sem que o tenant tenha
-NENHUMA regra de frete grátis cadastrada. Versão futura pode validar contra
-CEP/subtotal específicos.
+Guard determinístico de frete. Dois níveis de defesa:
 
-Async porque consulta `public.tenant_shipping_rules` (tabela compartilhada,
-não no schema do tenant). Cache de 60s por tenant pra não bater no DB toda
-resposta.
+1. **Cruzamento com o orçamento do turno** (`quote`): quando o tool `calcular_frete`
+   roda, ele grava em `cart["_shipping_quote_this_turn"]` o que REALMENTE calculou
+   (valor, se é grátis, ou "fora de área"). Aqui cruzamos a resposta do agente
+   contra essa verdade — pega o agente prometendo "frete grátis" quando o subtotal
+   não atingiu o mínimo, ou prometendo entrega/valor para um CEP fora da área.
+
+2. **Fallback MVP** (sem `quote`): se o tool não rodou e a resposta menciona
+   "frete grátis"/"entrega grátis" e o tenant NÃO tem nenhuma regra de frete
+   grátis cadastrada, flagga.
+
+Async porque o fallback consulta `public.tenant_shipping_rules` (tabela
+compartilhada). Cache de 60s por tenant.
 """
 from __future__ import annotations
 
@@ -24,12 +31,14 @@ _FREE_DELIVERY_PATTERNS = [
     r"\bsem\s+frete\b",
 ]
 
-# Negação: se tiver "frete grátis acima de R$ X" e a oferta existe na regra,
-# essa é uma afirmação válida — exigiria validação de subtotal.
-# Pra MVP: se tenant tem alguma regra com gratis_acima, presumimos legítimo
-# (o agente DEVE estar respeitando a condição cadastrada).
+# "frete/entrega ... R$ N" ou "R$ N ... de frete/entrega" — usado para detectar
+# o agente cotando um valor de entrega quando o tool não conseguiu cotar.
+_FRETE_PRICE_PATTERNS = [
+    r"\b(frete|entrega)\b[^.\n]{0,40}r\$\s*\d",
+    r"r\$\s*\d[^.\n]{0,40}\b(de\s+)?(frete|entrega)\b",
+]
 
-# Cache por tenant
+# Cache por tenant (fallback MVP)
 _CACHE: dict[str, tuple[float, bool]] = {}
 _CACHE_TTL_SECONDS = 60.0
 
@@ -48,10 +57,16 @@ def has_free_delivery_claim(response_text: str) -> bool:
     return any(re.search(p, norm) for p in _FREE_DELIVERY_PATTERNS)
 
 
+def _mentions_frete_price(response_text: str) -> bool:
+    if not response_text:
+        return False
+    norm = _normalize(response_text)
+    return any(re.search(p, norm) for p in _FRETE_PRICE_PATTERNS)
+
+
 async def tenant_allows_free_delivery(tenant_id: str | None) -> bool:
     """True se o tenant tem AO MENOS UMA regra de frete grátis cadastrada
-    (gratis_acima IS NOT NULL e > 0). Cacheado 60s.
-    """
+    (gratis_acima > 0), em qualquer dos dois modelos. Cacheado 60s."""
     if not tenant_id:
         return False
     now = time.time()
@@ -64,12 +79,15 @@ async def tenant_allows_free_delivery(tenant_id: str | None) -> bool:
         async with get_db_conn() as conn:
             row = await conn.fetchrow(
                 """
-                SELECT 1 FROM public.tenant_shipping_rules
-                 WHERE tenant_id = $1
-                   AND active = TRUE
-                   AND gratis_acima IS NOT NULL
-                   AND gratis_acima > 0
-                 LIMIT 1
+                SELECT 1 WHERE EXISTS (
+                    SELECT 1 FROM public.tenant_shipping_rules
+                     WHERE tenant_id = $1 AND active = TRUE
+                       AND gratis_acima IS NOT NULL AND gratis_acima > 0
+                ) OR EXISTS (
+                    SELECT 1 FROM public.tenant_shipping_distance_tiers
+                     WHERE tenant_id = $1 AND active = TRUE
+                       AND gratis_acima IS NOT NULL AND gratis_acima > 0
+                )
                 """,
                 tenant_id,
             )
@@ -85,9 +103,42 @@ async def detect_delivery_issues(
     response_text: str,
     *,
     tenant_id: str | None,
+    quote: dict | None = None,
 ) -> list[dict]:
-    """Retorna [{"reason": "free_delivery_not_configured"}] ou []."""
-    if not has_free_delivery_claim(response_text):
+    """Retorna lista de issues (vazia = ok).
+
+    Reasons possíveis:
+      - "free_claimed_but_not_free"  → bot prometeu grátis, mas o orçamento do
+                                        turno diz que NÃO é grátis (subtotal abaixo
+                                        do mínimo, ou sem regra de grátis).
+      - "delivery_unconfirmed"       → o tool não conseguiu cotar (fora de área /
+                                        sem regra / CEP inválido), mas o bot afirmou
+                                        frete/valor mesmo assim.
+      - "free_delivery_not_configured" → fallback MVP (sem quote): "grátis" sem
+                                        nenhuma regra de grátis cadastrada.
+    """
+    if not response_text:
+        return []
+
+    claim = has_free_delivery_claim(response_text)
+
+    # ── Nível 1: cruza com o orçamento calculado neste turno ──────────────────
+    if quote:
+        kind = quote.get("kind")
+        if kind in ("distance", "cep"):
+            if claim and not quote.get("free"):
+                return [{"reason": "free_claimed_but_not_free",
+                         "threshold": quote.get("free_threshold")}]
+            return []
+        if kind in ("out_of_area", "no_rule", "invalid", "error"):
+            # Tool não cotou → qualquer afirmação de frete/grátis é fabricação.
+            if claim or _mentions_frete_price(response_text):
+                return [{"reason": "delivery_unconfirmed", "kind": kind}]
+            return []
+        return []
+
+    # ── Nível 2 (fallback MVP, sem quote): "grátis" sem regra ─────────────────
+    if not claim:
         return []
     if await tenant_allows_free_delivery(tenant_id):
         return []
@@ -95,6 +146,27 @@ async def detect_delivery_issues(
 
 
 def build_correction_message(issues: list[dict]) -> str:
+    reasons = {i.get("reason") for i in issues}
+
+    if "delivery_unconfirmed" in reasons:
+        return (
+            "Preciso confirmar o frete e a área de entrega para esse endereço "
+            "com o atendente antes de bater o valor. Um momento!"
+        )
+    if "free_claimed_but_not_free" in reasons:
+        thr = next((i.get("threshold") for i in issues
+                    if i.get("reason") == "free_claimed_but_not_free"), None)
+        if thr:
+            return (
+                f"Corrigindo: o frete grátis vale para compras acima de "
+                f"R$ {float(thr):.2f}. Abaixo disso o frete é cobrado normalmente — "
+                f"já te confirmo o valor certinho."
+            )
+        return (
+            "Deixa eu confirmar a política de frete com o atendente antes de "
+            "prometer frete grátis. Um momento!"
+        )
+    # free_delivery_not_configured (MVP)
     return (
         "Vou confirmar a política de frete com o atendente antes de bater o "
         "martelo no valor. Um momento!"

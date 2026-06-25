@@ -103,12 +103,15 @@ Vive em `agents/runtime.py` (`StockRecall` + `_maybe_force_stock_search`), NÃO 
 **Problema**: medição em prod (`llm/model_tier.py`) — `gemini-*-flash-lite` fica com ~82% dos turnos sem chamar tool. Havendo catálogo, isso vira "temos esse remédio" sem ter consultado o catálogo. O prompt (`stock_check_block`, SPEC 02) é ignorado pela LLM fraca; o `availability_guard` curto-circuita porque não houve busca. Nada segura.
 
 **Como funciona** (só quando fornecido `stock_recall` — o skill só fornece para LLM **fraca** (`needs_tool_scaffolding`) **E** existe catálogo (`sales.stock_check` ON)):
-1. Após o loop, checa `availability_guard.affirms_or_offers_availability(final_text)` — combina DOIS sinais:
-   - `has_unverified_affirmation`: afirmação direta ("temos", "tem sim", "em estoque"…) sem negação.
-   - `has_presentation_offer`: **oferta de apresentação** para escolher/comprar ("a dipirona vem em comprimido ou gotas, qual prefere?") — exige token de forma (comprimido/gotas/mg/apresentação…) **E** convite de compra (qual prefere/posso anotar/quantas…), sem negação. Esse vetor não tem "temos", então escapava do nº1 — era o farmaceutico enumerando apresentações DA BULA como se fossem estoque (caso real medido). Os dois exigem regex; fonte única no `availability_guard`.
-2. **Suprime** se `buscar_produto` já rodou no turno (guard cobre) OU se uma tool de carrinho/pedido rodou (`suppress_tools` — item já validado, evita atrito em reafirmação de fechamento).
-3. Senão: re-injeta uma `HumanMessage` forçando `buscar_produto`, executa a(s) busca(s), e regenera a resposta com instrução de usar APENAS o resultado. Se o modelo não buscar nem forçado → resposta segura ("deixa eu confirmar a disponibilidade…").
-4. Fail-open: qualquer exceção no andaime é logada e ignorada (não derruba a entrega).
+1. Após o loop, dispara em DOIS sinais independentes:
+   - **Sinal A — afirmação/oferta** (`availability_guard.affirms_or_offers_availability(final_text)`), combina:
+     - `has_unverified_affirmation`: afirmação direta ("temos", "tem sim", "em estoque"…) sem negação.
+     - `has_presentation_offer`: **oferta de apresentação** para escolher/comprar ("a dipirona vem em comprimido ou gotas, qual prefere?") — exige token de forma (comprimido/gotas/mg/apresentação…) **E** convite de compra (qual prefere/posso anotar/quantas…), sem negação. Esse vetor não tem "temos", então escapava — era o farmaceutico enumerando apresentações DA BULA como se fossem estoque (caso real medido). Fonte única do regex no `availability_guard`.
+   - **Sinal B — preço-fantasma**: a resposta cita um preço (`price_guard.extract_prices`, fonte única do regex) que NÃO veio de nenhuma busca DESTE turno. Os preços conhecidos são extraídos dos `result_preview` das chamadas de `buscar_produto` no `tool_calls_trace`. Fecha o caso que o Sinal A não pega: a LLM fraca busca o produto A (ou nada) e oferta o produto B — **real no mundo, fora do catálogo** — com preço da própria memória (caso real medido: Gemini ofertando "Targifor C por R$ 45/R$ 78,90", produto que não existe no catálogo do tenant). Sem busca alguma → qualquer preço citado é fantasma.
+2. **Suprime** se uma tool de carrinho/pedido rodou (`suppress_tools` — item já validado, evita atrito em reafirmação de fechamento).
+3. **Stand-down do Sinal A pós-busca**: se `buscar_produto` já rodou no turno, o `availability_guard` determinístico cobre a afirmação — então o Sinal A NÃO força. Mas o **Sinal B (preço-fantasma) força mesmo com busca**, pois é exatamente o "buscou A, ofertou B" que o guard não cruza.
+4. Senão: re-injeta uma `HumanMessage` forçando `buscar_produto`, executa a(s) busca(s), e regenera a resposta com instrução de usar APENAS o resultado. Se o modelo não buscar nem forçado → resposta segura ("deixa eu confirmar a disponibilidade…").
+5. Fail-open: qualquer exceção no andaime é logada e ignorada (não derruba a entrega). Falso-positivo do Sinal B só custa um re-prompt de busca (recuperável) — tolerado por design.
 
 **Gating por skill**:
 - `farmaceutico` → `run_skill(..., verify_stock_affirmation=has_catalog)` (`has_catalog = sales.stock_check`). `run_skill` só ativa quando `_scaffold` E há `buscar_produto` bindada.
@@ -130,9 +133,21 @@ Quando dispara: prepend "Esse medicamento exige receita médica, posso anotar pr
 
 ### `delivery_guard` (async)
 
-Detecta menção a "frete grátis", "entrega gratuita" sem regra ativa em `tenant_shipping_rules` que justifique (above/range).
+Dois níveis de defesa:
 
-Quando dispara: prepend "Vou conferir o frete com o atendente."
+1. **Cruzamento com o orçamento do turno** (quando `calcular_frete` rodou e gravou
+   `cart["_shipping_quote_this_turn"]` — passado ao guard via `quote=`):
+   - `free_claimed_but_not_free` — o agente prometeu "frete grátis" mas o orçamento
+     calculado diz que NÃO é grátis (subtotal abaixo do `free_threshold`, ou sem
+     regra de grátis). A correção cita o limite real (ex.: "frete grátis acima de
+     R$ 150").
+   - `delivery_unconfirmed` — o tool não conseguiu cotar (`out_of_area` / `no_rule`
+     / CEP inválido) mas o agente afirmou frete/valor mesmo assim → fabricação.
+2. **Fallback MVP** (sem `quote`): menção a "frete grátis"/"entrega gratuita" sem
+   nenhuma regra de grátis cadastrada (cruza `tenant_shipping_rules` **e**
+   `tenant_shipping_distance_tiers`) → `free_delivery_not_configured`.
+
+Quando dispara: prepend a correção apropriada (ver `build_correction_message`).
 
 ## Invariantes
 

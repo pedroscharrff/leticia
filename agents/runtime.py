@@ -181,30 +181,65 @@ async def _maybe_force_stock_search(
     insistir em afirmar um produto que voltou sem match.
     """
     from services.availability_guard import affirms_or_offers_availability
+    from services.price_guard import extract_prices
 
     txt = result.final_text or ""
-    if not txt.strip() or not affirms_or_offers_availability(txt):
+    if not txt.strip():
         return
 
     called = {tc.get("name") for tc in result.tool_calls_trace}
-    if stock_recall.search_tool in called:
-        return  # já buscou neste turno → guard determinístico cobre o resto
     if called & set(stock_recall.suppress_tools):
         return  # item já validado (carrinho/pedido) → afirmação legítima
 
+    searched = stock_recall.search_tool in called
+
+    # ── Sinal B: PREÇO-FANTASMA ──────────────────────────────────────────────
+    # Preço citado na resposta que NÃO veio de nenhuma busca deste turno. É o
+    # caso que escapava: a LLM fraca buscava o produto A (ou nada) e ofertava o
+    # produto B — real no mundo, fora do catálogo — com preço da própria memória
+    # (ex.: Gemini ofertando "Targifor C por R$ 45"). O `affirms_or_offers` não
+    # pega (não precisa de afirmação explícita) e, se houve busca de A, o
+    # stand-down "já buscou" deixava passar. Cruza contra os preços que as buscas
+    # DESTE turno retornaram (extraídos dos previews das tool calls — fonte única
+    # do regex no price_guard). Sem busca → qualquer preço citado é fantasma.
+    # Falso-positivo só custa um re-prompt de busca (recuperável) — toleramos.
+    mentioned_prices = extract_prices(txt)
+    known_prices: set[float] = set()
+    for tc in result.tool_calls_trace:
+        if tc.get("name") == stock_recall.search_tool:
+            for p in extract_prices(str(tc.get("result_preview", ""))):
+                known_prices.add(p)
+    phantom_price = any(
+        not any(abs(v - k) <= 0.01 for k in known_prices) for v in mentioned_prices
+    )
+
+    affirms = affirms_or_offers_availability(txt)
+
+    # Quando JÁ buscou neste turno: o guard determinístico cobre a afirmação;
+    # só forçamos no caso NOVO de preço-fantasma (produto que a busca não trouxe).
+    # Quando NÃO buscou: força se afirmou disponibilidade OU citou preço-fantasma.
+    if searched:
+        if not phantom_price:
+            return  # buscou e nenhum preço fora do catálogo → guard cobre
+    else:
+        if not affirms and not phantom_price:
+            return
+
     log.warning("runtime.stock_affirmation_without_search",
                 search_tool=stock_recall.search_tool,
+                searched=searched, phantom_price=phantom_price,
+                mentioned_prices=mentioned_prices,
                 final_preview=txt[:200])
 
     lc_messages.append(HumanMessage(content=(
         "[INSTRUÇÃO INTERNA DO SISTEMA — não é o cliente falando]\n"
-        "⚠️ Você afirmou que a farmácia TEM um produto sem chamar "
-        f"`{stock_recall.search_tool}` neste turno. Em modo de estoque "
-        "autoritativo você NÃO pode afirmar disponibilidade sem consultar o "
-        "catálogo — o estoque pode ter mudado.\n\n"
-        f"AGORA: chame `{stock_recall.search_tool}` para CADA item/medicamento "
-        "que você afirmou ter. Use o nome base (sem dosagem). NÃO escreva texto "
-        "antes — só a(s) tool call(s)."
+        "⚠️ Você ofereceu um produto e/ou um PREÇO que não veio do catálogo "
+        f"(via `{stock_recall.search_tool}`) neste turno. Você NÃO pode afirmar "
+        "disponibilidade nem citar preço sem consultar o catálogo — seu "
+        "conhecimento próprio sobre marcas/preços NÃO conta, só o catálogo.\n\n"
+        f"AGORA: chame `{stock_recall.search_tool}` para CADA produto que você "
+        "mencionou. Use o nome base (sem dosagem). NÃO escreva texto antes — só "
+        "a(s) tool call(s)."
     )))
     response2 = await llm_with_tools.ainvoke(lc_messages)
 

@@ -54,6 +54,14 @@ def _extract_prices(text: str) -> list[float]:
     return found
 
 
+def extract_prices(text: str) -> list[float]:
+    """Wrapper público de `_extract_prices` (fonte única do regex de preço —
+    SPEC 10 §"não duplicar regex de preço"). Usado pelo force-recall do runtime
+    para detectar preço-fantasma (preço citado que não veio de nenhuma busca do
+    turno)."""
+    return _extract_prices(text)
+
+
 def _known_prices(search_results: list[dict]) -> set[float]:
     prices: set[float] = set()
     for r in search_results or []:
