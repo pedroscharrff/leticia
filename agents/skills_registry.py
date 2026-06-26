@@ -87,12 +87,16 @@ SKILLS: dict[str, SkillDefinition] = {
         plan_min="pro",
         description="identificar princípio ativo de medicamentos",
         node_path="agents.nodes.skills.principio_ativo:principio_ativo_node",
+        # Sem isto era beco sem saída: cliente pergunta disponibilidade/preço e o
+        # skill não tinha como repassar ao vendedor (nem checa estoque).
+        allowed_handoffs=("vendedor", "farmaceutico"),
     ),
     "genericos": SkillDefinition(
         name="genericos",
         plan_min="pro",
         description="buscar alternativas genéricas / similares",
         node_path="agents.nodes.skills.genericos:genericos_node",
+        allowed_handoffs=("vendedor", "farmaceutico"),
     ),
     "vendedor": SkillDefinition(
         name="vendedor",

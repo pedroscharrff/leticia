@@ -125,16 +125,24 @@ async def load_tenant_llm_config(tenant_id: str) -> dict:
         model = model_col or default_model
         return provider, _ensure_model_compatible(provider, model)
 
+    # Orquestração HÍBRIDA: orquestrador e analista são papéis LEVES absorvidos
+    # pela PLATAFORMA — rodam SEMPRE no modelo da plataforma (settings, controlável
+    # via .env), IGNORANDO o provider_override do BYOK e a coluna do tenant. Assim
+    # o cliente paga só as skills e a plataforma arca com o roteador (que é onde a
+    # qualidade de roteamento importa). Ver agents/graph_builder._PLATFORM_ROLES.
+    # Consequência intencional: tenant_llm_config.orchestrator_model/analyst_model
+    # ficam inertes (o controle é via .env).
     orch_p, orch_m = _resolve(
-        provider_override or settings.default_orchestrator_provider,
-        row["orchestrator_model"],
+        settings.default_orchestrator_provider,
+        None,
         settings.default_orchestrator_model,
     )
     analyst_p, analyst_m = _resolve(
-        provider_override or settings.default_analyst_provider,
-        row["analyst_model"],
+        settings.default_analyst_provider,
+        None,
         settings.default_analyst_model,
     )
+    # SKILLS continuam no provider BYOK do tenant (ou plataforma em credits).
     skill_p, skill_m = _resolve(
         provider_override or settings.default_skill_provider,
         row["skill_model"],

@@ -71,7 +71,13 @@ class Settings(BaseSettings):
     allow_signup: bool = True
     default_trial_days: int = 7
 
-    # Default LLM for orchestrator and analyst nodes (overridable per tenant)
+    # LLM da ORQUESTRAÇÃO (orquestrador + analista + sentimento) — papéis LEVES
+    # absorvidos pela PLATAFORMA. Rodam SEMPRE neste modelo, com a chave da
+    # plataforma (`anthropic_api_key`), IGNORANDO o BYOK do tenant (orquestração
+    # híbrida — ver agents/graph_builder._PLATFORM_ROLES e services/llm_config).
+    # Editável só aqui / no .env (DEFAULT_ORCHESTRATOR_PROVIDER, DEFAULT_ORCHESTRATOR_MODEL,
+    # DEFAULT_ANALYST_PROVIDER, DEFAULT_ANALYST_MODEL) — quando trocar o modelo da
+    # orquestração no futuro, muda no .env.
     default_orchestrator_provider: str = "anthropic"
     default_orchestrator_model: str = "claude-haiku-4-5-20251001"
     default_analyst_provider: str = "anthropic"
@@ -114,10 +120,12 @@ class Settings(BaseSettings):
     # Sticky ownership: quando True, o orchestrator NÃO re-classifica a cada
     # turno — enquanto a conversa tem dono (current_owner), novas mensagens
     # voltam ao mesmo skill (economia de custo/latência, menos misroute).
-    # Default False = comportamento histórico (classifica todo turno). Ligar só
-    # após validar no tenant de testes. Emergência/pedido de humano nunca é
-    # interceptado (ver agents/nodes/orchestrator._should_bypass_sticky).
-    sticky_ownership_enabled: bool = False
+    # Default True (orquestração híbrida): mantém a conversa no mesmo dono entre
+    # turnos sem re-rodar o LLM de classificação — menos misroute, menos custo.
+    # Emergência/pedido de humano nunca é interceptado (ver
+    # agents/nodes/orchestrator._should_bypass_sticky). Reverter via
+    # STICKY_OWNERSHIP_ENABLED=false no .env sem deploy de código.
+    sticky_ownership_enabled: bool = True
 
     # Limits
     celery_workers_concurrency: int = 16

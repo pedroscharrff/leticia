@@ -147,6 +147,32 @@ def _should_bypass_sticky(current_message: str) -> bool:
     return any(kw in msg for kw in _STICKY_BYPASS_KEYWORDS)
 
 
+# ── Fast-path de estoque/compra (determinístico) ──────────────────────────────
+# Intenção CLARA de disponibilidade/preço/compra → vendedor SEM passar pelo LLM
+# de classificação. Resolve o misroute do modelo fraco ("Vc tem ele?" → genericos,
+# beco sem buscar_produto). Só dispara com catálogo (sales.stock_check ON) e
+# vendedor ativo. A guarda NEGATIVA defere genérico/similar/clínico ao classificador
+# (esses vão para genericos/principio_ativo/farmaceutico).
+_STOCK_INTENT_RE = re.compile(
+    r"(quanto\s+custa|qual\s+o\s+(?:pre[çc]o|valor)|pre[çc]o|valor|"
+    r"quero\s+comprar|comprar|me\s+v[êe]\b|tem\s+em\s+estoque|tem\s+a[íi]\b|"
+    r"voc[êe]s?\s+tem|vcs?\s+tem|tem\s+(?:ele|ela|isso|esse|essa)\b)",
+    re.IGNORECASE,
+)
+_STOCK_NEGATIVE_RE = re.compile(
+    r"(gen[ée]ric|similar|princ[íi]pio\s+ativo|para\s+que\s+serve|serve\s+para|"
+    r"\bbula\b|posologia|dosagem|\bdose\b|intera[çc]|pode\s+tomar|"
+    r"efeito\s+colateral|contraindic)",
+    re.IGNORECASE,
+)
+
+
+def _is_stock_intent(current_message: str) -> bool:
+    """True para intenção determinística de estoque/compra (sem guarda negativa)."""
+    msg = current_message or ""
+    return bool(_STOCK_INTENT_RE.search(msg)) and not bool(_STOCK_NEGATIVE_RE.search(msg))
+
+
 def _extract_json(text: str) -> dict:
     """Tenta extrair JSON do texto mesmo com texto extra ao redor."""
     # Tenta direto
@@ -180,6 +206,44 @@ async def orchestrator(state: AgentState, llm_factory) -> AgentState:
         available_skills,
         skill_history=state.get("skill_history") or [],
     )
+
+    # ── Fast-path: ESTOQUE/COMPRA (determinístico) ────────────────────────────
+    # PRECEDE o sticky de propósito: uma intenção clara de compra/disponibilidade
+    # deve ir ao vendedor MESMO que a conversa esteja "dona" de outro skill (ex.:
+    # principio_ativo respondeu "Zovirax" e o cliente segue "Vc tem ele?" — sem
+    # isso o sticky prenderia no beco). Gated por catálogo (sales.stock_check ON)
+    # + vendedor ativo. Guarda negativa (genérico/clínico) já filtra em _is_stock_intent.
+    if (
+        "vendedor" in available_skills
+        and _is_stock_intent(current_message)
+    ):
+        _has_catalog = False
+        try:
+            from services import capabilities as cap_svc
+            _has_catalog = await cap_svc.is_enabled(state.get("tenant_id"), "sales.stock_check")
+        except Exception as _exc:  # noqa: BLE001
+            log.warning("orchestrator.stock_fastpath_cap_check_failed", exc=str(_exc))
+        if _has_catalog:
+            log.info("orchestrator.fast_path_stock", message=current_message[:40])
+            import time as _time
+            trace = list(state.get("trace_steps", []))
+            trace.append({
+                "node": "orchestrator",
+                "ts_ms": int(_time.time() * 1000),
+                "data": {
+                    "skill": "vendedor",
+                    "confidence": 1.0,
+                    "intent": "consulta de estoque/compra",
+                    "fast_path": "stock",
+                },
+            })
+            return {
+                **state,
+                "selected_skill": "vendedor",
+                "confidence":     1.0,
+                "intent":         current_message[:120],
+                "trace_steps":    trace,
+            }
 
     # ── Fast-path: STICKY OWNERSHIP (determinístico) ──────────────────────────
     # Enquanto uma conversa tem dono (`current_owner`, persistido entre turnos),
@@ -330,7 +394,8 @@ async def orchestrator(state: AgentState, llm_factory) -> AgentState:
 
     try:
         llm = llm_factory("orchestrator")
-        from langchain_core.messages import SystemMessage, HumanMessage
+        from langchain_core.messages import HumanMessage
+        from llm.caching import system_message
         from llm.retry import llm_retry
         # Sem este retry, APIConnectionError transient (conexão httpx no pool
         # do ChatAnthropic cacheado expirou) deixava o orchestrator caindo em
@@ -340,8 +405,11 @@ async def orchestrator(state: AgentState, llm_factory) -> AgentState:
         # (farmaceutico) com confidence=0.
         async for attempt in llm_retry():
             with attempt:
+                # system_prompt é estável por tenant (regras + lista de skills) →
+                # cacheado (orquestração roda sempre em Anthropic na plataforma).
+                # Histórico/mensagem ficam no HumanMessage (volátil).
                 response = await llm.ainvoke([
-                    SystemMessage(content=system_prompt),
+                    system_message(system_prompt, provider="anthropic"),
                     HumanMessage(content=user_content),
                 ])
 

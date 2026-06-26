@@ -85,6 +85,16 @@ class TenantConfig:
 
 # ── LLM factory ───────────────────────────────────────────────────────────────
 
+# Papéis LEVES absorvidos pela PLATAFORMA (orquestração híbrida): roteamento +
+# análise + sentimento são classificação por-turno, baratos, e a qualidade do
+# roteamento é onde o produto inteiro depende. Rodam SEMPRE no modelo forte/barato
+# da plataforma (Anthropic Haiku via `settings.default_orchestrator_*`/`anthropic_api_key`),
+# IGNORANDO o BYOK do tenant — mesmo quando o tenant usa um modelo fraco/barato
+# (DeepSeek/Gemini) nas skills. Assim o cliente paga só os agentes (skills) e a
+# plataforma absorve o roteador. As SKILLS continuam no provider BYOK do tenant.
+_PLATFORM_ROLES = frozenset({"orchestrator", "analyst", "sentiment"})
+
+
 def _make_llm_factory(cfg: TenantConfig):
     """
     Retorna callable(role) → BaseChatModel.
@@ -92,6 +102,9 @@ def _make_llm_factory(cfg: TenantConfig):
     role pode ser:
     - "orchestrator" | "analyst" | "skill"  → papéis fixos
     - nome de skill (ex: "farmaceutico")    → usa SkillOverride se disponível
+
+    Orquestração HÍBRIDA: papéis em `_PLATFORM_ROLES` rodam sempre na chave da
+    plataforma (`get_llm`), independente do modo BYOK do tenant. Ver `_PLATFORM_ROLES`.
     """
     def _resolve(role: str, provider: str | None = None, model: str | None = None) -> tuple[str, str]:
         """Resolve o par (provider, model) para um role SEM construir o LLM.
@@ -125,6 +138,13 @@ def _make_llm_factory(cfg: TenantConfig):
         nodes (ex.: sentiment_analyzer com config própria) sobreponham o par
         sem perder o caminho BYOK gerenciado aqui."""
         provider, model = _resolve(role, provider, model)
+
+        # Papéis leves (orquestrador/analista/sentimento) → SEMPRE plataforma,
+        # ignorando o BYOK do tenant. `_resolve` já devolve o par da plataforma
+        # para esses papéis (load_tenant_llm_config não aplica override neles).
+        if role in _PLATFORM_ROLES:
+            from llm.providers import get_llm
+            return get_llm(provider=provider, model=model)
 
         if cfg.llm_mode == "byok" and cfg.llm_api_key:
             from llm.providers import get_llm_for_tenant
