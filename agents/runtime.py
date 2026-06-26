@@ -48,6 +48,12 @@ class RuntimeResult:
     tool_calls_trace: list[dict] = field(default_factory=list)
     iters_used: int = 0
     last_tool_result: str = ""
+    # Resultados COMPLETOS das tools de domínio do turno — list[{"name","full"}].
+    # Em memória, NÃO vai pro trace (o `result_preview` do trace é truncado em
+    # 300 chars e o formato do buscar_produto põe o cabeçalho+INSTRUÇÃO INTERNA
+    # (~296 chars) ANTES das linhas de produto, então o preview corta justamente
+    # antes dos `R$ X.XX`). Os guards de preço/grounding precisam do texto inteiro.
+    domain_tool_results: list[dict] = field(default_factory=list)
     # Sinais capturados das TOOLS de fluxo (None/False quando não chamadas).
     handoff_to: str | None = None
     handoff_context: str = ""
@@ -164,6 +170,8 @@ async def _execute_domain_tool(
         out = await tool.ainvoke(tc["args"])
         result.last_tool_result = str(out)
         rec["result_preview"] = result.last_tool_result[:300]
+        # Guarda o resultado COMPLETO (não-truncado) p/ os guards de preço/grounding.
+        result.domain_tool_results.append({"name": tc["name"], "full": str(out)})
         lc_messages.append(ToolMessage(content=str(out), tool_call_id=tc["id"]))
     except Exception as exc:  # noqa: BLE001
         rec["error"] = str(exc)
@@ -219,14 +227,22 @@ async def _maybe_force_stock_search(
     # (ex.: Gemini ofertando "Targifor C por R$ 45"). O `affirms_or_offers` não
     # pega (não precisa de afirmação explícita) e, se houve busca de A, o
     # stand-down "já buscou" deixava passar. Cruza contra os preços que as buscas
-    # DESTE turno retornaram (extraídos dos previews das tool calls — fonte única
-    # do regex no price_guard). Sem busca → qualquer preço citado é fantasma.
+    # DESTE turno retornaram (mesmo regex do price_guard — fonte única). Sem busca
+    # → qualquer preço citado é fantasma.
     # Falso-positivo só custa um re-prompt de busca (recuperável) — toleramos.
+    #
+    # ⚠️ Fonte = `domain_tool_results` (resultado COMPLETO), NÃO o `result_preview`
+    # do trace: o preview é truncado em 300 chars e o buscar_produto põe o
+    # cabeçalho+INSTRUÇÃO INTERNA (~296 chars) ANTES das linhas `• ... R$ X.XX`,
+    # então o preview NUNCA contém preço → known_prices vinha sempre vazio →
+    # TODO preço real citado virava "fantasma" (falso positivo). Isso forçava
+    # re-busca em todo turno com preço; modelo weak que não re-busca (DeepSeek)
+    # caía no fallback seguro e "esquecia" o produto. Corrigido 2026-06-26.
     mentioned_prices = extract_prices(txt)
     known_prices: set[float] = set()
-    for tc in result.tool_calls_trace:
-        if tc.get("name") == stock_recall.search_tool:
-            for p in extract_prices(str(tc.get("result_preview", ""))):
+    for tr in result.domain_tool_results:
+        if tr.get("name") == stock_recall.search_tool:
+            for p in extract_prices(str(tr.get("full", ""))):
                 known_prices.add(p)
     phantom_price = any(
         not any(abs(v - k) <= 0.01 for k in known_prices) for v in mentioned_prices
