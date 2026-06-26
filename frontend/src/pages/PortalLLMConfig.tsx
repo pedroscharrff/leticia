@@ -98,8 +98,14 @@ export function PortalLLMConfig() {
       setSuccess(mode === "credits"
         ? "Configurado para usar os créditos da plataforma."
         : "Sua API Key foi salva com sucesso.");
-    } catch {
-      setError("Erro ao salvar configuração. Verifique os dados e tente novamente.");
+    } catch (err: any) {
+      // Surface o detail real do backend (422 de validação, 500 de encryption key,
+      // etc.) em vez de mascarar tudo num genérico — facilita diagnóstico.
+      const detail = err?.response?.data?.detail;
+      const msg = typeof detail === "string" ? detail
+        : Array.isArray(detail) ? detail.map((d: any) => d.msg).join("; ")
+        : "Erro ao salvar configuração. Verifique os dados e tente novamente.";
+      setError(msg);
     } finally {
       setSaving(false);
     }
