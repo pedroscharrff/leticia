@@ -23,6 +23,9 @@ class Settings(BaseSettings):
     anthropic_api_key: str = ""
     google_api_key: str = ""
     openai_api_key: str = ""
+    # DeepSeek — API OpenAI-compatible (base_url separado da OpenAI).
+    deepseek_api_key: str = ""
+    deepseek_base_url: str = "https://api.deepseek.com"
     # Google Maps Platform (Distance Matrix) — chave SEPARADA da google_api_key
     # (que é da GenAI/Gemini). Usada pelo frete por distância no modo 'google'
     # (rota real de rua). Vazia = só haversine disponível.

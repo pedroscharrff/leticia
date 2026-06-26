@@ -27,7 +27,7 @@ admin_router = APIRouter(prefix="/admin/tenants", tags=["admin-llm-config"])
 TenantUser = Annotated[TenantUserContext, Depends(require_tenant_user)]
 AdminUser = Annotated[str, Depends(require_admin)]
 
-SUPPORTED_PROVIDERS = {"anthropic", "openai", "google", "ollama"}
+SUPPORTED_PROVIDERS = {"anthropic", "openai", "google", "deepseek", "ollama"}
 
 # Curated catalog of models known to work, grouped by provider.
 # Tenants can still type a custom model id — this is just suggestions
@@ -66,6 +66,12 @@ MODEL_CATALOG: dict[str, list[dict]] = {
         {"id": "gemini-2.5-flash-lite", "label": "Gemini 2.5 Flash-Lite", "tier": "fast",     "good_for": ["orchestrator", "analyst", "skill"]},
         {"id": "gemini-2.5-flash",      "label": "Gemini 2.5 Flash",      "tier": "balanced", "good_for": ["orchestrator", "analyst", "skill"]},
         {"id": "gemini-2.5-pro",        "label": "Gemini 2.5 Pro",        "tier": "smart",    "good_for": ["skill"]},
+    ],
+    # DeepSeek — API OpenAI-compatible. Tratado como weak (andaime de tool-calling
+    # ligado, igual Google) — ver llm/model_tier._SCAFFOLD_PROVIDERS.
+    "deepseek": [
+        {"id": "deepseek-chat",     "label": "DeepSeek V3 (chat)",   "tier": "balanced",  "good_for": ["orchestrator", "analyst", "skill"]},
+        {"id": "deepseek-reasoner", "label": "DeepSeek R1 (reasoner)", "tier": "reasoning", "good_for": ["skill"]},
     ],
     "ollama": [
         {"id": "llama3.2",  "label": "Llama 3.2 (local)",  "tier": "fast",     "good_for": ["orchestrator", "analyst"]},

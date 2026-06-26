@@ -9,6 +9,7 @@ Supported providers:
   'anthropic' — Claude models via Anthropic API
   'google'    — Gemini models via Google Generative AI
   'openai'    — GPT models via OpenAI API
+  'deepseek'  — DeepSeek models via OpenAI-compatible API (base_url override)
   'ollama'    — Any model running locally via Ollama (self-hosted)
 
 Two usage modes:
@@ -98,6 +99,24 @@ def _build_llm(
             **extra,
         )
 
+    if provider == "deepseek":
+        # DeepSeek expõe uma API OpenAI-compatible — reusamos ChatOpenAI com
+        # base_url apontando pro endpoint da DeepSeek (sem dependência nova).
+        # O `deepseek-reasoner` (R1), como os modelos o-series da OpenAI, NÃO
+        # aceita o parâmetro `temperature` → omitimos nesse caso.
+        from langchain_openai import ChatOpenAI
+        is_reasoner = "reasoner" in model
+        extra = {} if is_reasoner else {"temperature": temp}
+        return ChatOpenAI(
+            model=model,
+            api_key=api_key or settings.deepseek_api_key,
+            base_url=base_url or settings.deepseek_base_url,
+            timeout=timeout,
+            max_retries=0,
+            callbacks=[_USAGE_CB],
+            **extra,
+        )
+
     if provider == "ollama":
         from langchain_ollama import ChatOllama
         return ChatOllama(
@@ -158,4 +177,7 @@ GPT55 = ("openai", "gpt-5.5")
 O3_MINI = ("openai", "o3-mini")
 O3 = ("openai", "o3")
 O4_MINI = ("openai", "o4-mini")
+# DeepSeek (OpenAI-compatible, 64K ctx)
+DEEPSEEK_CHAT = ("deepseek", "deepseek-chat")        # V3 — uso geral, tool-calling
+DEEPSEEK_REASONER = ("deepseek", "deepseek-reasoner")  # R1 — sem temperature
 OLLAMA_LLAMA = ("ollama", "llama3.2")

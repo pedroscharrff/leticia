@@ -113,6 +113,32 @@ def make_inventory_tool(schema_name: str, tenant_id: str | None = None,
                         f"%{primary}%",
                     )
 
+                # Estratégia 3 (fallback FUZZY por similaridade — pg_trgm): nenhuma
+                # das anteriores casou. O ILIKE só pega substring, então falha em
+                # variação morfológica/typo de palavra ÚNICA — clássico "Benegripe"
+                # (cliente) vs "Benegrip" (catálogo): '%Benegripe%' NÃO contém
+                # "Benegrip" e a Estratégia 2 só roda com ≥2 tokens. O índice GIN
+                # trigram em products.name (migs 007/009) existe pra isso mas nunca
+                # era usado. Operador `%` usa o índice e é case-insensitive
+                # (trigramas são lowercased). Ordena por similaridade desc.
+                if not rows:
+                    rows = await conn.fetch(
+                        """
+                        SELECT name, price, stock_qty, unit, description,
+                               principio_ativo, fabricante, category,
+                               COALESCE(prescription_required, FALSE) AS prescription_required
+                        FROM products
+                        WHERE active = TRUE
+                          AND (
+                              name % $1
+                              OR similarity(lower(COALESCE(principio_ativo, '')), lower($1)) >= 0.3
+                          )
+                        ORDER BY similarity(lower(name), lower($1)) DESC, name
+                        LIMIT 15
+                        """,
+                        nome.strip(),
+                    )
+
             # ── Registro determinístico do resultado da busca neste turno ──
             # Consumido pelos `safety_guards` (availability/price/prescription)
             # pra detectar alucinações. Reset entre turnos é automático:

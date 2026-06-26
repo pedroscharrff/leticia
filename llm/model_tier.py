@@ -105,7 +105,10 @@ def model_tier(provider: str | None, model: str | None) -> Tier:
 # dispara tools de fluxo (handoff/transferência) à toa e mistura tool de domínio
 # + fluxo no mesmo turno, descartando o resultado. É comportamento da FAMÍLIA,
 # não do tamanho. Anthropic/OpenAI grandes não apresentam isso.
-_SCAFFOLD_PROVIDERS = frozenset({"google", "ollama"})
+# DeepSeek entra aqui por decisão de produto: tool-calling notoriamente mais
+# fraco que Claude/GPT grandes (e o `deepseek-reasoner`/R1 nem suporta function
+# calling de forma confiável) → tratamos a família inteira como weak, igual Google.
+_SCAFFOLD_PROVIDERS = frozenset({"google", "ollama", "deepseek"})
 
 
 def needs_tool_scaffolding(provider: str | None, model: str | None) -> bool:

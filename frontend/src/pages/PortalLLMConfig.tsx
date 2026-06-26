@@ -11,6 +11,7 @@ const PROVIDERS = [
   { value: "anthropic", label: "Anthropic (Claude)" },
   { value: "openai",    label: "OpenAI (GPT)"       },
   { value: "google",    label: "Google (Gemini)"    },
+  { value: "deepseek",  label: "DeepSeek"           },
   { value: "ollama",    label: "Ollama (self-hosted)" },
 ];
 
@@ -29,6 +30,10 @@ const MODEL_OPTIONS: Record<string, { value: string; label: string }[]> = {
     { value: "gemini-2.5-flash-lite", label: "Gemini 2.5 Flash-Lite (mais barato)" },
     { value: "gemini-2.5-flash",      label: "Gemini 2.5 Flash (balanceado)"       },
     { value: "gemini-2.5-pro",        label: "Gemini 2.5 Pro (mais esperto)"        },
+  ],
+  deepseek: [
+    { value: "deepseek-chat",     label: "DeepSeek V3 (chat)"      },
+    { value: "deepseek-reasoner", label: "DeepSeek R1 (reasoner)"  },
   ],
   ollama: [
     { value: "llama3.2", label: "Llama 3.2" },
@@ -201,7 +206,7 @@ export function PortalLLMConfig() {
                 <input
                   type="password"
                   className="form-input"
-                  placeholder={provider === "anthropic" ? "sk-ant-..." : provider === "openai" ? "sk-proj-..." : "AIza..."}
+                  placeholder={provider === "anthropic" ? "sk-ant-..." : provider === "openai" ? "sk-proj-..." : provider === "deepseek" ? "sk-..." : "AIza..."}
                   value={apiKey}
                   onChange={(e) => setApiKey(e.target.value)}
                   autoComplete="new-password"

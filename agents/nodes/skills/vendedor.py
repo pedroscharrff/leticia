@@ -84,8 +84,13 @@ PLAYBOOK — etapas da conversa
    - Cliente nomeia produto → chame `buscar_produto(nome)`.
    - Em estoque → informe nome, apresentação e preço, FIM. Pergunte
      "quer adicionar ao carrinho?".
-   - Fora de estoque → transfira para a especialidade `genericos` (tool de
-     transferência interna) buscar alternativa. Não invente alternativa.
+   - Busca não encontrou → ANTES de desistir/transferir: (a) refaça com o nome
+     base (REGRA 12); (b) se a ferramenta `sugerir_nome_medicamento` estiver
+     disponível, chame-a e OFEREÇA o nome correto ("Você quis dizer X?") — NÃO
+     troque sozinho, espere o cliente confirmar e então busque de novo.
+   - Fora de estoque (ou nada casou após o acima) → transfira para a
+     especialidade `genericos` (tool de transferência interna) buscar
+     alternativa. Não invente alternativa.
 
 2. Adicionar ao carrinho:
    - ANTES de adicionar, confirme a QUANTIDADE. Se o cliente ainda NÃO disse
@@ -979,6 +984,29 @@ async def vendedor_node(state: AgentState, llm_factory) -> AgentState:
             # endereço (mesmo gate do bloco de prompt cep_lookup_block).
             if _collects_address:
                 tools.append(make_consultar_cep_tool(schema_name, phone_num, customer))
+
+            # Correção de nome ("Você quis dizer…?") — OPCIONAL por tenant via a
+            # capability `attendance.medication_name_suggestion` (ON por default).
+            # No fluxo de vendas ajuda quando nem a busca fuzzy do catálogo achou:
+            # oferece o nome correto do remédio (verificado na ANVISA) antes de
+            # desistir/transferir. Mesmo padrão de `principio_ativo`. Só sugere,
+            # nunca auto-corrige (invariante de segurança).
+            try:
+                from services import capabilities as cap_svc
+                if await cap_svc.is_enabled(tenant_id, "attendance.medication_name_suggestion"):
+                    _scfg = await cap_svc.get_config(tenant_id, "attendance.medication_name_suggestion") or {}
+                    try:
+                        _max_c = int(_scfg.get("max_candidates", 3))
+                    except (TypeError, ValueError):
+                        _max_c = 3
+                    from agents.tools.medicamento_suggest import make_sugerir_nome_medicamento_tool
+                    tools.append(make_sugerir_nome_medicamento_tool(
+                        tenant_id=tenant_id,
+                        max_candidates=_max_c,
+                        enable_web=bool(_scfg.get("enable_web_search", True)),
+                    ))
+            except Exception as _exc:  # noqa: BLE001
+                log.warning("vendedor.medication_suggest_tool_failed", exc=str(_exc))
 
             try:
                 from agents.tools.sales_extras import (

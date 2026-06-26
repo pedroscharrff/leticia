@@ -17,6 +17,10 @@ log = structlog.get_logger()
 _OPENAI_MODEL_PREFIXES = ("gpt-", "o1", "o3", "o4", "chatgpt-")
 # Models that belong to Anthropic
 _ANTHROPIC_MODEL_PREFIXES = ("claude-",)
+# Models that belong to Google Gemini
+_GOOGLE_MODEL_PREFIXES = ("gemini-",)
+# Models that belong to DeepSeek
+_DEEPSEEK_MODEL_PREFIXES = ("deepseek-",)
 
 # Cheap/fast default per provider, used when the configured model is
 # incompatible with the resolved provider (e.g. BYOK switches provider
@@ -25,11 +29,17 @@ _PROVIDER_DEFAULT_FAST = {
     "anthropic": "claude-haiku-4-5-20251001",
     "openai":    "gpt-4o-mini",
     "google":    "gemini-2.5-flash-lite",  # 2.0 foi descontinuado na API (404)
+    "deepseek":  "deepseek-chat",
 }
 
 
 def _detect_provider_from_key(api_key: str | None) -> str | None:
-    """Infer provider from API key prefix when the DB column is empty."""
+    """Infer provider from API key prefix when the DB column is empty.
+
+    ⚠️ DeepSeek NÃO é detectável aqui: suas chaves são `sk-...`, indistinguíveis
+    do prefixo genérico da OpenAI. Por isso o DeepSeek depende SEMPRE do `provider`
+    explícito na config (o auto-detect só roda quando a coluna provider é NULL).
+    """
     if not api_key:
         return None
     if api_key.startswith("sk-ant-"):
@@ -51,6 +61,12 @@ def _ensure_model_compatible(provider: str, model: str) -> str:
         model.startswith(_OPENAI_MODEL_PREFIXES) or model.startswith(_ANTHROPIC_MODEL_PREFIXES)
     ):
         return _PROVIDER_DEFAULT_FAST["google"]
+    if provider == "deepseek" and (
+        model.startswith(_OPENAI_MODEL_PREFIXES)
+        or model.startswith(_ANTHROPIC_MODEL_PREFIXES)
+        or model.startswith(_GOOGLE_MODEL_PREFIXES)
+    ):
+        return _PROVIDER_DEFAULT_FAST["deepseek"]
     return model
 
 

@@ -41,6 +41,9 @@ GPT55         = ("openai", "gpt-5.5")
 O3_MINI       = ("openai", "o3-mini")
 O3            = ("openai", "o3")
 O4_MINI       = ("openai", "o4-mini")
+# DeepSeek (OpenAI-compatible, base_url override)
+DEEPSEEK_CHAT     = ("deepseek", "deepseek-chat")      # V3
+DEEPSEEK_REASONER = ("deepseek", "deepseek-reasoner")  # R1, sem temperature
 OLLAMA_LLAMA  = ("ollama", "llama3.2")
 
 # caching.py
@@ -57,7 +60,14 @@ def llm_retry() -> AsyncRetrying  # 3 tentativas, exponencial 2-10s
 | `anthropic` | `langchain_anthropic.ChatAnthropic` | `api_key` (Bearer) | Sim — explicit `cache_control` |
 | `google` | `langchain_google_genai.ChatGoogleGenerativeAI` | `google_api_key` | Não wired (precisa Vertex Cached Content API) — ver nota de custo abaixo |
 | `openai` | `langchain_openai.ChatOpenAI` | `api_key` | Sim — automático >=1024 tokens |
+| `deepseek` | `langchain_openai.ChatOpenAI` + `base_url` | `api_key` (`sk-...`) | Automático (context caching no lado da DeepSeek) — sem wiring nosso |
 | `ollama` | `langchain_ollama.ChatOllama` | `base_url` (sem auth) | N/A (inferência local) |
+
+> **DeepSeek** é OpenAI-compatible: reusamos `ChatOpenAI` apontando `base_url` para
+> `settings.deepseek_base_url` (default `https://api.deepseek.com`). O `deepseek-reasoner`
+> (R1), como os modelos o-series, **não aceita `temperature`** → o factory detecta por
+> `"reasoner" in model` e omite. A chave é `sk-...`, **indistinguível** da OpenAI no
+> `_detect_provider_from_key` → DeepSeek exige `provider` explícito na config do tenant.
 
 Todos os providers configurados com:
 - `timeout = settings.llm_timeout_seconds` (default 30s)
@@ -114,11 +124,13 @@ o par SEM construir o LLM (mesma precedência do `_get`). `run_skill` usa
 
 ### Gate de andaime: `needs_tool_scaffolding(provider, model)`
 
-`tier=="weak"` **OU** `provider ∈ {google, ollama}`. Por quê provider-aware: medição
-em prod mostrou que **mesmo `gemini-2.5-pro` (tier strong) falha em tool-calling** —
+`tier=="weak"` **OU** `provider ∈ {google, ollama, deepseek}`. Por quê provider-aware:
+medição em prod mostrou que **mesmo `gemini-2.5-pro` (tier strong) falha em tool-calling** —
 dispara tools de fluxo (transferência) à toa e mistura tool de domínio + fluxo no
-mesmo turno. É comportamento da FAMÍLIA Google, não do tamanho. Anthropic/OpenAI
-grandes → `False` → caminho histórico intacto.
+mesmo turno. É comportamento da FAMÍLIA Google, não do tamanho. **DeepSeek** entra na
+mesma lista por decisão de produto: tool-calling mais fraco que Claude/GPT grandes (e o
+`deepseek-reasoner`/R1 não suporta function calling de forma confiável) → família inteira
+tratada como weak. Anthropic/OpenAI grandes → `False` → caminho histórico intacto.
 
 Andaimes gated por esse gate (todos no-op/ausentes para strong):
 
@@ -365,6 +377,8 @@ Métrica de cache hit não está exposta. Caminho: tap em response Anthropic (`r
 | Gemini 2.0 Flash | — | $0.10 | $0.40 |
 | Gemini 2.5 Flash | — | $0.30 | $2.50 |
 | Gemini 2.5 Pro | — | $1.25 | $10.00 |
+| DeepSeek V3 (chat) | — | $0.27 | $1.10 |
+| DeepSeek R1 (reasoner) | — | $0.55 | $2.19 |
 
 > **Gemini para baratear (BYOK):** `gemini-2.0-flash-lite` é o piso de custo — input mais
 > barato que Haiku cacheado e ~40× abaixo de Sonnet. `2.5-flash` quando precisar de mais

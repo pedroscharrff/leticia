@@ -64,6 +64,10 @@ MODEL_PRICES: dict[str, ModelPrice] = {
     "gemini-2.5-flash":       ModelPrice(0.30, 2.50),     # mais esperto, mais caro
     "gemini-2.5-pro":         ModelPrice(1.25, 10.00),
 
+    # ── DeepSeek (API OpenAI-compatible) ─────────────────────────────────
+    "deepseek-chat":          ModelPrice(0.27, 1.10),    # V3
+    "deepseek-reasoner":      ModelPrice(0.55, 2.19),    # R1
+
     # ── Ollama / self-hosted (custo de inferência = 0 do ponto de vista API) ──
     "llama3.2":               ModelPrice(0.00, 0.00),
 }
