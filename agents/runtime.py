@@ -88,6 +88,25 @@ class StockRecall:
     suppress_tools: tuple[str, ...] = ()
 
 
+@dataclass
+class ClaimGrounding:
+    """Config do andaime de grounding de FATO FARMACOLÓGICO para LLM fraca.
+    Cf. SPEC 10 §Grounding de fato farmacológico.
+
+    Problema que resolve: a LLM fraca VOLUNTARIA, de memória, um genérico /
+    princípio ativo / composição que NÃO veio de nenhuma tool deste turno
+    (ex.: "o genérico do Benegripe é Dipirona + Clorfeniramina + Cafeína", sem
+    ter chamado tool). Nem o `availability_guard` (cruza NOME DE PRODUTO) nem o
+    force-recall (afirmação de disponibilidade / preço-fantasma) pegam — a fala
+    não afirma estoque nem cita preço, afirma COMPOSIÇÃO.
+
+    `source_tools`: tools que ANCORAM um fato farmacológico (a base de referência
+        ou o catálogo). Se uma delas estiver bindada, o andaime FORÇA a consulta
+        do termo e regenera; senão, cai numa fala segura (sem despejar o fato).
+    """
+    source_tools: tuple[str, ...] = ("consultar_medicamento_referencia", "buscar_produto")
+
+
 # ── Helpers de tool execution ─────────────────────────────────────────────────
 
 def _split_tool_calls(tool_calls: list[dict]) -> tuple[list[dict], list[dict]]:
@@ -295,6 +314,130 @@ async def _maybe_force_stock_search(
     result.final_text = _extract_text(response3.content) or result.final_text
 
 
+def _build_turn_evidence(lc_messages: list) -> str:
+    """Concatena a evidência ANCORADA do turno: texto das tool results
+    (`ToolMessage`) + falas do cliente (`HumanMessage`). É contra isso que o
+    grounding cruza os termos farmacológicos da resposta — conteúdo COMPLETO,
+    não o `result_preview` truncado em 300 do trace.
+
+    Pula HumanMessages internas (instruções `[INSTRUÇÃO INTERNA…]` re-injetadas
+    pelos próprios andaimes) para não "ancorar" um termo só porque o sistema o
+    citou numa correção anterior.
+    """
+    parts: list[str] = []
+    for m in lc_messages:
+        if isinstance(m, ToolMessage):
+            parts.append(str(m.content or ""))
+        elif isinstance(m, HumanMessage):
+            txt = str(m.content or "")
+            if "[INSTRUÇÃO INTERNA" in txt or "[INSTRUCAO INTERNA" in txt:
+                continue
+            parts.append(txt)
+    return "\n".join(parts)
+
+
+async def _maybe_reground_claims(
+    claim_grounding: ClaimGrounding,
+    lc_messages: list,
+    llm,
+    llm_with_tools,
+    tools: list,
+    result: RuntimeResult,
+) -> None:
+    """Andaime weak-LLM: se a resposta afirma um FATO FARMACOLÓGICO (genérico /
+    princípio ativo / composição) cujo termo NÃO veio de nenhuma tool/fala do
+    cliente neste turno, reancora. Roda só quando `claim_grounding` é fornecido
+    (skill só fornece quando weak). Cf. SPEC 10 §Grounding de fato farmacológico.
+
+    Remediação:
+      • Tem tool de fonte bindada (`source_tools`) → força a consulta do termo e
+        regenera "use APENAS o resultado" (mesmo mecanismo do force-recall).
+      • Sem tool de fonte (ex.: vendedor) → substitui por fala segura, sem
+        despejar o fato inventado.
+    """
+    from services.grounding_guard import (
+        detect_ungrounded_claims, build_grounding_correction,
+    )
+    from services.referencia_repo import load_reference_lexicon
+
+    txt = result.final_text or ""
+    if not txt.strip():
+        return
+
+    lexicon = await load_reference_lexicon()
+    if not lexicon:
+        return  # sem base curada → nada a cruzar (fail-open)
+
+    evidence = _build_turn_evidence(lc_messages)
+    issues = detect_ungrounded_claims(txt, evidence, lexicon)
+    if not issues:
+        return
+
+    terms = [i["term"] for i in issues]
+    log.warning("runtime.ungrounded_pharma_claim",
+                terms=terms, final_preview=txt[:200])
+
+    available = {t.name for t in tools}
+    source_tool = next((s for s in claim_grounding.source_tools if s in available), None)
+
+    # ── Sem tool de fonte (vendedor): fala segura, não despeja o fato ─────────
+    if source_tool is None:
+        result.final_text = build_grounding_correction(issues)
+        log.info("runtime.claim_grounding_safe_reply", terms=terms)
+        return
+
+    # ── Tem tool de fonte: força a consulta do(s) termo(s) e regenera ─────────
+    termos_str = ", ".join(terms)
+    lc_messages.append(HumanMessage(content=(
+        "[INSTRUÇÃO INTERNA DO SISTEMA — não é o cliente falando]\n"
+        "⚠️ Você afirmou um fato sobre medicamento (genérico / princípio ativo / "
+        f"composição) que NÃO veio de nenhuma consulta neste turno: {termos_str}. "
+        "Seu conhecimento próprio sobre composição/genérico NÃO conta.\n\n"
+        f"AGORA: chame `{source_tool}` para confirmar antes de afirmar. NÃO escreva "
+        "texto antes — só a tool call."
+    )))
+    response2 = await llm_with_tools.ainvoke(lc_messages)
+
+    consulted = any(
+        tc.get("name") == source_tool for tc in (response2.tool_calls or [])
+    )
+    if not consulted:
+        # Modelo não consultou nem forçado → não deixamos o fato vazar.
+        log.error("runtime.claim_grounding_failed",
+                  tool_calls=[tc.get("name") for tc in (response2.tool_calls or [])])
+        result.final_text = build_grounding_correction(issues)
+        return
+
+    lc_messages.append(response2)
+    tool_map = {t.name: t for t in tools}
+    for tc in response2.tool_calls:
+        rec: dict = {"iter": "claim_grounding", "name": tc.get("name"), "args": tc.get("args")}
+        tool = tool_map.get(tc["name"])
+        if tool is None:
+            rec["error"] = "tool_not_found"
+            lc_messages.append(ToolMessage(content="ok", tool_call_id=tc["id"]))
+            result.tool_calls_trace.append(rec)
+            continue
+        try:
+            out = await tool.ainvoke(tc["args"])
+            result.last_tool_result = str(out)
+            rec["result_preview"] = str(out)[:300]
+            lc_messages.append(ToolMessage(content=str(out), tool_call_id=tc["id"]))
+        except Exception as exc:  # noqa: BLE001
+            rec["error"] = str(exc)
+            lc_messages.append(ToolMessage(content="erro ao consultar", tool_call_id=tc["id"]))
+            log.warning("runtime.claim_grounding_tool_failed", exc=str(exc))
+        result.tool_calls_trace.append(rec)
+
+    lc_messages.append(HumanMessage(content=(
+        f"Agora responda ao cliente em 1-3 frases usando APENAS o que `{source_tool}` "
+        "retornou. Se a consulta não confirmou o que você ia dizer, NÃO afirme — diga "
+        "que vai confirmar com o atendente. Termine com UMA pergunta."
+    )))
+    response3 = await llm.ainvoke(lc_messages)
+    result.final_text = _extract_text(response3.content) or result.final_text
+
+
 # ── Loop principal ────────────────────────────────────────────────────────────
 
 async def run_tool_loop(
@@ -308,6 +451,7 @@ async def run_tool_loop(
     defer_premature_flow: bool = False,
     domain_tool_gate=None,
     stock_recall: StockRecall | None = None,
+    claim_grounding: ClaimGrounding | None = None,
 ) -> RuntimeResult:
     """Roda o tool-loop e devolve um RuntimeResult.
 
@@ -332,6 +476,10 @@ async def run_tool_loop(
     honrado quando vier SOZINHO (intenção real). Default False = comportamento
     histórico (Claude/OpenAI não precisam). Gated por
     `llm.model_tier.needs_tool_scaffolding`.
+
+    `stock_recall` / `claim_grounding`: andaimes weak-LLM pós-loop (force-busca de
+    estoque e grounding de fato farmacológico). Só fornecidos pelo skill quando o
+    modelo é fraco (`needs_tool_scaffolding`). None = caminho forte byte-idêntico.
     """
     result = RuntimeResult()
     try:
@@ -404,6 +552,19 @@ async def run_tool_loop(
             except Exception as exc:  # noqa: BLE001
                 # Fail-open: nunca derruba a entrega por causa do andaime.
                 log.warning("runtime.stock_recall_errored", exc=str(exc))
+
+        # Grounding de fato farmacológico (andaime weak-LLM): roda DEPOIS do
+        # force-recall (o force-recall pode ter repopulado a evidência via busca)
+        # e ANTES do empty-text fallback. Não roda quando houve sinal de fluxo
+        # (handoff/escalate/end): a fala é da transição, não uma afirmação.
+        if claim_grounding is not None and not broke_on_signal and not result.handoff_to:
+            try:
+                await _maybe_reground_claims(
+                    claim_grounding, lc_messages, llm, llm_with_tools, tools, result,
+                )
+            except Exception as exc:  # noqa: BLE001
+                # Fail-open: nunca derruba a entrega por causa do andaime.
+                log.warning("runtime.claim_grounding_errored", exc=str(exc))
 
         # Empty-text fallback: se o turno terminou só com tool call e sem texto,
         # força uma fala curta ao cliente. Pulamos quando há handoff (a outra

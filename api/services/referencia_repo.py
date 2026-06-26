@@ -15,12 +15,56 @@ Compartilha o MIN_SIMILARITY do bulario_repo para o mesmo rigor de match
 """
 from __future__ import annotations
 
+import time
+
 import structlog
 
 from db.postgres import get_db_conn
 from services.bulario_repo import MIN_SIMILARITY, _normalize
 
 log = structlog.get_logger()
+
+# ── Léxico cacheado (princípios ativos + marcas de referência) ────────────────
+# Usado pelo andaime de grounding (services/grounding_guard.py) para saber se um
+# termo citado pela LLM fraca é um nome de medicamento conhecido. A base é GLOBAL
+# e praticamente estática (ingestão offline do guia), então cacheamos em memória
+# com TTL longo — não consulta o banco a cada turno do agente.
+_LEXICON_TTL_S = 3600.0
+_lexicon_cache: set[str] | None = None
+_lexicon_loaded_at: float = 0.0
+
+
+async def load_reference_lexicon() -> set[str]:
+    """Conjunto normalizado de princípios ativos + marcas de referência conhecidos.
+
+    Cacheado em memória (TTL `_LEXICON_TTL_S`). Fail-open: qualquer erro devolve o
+    cache anterior (se houver) ou um set vazio — o detector que consome isso não
+    dispara com léxico vazio, então nunca quebra o turno.
+    """
+    global _lexicon_cache, _lexicon_loaded_at
+    now = time.monotonic()
+    if _lexicon_cache is not None and (now - _lexicon_loaded_at) < _LEXICON_TTL_S:
+        return _lexicon_cache
+
+    try:
+        async with get_db_conn() as conn:
+            rows = await conn.fetch(
+                "SELECT principio_ativo, nome_referencia "
+                "FROM public.medicamentos_referencia"
+            )
+        lex: set[str] = set()
+        for r in rows:
+            for raw in (r.get("principio_ativo"), r.get("nome_referencia")):
+                n = _normalize(raw or "")
+                if n:
+                    lex.add(n)
+        _lexicon_cache = lex
+        _lexicon_loaded_at = now
+        log.info("referencia.lexicon.loaded", size=len(lex))
+        return lex
+    except Exception as exc:  # noqa: BLE001
+        log.warning("referencia.lexicon.load_failed", exc=str(exc))
+        return _lexicon_cache if _lexicon_cache is not None else set()
 
 
 async def search_referencia(

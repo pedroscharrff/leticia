@@ -119,6 +119,42 @@ Vive em `agents/runtime.py` (`StockRecall` + `_maybe_force_stock_search`), NÃO 
 
 **Defense-in-depth**: a busca forçada repopula `cart._search_results_this_turn`, então o `safety_guard` downstream ainda cruza a resposta regenerada — se o modelo insistir em afirmar um item sem match, o `availability_guard` reescreve.
 
+## Grounding de fato farmacológico (runtime, andaime weak-LLM)
+
+Vive em `agents/runtime.py` (`ClaimGrounding` + `_maybe_reground_claims`), ao lado do
+force-recall — é um **andaime de tool-calling**, não um guard pós-texto, e roda dentro do
+tool-loop (após o force-recall, antes do empty-text fallback). Detector puro em
+`api/services/grounding_guard.py`.
+
+**Problema**: a LLM fraca VOLUNTARIA, de memória, um **genérico / princípio ativo /
+composição** que NÃO veio de nenhuma tool deste turno (caso real, jun/2026: gemini-2.5-pro
+ofertando "o genérico do Benegripe é Dipirona + Clorfeniramina + Cafeína" sem chamar tool).
+Nem o `availability_guard` (cruza NOME DE PRODUTO vs estoque, curto-circuita sem busca) nem
+o force-recall (afirmação de disponibilidade / preço-fantasma) pegam — a fala não afirma
+estoque nem cita preço, afirma **composição**.
+
+**Como funciona** (só quando fornecido `claim_grounding` — o skill só fornece para LLM
+**fraca** (`needs_tool_scaffolding`)):
+1. Monta a **evidência do turno** = texto das `ToolMessage` + falas do cliente
+   (`_build_turn_evidence`, conteúdo completo, pula instruções internas de outros andaimes).
+2. Carrega o **léxico** curado (princípios ativos + marcas de referência) via
+   `referencia_repo.load_reference_lexicon()` (cacheado em memória, TTL 1h; fail-open → set
+   vazio = não dispara).
+3. `detect_ungrounded_claims`: dispara quando há (a) marcador de afirmação de fato
+   farmacológico (`genérico`, `princípio ativo`, `composição`, `à base de`…) **E** (b) um
+   termo do léxico citado na resposta **ausente** da evidência. Conservador: dois sinais.
+4. Remediação:
+   - **Tem tool de fonte bindada** (`consultar_medicamento_referencia` ou `buscar_produto`):
+     força a consulta do termo e regenera "use APENAS o resultado" (= force-recall).
+   - **Sem tool de fonte** (vendedor não binda referencia): substitui por fala segura
+     (`build_grounding_correction`), sem despejar o fato inventado.
+5. **Fail-open**: qualquer exceção é logada (`runtime.claim_grounding_*`) e ignorada.
+
+**Gating por skill** (`verify_claim_grounding=True` no `run_skill`, ou `ClaimGrounding()`
+direto no `run_tool_loop` do vendedor): `vendedor`, `farmaceutico`, `genericos`,
+`principio_ativo`. Só ativa quando `_scaffold` (weak). **Não ligar para modelo forte** —
+mesma invariante do force-recall: Claude/GPT → `claim_grounding=None`, caminho byte-idêntico.
+
 ### `price_guard`
 
 Regex `R\$\s*\d+[.,]\d{2}` pega preços na resposta. Cruza com `search_results[].preco` — tolerância R$ 0,01.
@@ -188,6 +224,8 @@ Pra um guard que sempre quer reescrever a resposta (estilo availability), retorn
 - **Não aplicar correção quando `final_response` está vazio.** Curto-circuito no início do umbrella node.
 - **Não tratar "sem busca neste turno" como seguro no `availability_guard`.** O guard pós-texto curto-circuita com `search_results` vazio DE PROPÓSITO (sem busca não há o que cruzar). O caso "afirmou sem buscar" é responsabilidade do **force-recall no runtime** (`StockRecall`), não do guard. Não tente "consertar" o guard pra cobrir isso — ele cruza, não força.
 - **Não ligar o force-recall para modelo forte.** `stock_recall` só é fornecido quando `needs_tool_scaffolding` é True (Gemini/weak/local). Claude/GPT forte: caminho byte-idêntico, sem re-prompt extra.
+- **Não ligar o grounding de fato farmacológico para modelo forte.** `claim_grounding` segue a MESMA regra: só fornecido quando `needs_tool_scaffolding` é True. Não mover esse andaime para o umbrella `safety_guard` (que roda para todos os modelos) — alteraria o caminho forte. O grounding mora no runtime, gated por `_scaffold`, de propósito.
+- **Não usar `result_preview` (trace, truncado em 300) como evidência do grounding.** A evidência vem de `_build_turn_evidence` lendo o conteúdo COMPLETO das `ToolMessage`/`HumanMessage` em `lc_messages`. Truncar perderia o termo e geraria falso positivo.
 - **Sugestão de nome de medicamento NUNCA é auto-correção.** O recurso `attendance.medication_name_suggestion` (tool `sugerir_nome_medicamento`, SPEC 03) só OFERECE candidatos — o agente tem que perguntar ("Você quis dizer X?") e esperar a confirmação do cliente. Trocar o nome sozinho = risco de dispensar o remédio errado. Candidatos de LLM/web são sempre verificados contra a ANVISA antes de chegarem ao cliente.
 
 ## Testes manuais úteis

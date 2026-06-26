@@ -319,4 +319,8 @@ async def farmaceutico_node(state: AgentState, llm_factory) -> AgentState:
         # afirmar "temos" sem consultar o catálogo neste turno. No-op p/ Claude/
         # GPT forte e em pré-atendimento (sem catálogo). Cf. SPEC 10 §força-busca.
         verify_stock_affirmation=has_catalog,
+        # Grounding de fato farmacológico: o farmaceutico fala de genérico/
+        # princípio ativo/composição; com LLM fraca, reancora afirmação que não
+        # veio de tool (consultar_bula/referencia). No-op p/ Claude/GPT forte.
+        verify_claim_grounding=True,
     )

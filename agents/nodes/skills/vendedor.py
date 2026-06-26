@@ -1119,7 +1119,7 @@ async def vendedor_node(state: AgentState, llm_factory) -> AgentState:
         # `_v_scaffold` (andaime p/ Gemini/weak) já resolvido no topo do skill.
         # Liga a guarda domínio+fluxo do runtime (não descartar resultado de tool
         # ao transferir no mesmo turno). No-op para Claude/GPT forte.
-        from agents.runtime import run_tool_loop, StockRecall
+        from agents.runtime import run_tool_loop, StockRecall, ClaimGrounding
         from config import settings
         llm = llm_factory("skill")
         # Force-recall de estoque (andaime weak): só no modo normal (ERP,
@@ -1131,12 +1131,18 @@ async def vendedor_node(state: AgentState, llm_factory) -> AgentState:
                 search_tool="buscar_produto",
                 suppress_tools=("adicionar_ao_carrinho", "finalizar_pedido"),
             )
+        # Grounding de fato farmacológico (andaime weak): o vendedor não binda a
+        # base de referência, então sem tool de fonte o runtime cai numa fala
+        # segura quando o modelo voluntaria genérico/composição de memória.
+        # No-op p/ Claude/GPT forte. Vale nos dois modos (normal e pré-atendimento).
+        _claim_grounding = ClaimGrounding() if _v_scaffold else None
         result = await run_tool_loop(
             llm, list(messages), tools, settings.skill_max_tool_iterations,
             post_loop_hook=_vendedor_post_hook,
             defer_premature_flow=_v_scaffold,
             domain_tool_gate=_order_gate,
             stock_recall=_stock_recall,
+            claim_grounding=_claim_grounding,
         )
         final_response   = result.final_text
         tool_calls_trace = result.tool_calls_trace

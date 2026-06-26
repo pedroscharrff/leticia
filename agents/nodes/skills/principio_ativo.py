@@ -104,4 +104,5 @@ async def principio_ativo_node(state: AgentState, llm_factory) -> AgentState:
         skill_name="principio_ativo",
         base_system=_SYSTEM,
         tools=tools,
+        verify_claim_grounding=True,
     )

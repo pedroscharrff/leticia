@@ -60,4 +60,5 @@ async def genericos_node(state: AgentState, llm_factory) -> AgentState:
             session_id=state.get("session_id"),
             skill="genericos",
         )],
+        verify_claim_grounding=True,
     )

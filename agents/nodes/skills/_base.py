@@ -412,6 +412,7 @@ async def run_skill(
     enable_escalate: bool = False,
     enable_end: bool = False,
     verify_stock_affirmation: bool = False,
+    verify_claim_grounding: bool = False,
 ) -> AgentState:
     """
     Executa um skill genérico.
@@ -431,6 +432,10 @@ async def run_skill(
             só tem efeito quando o modelo é fraco (`_scaffold`) E há a tool
             `buscar_produto` bindada. O skill clínico (farmaceutico) passa True
             em modo ERP. Cf. SPEC 10 §força-busca de estoque.
+        verify_claim_grounding: liga o grounding de fato farmacológico do runtime
+            (genérico/princípio ativo/composição não-ancorado) — só tem efeito
+            quando o modelo é fraco (`_scaffold`). Ligado nos skills que afirmam
+            fato farmacológico. Cf. SPEC 10 §Grounding de fato farmacológico.
 
     Montagem do prompt via PromptBuilder: persona (porta única _persona_prefix) +
     base/override + flow + extra = ESTÁVEL (prefixo cacheado); memória do cliente,
@@ -593,7 +598,7 @@ async def run_skill(
     elif all_tools:
         # Tool-loop compartilhado (runtime). Import preguiçoso evita ciclo
         # _base ↔ runtime. O runtime captura tools de domínio E sinais de fluxo.
-        from agents.runtime import run_tool_loop, StockRecall
+        from agents.runtime import run_tool_loop, StockRecall, ClaimGrounding
         from config import settings
         # Force-recall de estoque (andaime weak): só quando o modelo é fraco,
         # o skill pediu a verificação E a tool de catálogo está bindada. Suprime
@@ -609,10 +614,17 @@ async def run_skill(
                 search_tool="buscar_produto",
                 suppress_tools=tuple(t for t in _CART_ORDER_TOOLS if t in _tool_names),
             )
+        # Grounding de fato farmacológico (andaime weak): só quando o modelo é
+        # fraco E o skill pediu a verificação. Não exige tool específica bindada —
+        # sem tool de fonte o runtime cai numa fala segura.
+        _claim_grounding = None
+        if _scaffold and verify_claim_grounding:
+            _claim_grounding = ClaimGrounding()
         result = await run_tool_loop(
             llm, list(messages), all_tools, settings.skill_max_tool_iterations,
             defer_premature_flow=_scaffold,
             stock_recall=_stock_recall,
+            claim_grounding=_claim_grounding,
         )
         final_response   = result.final_text
         tool_calls_trace = result.tool_calls_trace
