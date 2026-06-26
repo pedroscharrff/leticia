@@ -41,9 +41,11 @@ GPT55         = ("openai", "gpt-5.5")
 O3_MINI       = ("openai", "o3-mini")
 O3            = ("openai", "o3")
 O4_MINI       = ("openai", "o4-mini")
-# DeepSeek (OpenAI-compatible, base_url override)
-DEEPSEEK_CHAT     = ("deepseek", "deepseek-chat")      # V3
-DEEPSEEK_REASONER = ("deepseek", "deepseek-reasoner")  # R1, sem temperature
+# DeepSeek (OpenAI-compatible, base_url override, 1M ctx)
+DEEPSEEK_V4_FLASH = ("deepseek", "deepseek-v4-flash")  # default fast
+DEEPSEEK_V4_PRO   = ("deepseek", "deepseek-v4-pro")
+DEEPSEEK_CHAT     = ("deepseek", "deepseek-chat")      # V3 — deprecated 2026-07-24
+DEEPSEEK_REASONER = ("deepseek", "deepseek-reasoner")  # R1, sem temperature — deprecated
 OLLAMA_LLAMA  = ("ollama", "llama3.2")
 
 # caching.py
@@ -377,8 +379,17 @@ Métrica de cache hit não está exposta. Caminho: tap em response Anthropic (`r
 | Gemini 2.0 Flash | — | $0.10 | $0.40 |
 | Gemini 2.5 Flash | — | $0.30 | $2.50 |
 | Gemini 2.5 Pro | — | $1.25 | $10.00 |
-| DeepSeek V3 (chat) | — | $0.27 | $1.10 |
-| DeepSeek R1 (reasoner) | — | $0.55 | $2.19 |
+| DeepSeek V4 Flash | $0.0028 | $0.14 | $0.28 |
+| DeepSeek V4 Pro | $0.003625 | $0.435 | $0.87 |
+| DeepSeek V3 (chat) — *deprecated 2026-07-24* | — | $0.27 | $1.10 |
+| DeepSeek R1 (reasoner) — *deprecated 2026-07-24* | — | $0.55 | $2.19 |
+
+> **DeepSeek V4** (1M ctx, max output 384K, Tool Calls ✓): `deepseek-v4-flash` é o
+> piso de custo e o novo **default fast** do provider; `deepseek-v4-pro` para mais
+> capacidade. Ambos suportam thinking/non-thinking mode (thinking é default) e
+> aceitam `temperature` (só o `deepseek-reasoner` legado é que não). Os ids
+> `deepseek-chat`/`deepseek-reasoner` **descontinuam em 2026-07-24** (viram
+> non-thinking/thinking do v4-flash) — mantidos no catálogo só pela janela de compat.
 
 > **Gemini para baratear (BYOK):** `gemini-2.0-flash-lite` é o piso de custo — input mais
 > barato que Haiku cacheado e ~40× abaixo de Sonnet. `2.5-flash` quando precisar de mais

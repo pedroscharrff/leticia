@@ -32,8 +32,10 @@ const MODEL_OPTIONS: Record<string, { value: string; label: string }[]> = {
     { value: "gemini-2.5-pro",        label: "Gemini 2.5 Pro (mais esperto)"        },
   ],
   deepseek: [
-    { value: "deepseek-chat",     label: "DeepSeek V3 (chat)"      },
-    { value: "deepseek-reasoner", label: "DeepSeek R1 (reasoner)"  },
+    { value: "deepseek-v4-flash", label: "DeepSeek V4 Flash (rápido/barato)" },
+    { value: "deepseek-v4-pro",   label: "DeepSeek V4 Pro (capaz)"           },
+    { value: "deepseek-chat",     label: "DeepSeek V3 (chat)"                },
+    { value: "deepseek-reasoner", label: "DeepSeek R1 (reasoner)"            },
   ],
   ollama: [
     { value: "llama3.2", label: "Llama 3.2" },

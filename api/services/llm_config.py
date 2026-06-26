@@ -29,7 +29,7 @@ _PROVIDER_DEFAULT_FAST = {
     "anthropic": "claude-haiku-4-5-20251001",
     "openai":    "gpt-4o-mini",
     "google":    "gemini-2.5-flash-lite",  # 2.0 foi descontinuado na API (404)
-    "deepseek":  "deepseek-chat",
+    "deepseek":  "deepseek-v4-flash",  # deepseek-chat depreciado 2026-07-24
 }
 
 

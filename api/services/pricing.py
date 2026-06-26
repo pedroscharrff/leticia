@@ -65,8 +65,12 @@ MODEL_PRICES: dict[str, ModelPrice] = {
     "gemini-2.5-pro":         ModelPrice(1.25, 10.00),
 
     # ── DeepSeek (API OpenAI-compatible) ─────────────────────────────────
-    "deepseek-chat":          ModelPrice(0.27, 1.10),    # V3
-    "deepseek-reasoner":      ModelPrice(0.55, 2.19),    # R1
+    # Preço = input cache-MISS + output (cache hit é mais barato, não modelado).
+    "deepseek-v4-flash":      ModelPrice(0.14, 0.28),    # V4 flash (1M ctx)
+    "deepseek-v4-pro":        ModelPrice(0.435, 0.87),   # V4 pro (1M ctx)
+    # Depreciados em 2026-07-24 (viram non-thinking/thinking do v4-flash):
+    "deepseek-chat":          ModelPrice(0.27, 1.10),    # V3 — deprecated
+    "deepseek-reasoner":      ModelPrice(0.55, 2.19),    # R1 — deprecated
 
     # ── Ollama / self-hosted (custo de inferência = 0 do ponto de vista API) ──
     "llama3.2":               ModelPrice(0.00, 0.00),

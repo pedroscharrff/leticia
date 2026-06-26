@@ -70,8 +70,10 @@ MODEL_CATALOG: dict[str, list[dict]] = {
     # DeepSeek — API OpenAI-compatible. Tratado como weak (andaime de tool-calling
     # ligado, igual Google) — ver llm/model_tier._SCAFFOLD_PROVIDERS.
     "deepseek": [
-        {"id": "deepseek-chat",     "label": "DeepSeek V3 (chat)",   "tier": "balanced",  "good_for": ["orchestrator", "analyst", "skill"]},
-        {"id": "deepseek-reasoner", "label": "DeepSeek R1 (reasoner)", "tier": "reasoning", "good_for": ["skill"]},
+        {"id": "deepseek-v4-flash", "label": "DeepSeek V4 Flash (rápido/barato)", "tier": "fast",      "good_for": ["orchestrator", "analyst", "skill"]},
+        {"id": "deepseek-v4-pro",   "label": "DeepSeek V4 Pro (capaz)",            "tier": "smart",     "good_for": ["skill"]},
+        {"id": "deepseek-chat",     "label": "DeepSeek V3 (chat — descontinua 24/07)",     "tier": "balanced",  "good_for": ["orchestrator", "analyst", "skill"]},
+        {"id": "deepseek-reasoner", "label": "DeepSeek R1 (reasoner — descontinua 24/07)", "tier": "reasoning", "good_for": ["skill"]},
     ],
     "ollama": [
         {"id": "llama3.2",  "label": "Llama 3.2 (local)",  "tier": "fast",     "good_for": ["orchestrator", "analyst"]},

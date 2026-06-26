@@ -178,6 +178,8 @@ O3_MINI = ("openai", "o3-mini")
 O3 = ("openai", "o3")
 O4_MINI = ("openai", "o4-mini")
 # DeepSeek (OpenAI-compatible, 64K ctx)
+DEEPSEEK_V4_FLASH = ("deepseek", "deepseek-v4-flash")  # V4 rápido/barato
+DEEPSEEK_V4_PRO = ("deepseek", "deepseek-v4-pro")      # V4 capaz
 DEEPSEEK_CHAT = ("deepseek", "deepseek-chat")        # V3 — uso geral, tool-calling
 DEEPSEEK_REASONER = ("deepseek", "deepseek-reasoner")  # R1 — sem temperature
 OLLAMA_LLAMA = ("ollama", "llama3.2")
