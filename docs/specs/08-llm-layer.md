@@ -231,6 +231,16 @@ Andaimes gated por esse gate (todos no-op/ausentes para strong):
    já no carrinho ou `qty>1` passam livres), devolvendo correção que manda perguntar
    "Quantas unidades?". `_stated_quantity` é determinístico (dígito não-dosagem OU
    numeral por extenso). Reforçado no playbook + `_SALES_DISCIPLINE`. Cf. SPEC 02 §vendedor.
+7. **Diretiva de carrinho aberto no `vendedor`** (modo normal, VOLÁTIL, gated weak):
+   o bloco "Carrinho atual do cliente" é DESCRITIVO — modelo fraco o ignora e segue o
+   Playbook "Etapa 1: peça o nome do produto", perguntando "qual o medicamento?" com o
+   carrinho cheio (sintoma real jun/2026: cliente — "já falamos disso, tem até carrinho
+   aberto"; o `analyst` reprovava mas o `forced_through` entregava a resposta ruim). O
+   reforço converte o estado numa DIRETIVA imperativa ("os itens JÁ foram escolhidos; não
+   re-pergunte, não reinicie; continue da etapa atual"), espelhando o que o
+   pré-atendimento já fazia com o rascunho (`PEDIDO EM ANDAMENTO … não os perca`). Só
+   aparece quando há `cart["items"]`. Strong path intacto (gated + volátil). Cf. SPEC 02
+   §vendedor.
 
 > **Por que NÃO há force-call amplo de "consultou? então responde" no farmaceutico:**
 > a métrica `pct_sem_tool` é contaminada por turnos de condução legítimos (perguntas
@@ -317,7 +327,19 @@ Wraps com `tenacity.AsyncRetrying`:
 
 **Onde usar**:
 - ✅ Nodes idle entre turnos (orchestrator, analyst, skills sem tools)
-- ❌ Loops com tool-calling (cada iter já é nova chamada — retry interno do loop é suficiente)
+- ✅ **Primeira chamada do tool-loop** (`runtime.py::_ainvoke_resilient`) — ver ressalva abaixo.
+
+> **Correção (jun/2026):** antes esta lista dizia "❌ Loops com tool-calling (cada
+> iter já é nova chamada — retry interno do loop é suficiente)". Isso estava **errado
+> para a 1ª iteração**: ela reusa a instância cacheada (`get_llm` + `lru_cache`) que
+> ficou IDLE entre turnos, e o pool httpx envelhecido estoura `APIConnectionError`
+> (invariante #2). Não há iteração anterior que tenha reaberto a conexão, então o erro
+> caía direto no fallback "tive uma dificuldade técnica" e o cliente via o bot pedir
+> pra repetir a mensagem que acabara de mandar. O `run_tool_loop` agora envolve o
+> `ainvoke` em `_ainvoke_resilient`, que reentra SÓ em erros transientes de
+> conexão/timeout/5xx (detecção por nome de exceção em `_TRANSIENT_EXC_NAMES`) — erros
+> de lógica (bad request, schema de tool) sobem na hora, sem mascarar nem custar quota.
+> **Não é gated por tier:** idle aging atinge qualquer provider.
 
 Por que orchestrator/analyst ESPECIFICAMENTE precisam: instâncias `ChatAnthropic` são cacheadas via `lru_cache` (`get_llm`). Em prod elas ficam idle entre turnos (orquestrador roda 1x por mensagem). O pool httpx interno envelhece e a primeira chamada após idle dá `APIConnectionError`. Sem `llm_retry`, o node cai em fallback toda chamada.
 

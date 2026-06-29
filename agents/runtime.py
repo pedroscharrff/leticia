@@ -22,6 +22,7 @@ custom de tenant). Tool-call vence; marcador é fallback. Nunca falha estrito.
 """
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, field
 from typing import Awaitable, Callable
 
@@ -37,6 +38,45 @@ from agents.tools.flow_control import (
 )
 
 log = structlog.get_logger()
+
+
+# ── Resiliência da PRIMEIRA chamada do loop ──────────────────────────────────
+# SPEC 08 §retry / invariante #2: a instância `ChatModel` é cacheada (lru_cache em
+# `get_llm`) e fica IDLE entre turnos; o pool httpx interno envelhece e a PRIMEIRA
+# chamada após o idle estoura `APIConnectionError`. A nota antiga da SPEC dizia que
+# o tool-loop não precisava de retry ("cada iter já é nova chamada") — errado para a
+# 1ª iteração, que não tem iteração anterior pra ter reaberto a conexão. Sintoma real
+# (jun/2026): turno do vendedor caía no fallback "tive uma dificuldade técnica" e o
+# cliente via o bot pedir pra repetir uma msg que ele acabara de mandar.
+#
+# Só reentramos em erros TRANSIENTES de conexão/timeout/5xx — erros de lógica
+# (bad request, schema de tool inválido) sobem na hora, sem mascarar. Detecção por
+# NOME da exceção pra não acoplar a openai/anthropic. NÃO é gated por tier: idle
+# aging atinge qualquer provider (Anthropic/GPT/DeepSeek/Gemini).
+_TRANSIENT_EXC_NAMES = {
+    "APIConnectionError",
+    "APITimeoutError",
+    "InternalServerError",
+    "APIError",
+}
+
+
+async def _ainvoke_resilient(invoke_fn: Callable[[], Awaitable]):
+    """Invoca um LLM reentrando só em erros transientes de conexão (até 3x)."""
+    last_exc: Exception | None = None
+    for attempt in range(3):
+        try:
+            return await invoke_fn()
+        except Exception as exc:  # noqa: BLE001
+            if type(exc).__name__ not in _TRANSIENT_EXC_NAMES:
+                raise
+            last_exc = exc
+            log.warning("runtime.llm_transient_retry",
+                        attempt=attempt + 1, exc=str(exc))
+            if attempt < 2:
+                await asyncio.sleep(min(2 * (2 ** attempt), 10))
+    assert last_exc is not None
+    raise last_exc
 
 
 # ── Resultado ─────────────────────────────────────────────────────────────────
@@ -505,7 +545,11 @@ async def run_tool_loop(
         broke_on_signal = False
         for i in range(max_iters):
             result.iters_used = i + 1
-            response = await llm_with_tools.ainvoke(lc_messages)
+            # 1ª iteração reusa cliente possivelmente idle → APIConnectionError.
+            # `_ainvoke_resilient` reabre a conexão em erro transiente (ver nota no
+            # topo do módulo). Iterações seguintes já têm conexão quente, mas o
+            # wrapper é barato e cobre flakiness transiente mid-loop também.
+            response = await _ainvoke_resilient(lambda: llm_with_tools.ainvoke(lc_messages))
 
             if not response.tool_calls:
                 result.final_text = _extract_text(response.content)

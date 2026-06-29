@@ -931,6 +931,28 @@ async def vendedor_node(state: AgentState, llm_factory) -> AgentState:
                     "Carrinho atual do cliente:\n" + "\n".join(cart_lines)
                     + f"\n  Subtotal: R$ {cart.get('subtotal', 0):.2f}"
                 )
+                # Andaime weak: o bloco acima é DESCRITIVO; modelo fraco o ignora e
+                # segue o Playbook "Etapa 1: peça o nome do produto", perguntando
+                # "qual o medicamento?" com o carrinho cheio (sintoma real jun/2026:
+                # cliente — "já falamos disso, tem até carrinho aberto"). Converte o
+                # estado numa DIRETIVA imperativa, espelhando o que o pré-atendimento
+                # já faz com o rascunho. VOLÁTIL + gated → caminho forte byte-idêntico.
+                if _v_scaffold:
+                    pb.volatile(
+                        "[CARRINHO ABERTO — continue de onde parou]\n"
+                        "O cliente JÁ escolheu os itens acima; eles estão no "
+                        "carrinho. NÃO:\n"
+                        "• pergunte de novo 'qual o nome do medicamento?' nem peça "
+                        "pra ele repetir o que quer;\n"
+                        "• reinicie a conversa nem trate como atendimento novo;\n"
+                        "• re-busque ou re-confirme item que já está no carrinho sem "
+                        "o cliente pedir.\n"
+                        "Continue a partir da etapa atual: se faltam dados "
+                        "obrigatórios, peça só o que falta; se já tem tudo, confirme a "
+                        "forma de pagamento (se aplicável) e siga para finalizar. Se o "
+                        "cliente reclamar que já falou isso, peça desculpa e AVANCE — "
+                        "não repita a pergunta."
+                    )
 
             if _v_scaffold:
                 pb.volatile(_SALES_DISCIPLINE)
