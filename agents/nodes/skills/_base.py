@@ -26,6 +26,89 @@ _ESCALATE_RE = re.compile(r"\[\[ESCALATE\]\]", re.IGNORECASE)
 # Regex para detectar fim de atendimento sinalizado pelo agente ([[END]]).
 _END_RE = re.compile(r"\[\[END\]\]", re.IGNORECASE)
 
+# ── Markup nativo de tool-call VAZADO (DeepSeek / OpenAI-compatible fraco) ─────
+# Quando um provider weak (DeepSeek V3/R1) "decide" chamar uma tool mas serializa
+# no template nativo dele em vez de devolver `tool_calls` estruturado, o bloco
+# escapa como TEXTO no `content` e (a) vaza pro cliente no WhatsApp e (b) faz o
+# sinal de fluxo (handoff/escalate/end) se perder — o turno termina sem efeito.
+# Cf. [[project_deepseek_provider_integration]] e [[handoff_marker_leak]].
+#
+# Os tokens de controle do DeepSeek usam a barra VERTICAL full-width `｜`
+# (U+FF5C), que não ocorre em texto legítimo PT-BR. Variantes já observadas:
+#   <｜｜DSML｜｜tool_calls> <｜｜DSML｜｜invoke name="NOME">
+#       <｜｜DSML｜｜parameter name="P" string="true">VALOR</｜｜DSML｜｜parameter> …
+#   <｜tool▁calls▁begin｜> … <｜tool▁call▁begin｜>function<｜tool▁sep｜>NOME …
+# Detectamos por esse caractere (robusto a variações de spelling dos tokens).
+_DEEPSEEK_MARKUP_TOKEN_RE = re.compile(r"<[^>]*｜[^>]*>")
+# `name="..."` dentro do markup (invoke e parameter usam o mesmo atributo).
+_LEAKED_NAME_RE = re.compile(r'name\s*=\s*"([a-z_]+)"', re.IGNORECASE)
+# Par parâmetro→valor no formato DSML: name="K" ...>VALOR<
+_LEAKED_PARAM_RE = re.compile(
+    r'name\s*=\s*"(?P<k>[a-z_]+)"[^>]*>(?P<v>[^<]*)<', re.IGNORECASE
+)
+
+
+def _strip_leaked_tool_markup(text: str) -> tuple[str, str | None, str, bool, bool]:
+    """Recupera sinal de fluxo de markup nativo de tool-call vazado (DeepSeek) e
+    REMOVE o markup do texto antes de ir ao cliente.
+
+    Returns:
+        (texto_limpo, handoff_target|None, handoff_ctx, escalate, end)
+
+    Importado em `agents/tools/flow_control.py`? Não — usamos os nomes reais das
+    tools de fluxo para casar o que o modelo tentou chamar. O destino do handoff
+    é validado contra `_VALID_HANDOFF_TARGETS` (mesma allowlist permissiva do
+    parser de marcador legado). É uma REDE DE SEGURANÇA: nunca falha estrito.
+    """
+    if not text or "｜" not in text:
+        return text, None, "", False, False
+
+    from agents.tools.flow_control import (
+        HANDOFF_TOOL_NAME, ESCALATE_TOOL_NAME, END_TOOL_NAME,
+    )
+
+    # Parse ANTES de truncar (os params vivem dentro do bloco que vamos remover).
+    names = {m.group(1).lower() for m in _LEAKED_NAME_RE.finditer(text)}
+    params = {
+        m.group("k").lower(): m.group("v").strip()
+        for m in _LEAKED_PARAM_RE.finditer(text)
+    }
+
+    handoff_target: str | None = None
+    handoff_ctx = ""
+    escalate = False
+    end = False
+
+    if HANDOFF_TOOL_NAME in names:
+        dest = (params.get("destino") or params.get("target_skill") or "").strip().lower()
+        if dest in _VALID_HANDOFF_TARGETS:
+            handoff_target = dest
+            handoff_ctx = (params.get("contexto") or params.get("context") or "").strip()
+    if ESCALATE_TOOL_NAME in names:
+        escalate = True
+    if END_TOOL_NAME in names:
+        end = True
+
+    # Os dumps de tool-call são TERMINAIS (vêm depois do texto natural). Cortar a
+    # partir do primeiro token de controle remove o bloco inteiro de uma vez e
+    # preserva o preâmbulo legível, sem deixar valores de parâmetro órfãos.
+    m = _DEEPSEEK_MARKUP_TOKEN_RE.search(text)
+    cleaned = (text[: m.start()] if m else text).rstrip()
+    # Defesa extra: se sobrou algum token isolado (texto após o bloco, raro),
+    # remove-os também.
+    cleaned = _DEEPSEEK_MARKUP_TOKEN_RE.sub("", cleaned).strip()
+
+    if handoff_target or escalate or end:
+        log.warning(
+            "skill.leaked_tool_markup_recovered",
+            handoff_target=handoff_target, escalate=escalate, end=end,
+            cleaned_chars=len(cleaned),
+        )
+    else:
+        log.warning("skill.leaked_tool_markup_stripped", cleaned_chars=len(cleaned))
+
+    return cleaned, handoff_target, handoff_ctx, escalate, end
+
 
 def _parse_escalate(response: str) -> tuple[str, bool]:
     """Detecta marcador [[ESCALATE]] na resposta.
@@ -661,24 +744,42 @@ async def run_skill(
     # antes de enviar ao cliente (LLM que ainda emite [[...]], ou prompt custom
     # de tenant). Os SINAIS das tools de fluxo têm PRIORIDADE; o marcador só
     # entra como fallback quando a tool não foi chamada.
+    # Markup nativo de tool-call vazado (DeepSeek/weak) — limpa o texto E recupera
+    # o sinal que se perderia (o modelo serializou a tool em texto, então
+    # `response.tool_calls` veio vazio e `sig_*` está zerado). Roda ANTES dos
+    # parsers de marcador legado. Prioridade: sinal de tool real > markup vazado >
+    # marcador [[...]]. Cf. _strip_leaked_tool_markup.
+    final_response, mk_handoff, mk_ctx, mk_escalate, mk_end = (
+        _strip_leaked_tool_markup(final_response)
+    )
+
     handoff_target: str | None = None
     handoff_ctx_new = ""
     is_receiving_handoff = bool(prev_response)
     final_response, parsed_target, parsed_ctx = _parse_handoff(final_response)
     if not is_receiving_handoff:
-        handoff_target  = sig_handoff_to or parsed_target
-        handoff_ctx_new = sig_handoff_ctx or parsed_ctx
+        handoff_target  = sig_handoff_to or mk_handoff or parsed_target
+        handoff_ctx_new = sig_handoff_ctx or mk_ctx or parsed_ctx
 
     final_response, parsed_escalate = _parse_escalate(final_response)
-    escalate = sig_escalate or parsed_escalate
+    escalate = sig_escalate or mk_escalate or parsed_escalate
 
     # Fim de atendimento ([[END]] OU tool). SEMPRE limpamos o marcador do texto;
     # o flag só é propagado quando NÃO estamos roteando handoff nem escalando
     # (essas têm prioridade — já finalizam).
     final_response, parsed_end = _parse_end(final_response)
-    end_conversation = sig_end or parsed_end
+    end_conversation = sig_end or mk_end or parsed_end
     if handoff_target or escalate:
         end_conversation = False
+
+    # Se a limpeza do markup vazado esvaziou a resposta E não há handoff (que
+    # faria a outra especialidade falar) nem escalation, o cliente ficaria sem
+    # nada. Fala segura — Princípio 10.1 (cliente nunca fica abandonado).
+    if not (final_response or "").strip() and not handoff_target and not escalate:
+        final_response = (
+            "Deixa eu confirmar isso certinho pra você. Pode me dizer o nome do "
+            "medicamento que você precisa?"
+        )
 
     # Se está recebendo handoff, concatena: resposta anterior + nova resposta
     if is_receiving_handoff and final_response and final_response.strip():

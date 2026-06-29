@@ -16,7 +16,7 @@ import structlog
 from agents.state import AgentState
 from agents.nodes.skills._base import (
     _build_messages, _parse_handoff, _parse_escalate,
-    _parse_end, _extract_text,
+    _parse_end, _extract_text, _strip_leaked_tool_markup,
 )
 from agents.prompts import PromptBuilder
 from agents.prompts import commerce as _commerce
@@ -1229,10 +1229,19 @@ async def vendedor_node(state: AgentState, llm_factory) -> AgentState:
         log.info("vendedor.balcao_pedido_anotado", mode="pre_atendimento",
                  schema=schema_name)
 
+    # ── Markup nativo de tool-call vazado (DeepSeek/weak) ────────────────────
+    # Limpa o markup que escapou como texto E recupera o sinal de fluxo perdido
+    # (quando o modelo serializa a tool em texto, `response.tool_calls` vem vazio
+    # e os `sig_*` ficam zerados). Roda ANTES dos parsers de marcador legado.
+    # Mesma rede de segurança de run_skill. Cf. _strip_leaked_tool_markup.
+    final_response, mk_handoff, mk_ctx, mk_escalate, mk_end = (
+        _strip_leaked_tool_markup(final_response)
+    )
+
     # ── Escalation humana: TOOL (sig_escalate) OU marcador [[ESCALATE]] ──────
     # Caminho primário = tool `transferir_para_atendente`; marcador é fallback.
     final_response, parsed_escalate = _parse_escalate(final_response)
-    explicit_escalate = sig_escalate or parsed_escalate
+    explicit_escalate = sig_escalate or mk_escalate or parsed_escalate
     if explicit_escalate:
         log.info("vendedor.explicit_escalate",
                  mode="pre_atendimento" if use_preattendimento else "normal",
@@ -1242,7 +1251,7 @@ async def vendedor_node(state: AgentState, llm_factory) -> AgentState:
     # SEMPRE limpamos o marcador do texto. Só propagamos o flag quando NÃO houve
     # balcão nem escalation (essas têm prioridade — já fecham via handoff).
     final_response, parsed_end = _parse_end(final_response)
-    end_conversation = sig_end or parsed_end
+    end_conversation = sig_end or mk_end or parsed_end
     if balcao_called or explicit_escalate:
         end_conversation = False
     if end_conversation:
@@ -1260,9 +1269,9 @@ async def vendedor_node(state: AgentState, llm_factory) -> AgentState:
     if not received_handoff:
         final_response, parsed_target, parsed_ctx = _parse_handoff(final_response)
         if not use_preattendimento:
-            # Modo NORMAL: tool ou marcador roteiam livremente.
-            handoff_target  = sig_handoff_to or parsed_target
-            handoff_ctx_new = sig_handoff_ctx or parsed_ctx
+            # Modo NORMAL: tool, markup vazado ou marcador roteiam livremente.
+            handoff_target  = sig_handoff_to or mk_handoff or parsed_target
+            handoff_ctx_new = sig_handoff_ctx or mk_ctx or parsed_ctx
         else:
             # Pré-atendimento: handoff SÓ ao farmacêutico (single-hop de
             # validação na bula). A tool de fluxo já só foi bindada quando
@@ -1272,6 +1281,10 @@ async def vendedor_node(state: AgentState, llm_factory) -> AgentState:
             if sig_handoff_to == "farmaceutico":
                 handoff_target  = "farmaceutico"
                 handoff_ctx_new = sig_handoff_ctx
+            elif mk_handoff == "farmaceutico":
+                # Markup vazado recuperado — mesmo single-hop gating.
+                handoff_target  = "farmaceutico"
+                handoff_ctx_new = mk_ctx
             elif (
                 caps.get("pharmacist_validation")
                 and parsed_target == "farmaceutico"
