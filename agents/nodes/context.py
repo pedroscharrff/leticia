@@ -319,12 +319,23 @@ async def save_context(state: AgentState) -> AgentState:
         ttl_s = await _resolve_session_ttl(state.get("tenant_id"))
         await redis.setex(hist_key, ttl_s, json.dumps(messages))
 
-        # ── Sticky ownership: grava o dono (skill que respondeu) ou limpa ─────
+        # ── Sticky ownership: grava o dono (LÍDER do turno) ou limpa ──────────
         # Limpa quando o atendimento terminou/escalou/finalizou pedido — a
         # próxima mensagem deve reclassificar do zero. Caso contrário, fixa o
-        # owner para o skill que conduziu o turno. Mesma TTL do histórico (o
-        # owner expira junto com a sessão). Consumido pelo orchestrator quando
-        # sticky_ownership_enabled.
+        # owner. Mesma TTL do histórico (o owner expira junto com a sessão).
+        # Consumido pelo orchestrator quando sticky_ownership_enabled.
+        #
+        # ⚠️ O owner é o LÍDER do turno (`skill_history[0]`), NÃO o `selected_skill`.
+        # Num handoff (ex.: vendedor→genericos pra buscar alternativa), o _base.py
+        # sobrescreve `selected_skill` com o DESTINO do handoff (genericos). Um
+        # handoff é delegação de UM turno — quem conduz a conversa segue sendo o
+        # líder que o orchestrator escolheu. Persistir o destino fazia o sticky
+        # SEQUESTRAR a conversa pro sub-especialista (genericos sem catálogo só se
+        # desculpava e escalava em TODA mensagem seguinte). Regressão real ao ligar
+        # sticky por default (jun/2026). `skill_history` é por-turno (não vai no
+        # initial_state) → [0] é sempre o líder. Cf. SPEC 01 §sticky ownership.
+        turn_skills = state.get("skill_history") or []
+        owner_skill = turn_skills[0] if turn_skills else skill_used
         try:
             cart_just_finalized = bool((state.get("cart") or {}).get("just_finalized"))
             if (
@@ -333,8 +344,8 @@ async def save_context(state: AgentState) -> AgentState:
                 or cart_just_finalized
             ):
                 await redis.delete(owner_key)
-            elif skill_used and skill_used != "unknown":
-                await redis.setex(owner_key, ttl_s, skill_used)
+            elif owner_skill and owner_skill != "unknown":
+                await redis.setex(owner_key, ttl_s, owner_skill)
         except Exception as exc:
             log.warning("context.redis.owner_save_failed", session=session_id, exc=str(exc))
     except Exception as exc:

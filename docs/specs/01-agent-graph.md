@@ -110,11 +110,21 @@ Fim de atendimento idem: tool `encerrar_atendimento` OU `[[END]]` → `end_conve
 
 ### Sticky ownership (orchestrator não roda a cada turno)
 
-Gated por `settings.sticky_ownership_enabled` (default False). Quando ON, o
+Gated por `settings.sticky_ownership_enabled`. Quando ON, o
 orchestrator reusa `state.current_owner` (persistido em Redis por `context.py`)
 e PULA o LLM de classificação, salvo se: owner ausente/inválido, ou a mensagem
 casa com `_should_bypass_sticky` (emergência / pedido de humano). Owner é limpo
 em fim/escalation/pedido finalizado. Reduz custo/latência/misroute mid-conversa.
+
+⚠️ **O owner é o LÍDER do turno (`skill_history[0]`), não o `selected_skill`.**
+Num handoff (vendedor→genericos), `_base.py` sobrescreve `selected_skill` com o
+DESTINO. Um handoff é delegação de UM turno — quem conduz segue sendo o líder que
+o orchestrator escolheu. `save_context` persiste `skill_history[0]` (por-turno;
+[0] = líder). **Regressão real (jun/2026, ao ligar sticky por default):** persistir
+o destino fazia o sticky SEQUESTRAR a conversa pro sub-especialista — `genericos`
+(sem catálogo/`buscar_produto`) virava owner após um handoff e em TODA mensagem
+seguinte só se desculpava e escalava ("roteando tudo pro genérico"). Não reverter
+para `selected_skill` aqui.
 
 ### Fluxo de retry do analyst
 
@@ -149,6 +159,7 @@ Os mapas `routing_map`, `handoff_map`, `retry_map` derivam automaticamente de `a
 - **Não remover o `llm_retry()` do orchestrator e analyst.** APIConnectionError do Anthropic é silencioso e regular: nodes idle entre turnos + httpx pool envelhece. Sem retry, TODOS os turnos viram fallback.
 - **Não jogar estado por-turno no `system_prompt` estável.** Carrinho, status de campos, contexto de handoff → vão em `volatile_prompt` no `_build_messages`. Senão cache miss em TODA mensagem.
 - **Não usar `SystemMessage` consecutivo depois de `HumanMessage`/`AIMessage` no Anthropic** (loops force-call no vendedor). Use `HumanMessage` com prefixo "[INSTRUÇÃO INTERNA]".
+- **Não persistir o sticky owner a partir de `selected_skill`** — ele reflete o DESTINO do handoff, não o líder. Use `skill_history[0]` (líder do turno). Senão um handoff transitório (vendedor→genericos) sequestra a conversa pro sub-especialista em todos os turnos seguintes (regressão jun/2026). Ver §"Sticky ownership".
 
 ## Trace step shape
 
