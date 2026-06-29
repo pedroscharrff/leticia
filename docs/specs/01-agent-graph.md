@@ -70,6 +70,13 @@ START → load_context → ingest_media → sentiment_analyzer → orchestrator
 
 ### Roteamento mode-aware do orchestrator (validação farmacêutica)
 
+> **Provider do orquestrador:** orchestrator/analyst/sentiment rodam SEMPRE no
+> modelo da plataforma (Anthropic Haiku via `.env`), nunca no BYOK do tenant — só
+> as skills seguem a escolha do tenant. Decisão e configuração em SPEC 08
+> §"Orquestração híbrida". Tirar a LLM fraca do roteamento é metade da blindagem; a
+> outra metade é manter as descrições de skill (`skills_registry`) e os fast-paths
+> determinísticos — descrição catch-all ("mensagens ambíguas") vira ímã de misroute.
+
 O orchestrator classifica por intenção (regras no `_SYSTEM`). A regra 2 manda **produto nomeado** ("tem Dipirona?", "quanto custa Tylenol?") → **vendedor**. Há UM override: quando `sales.pharmacist_validation` ON, medicamento nomeado vai ao **farmaceutico** (validar na bula antes de anotar).
 
 ⚠️ **Esse override SÓ vale em pré-atendimento** (`sales.stock_check` OFF, sem catálogo). Com catálogo (Sheets/ERP) o override é **suprimido** → "tem X?" segue pro vendedor, que consulta o catálogo (fonte da verdade do que a loja carrega). Sem essa condição, o farmaceutico respondia disponibilidade enumerando apresentações **da bula** e o vendedor desmentia depois (regressão real, jun/2026). Em modo catálogo, o farmaceutico fica só para **sintoma** (regra 1) e **dúvida clínica** (regra 5); a validação de apresentação vem do `buscar_produto` do vendedor (que pode fazer o single-hop ao farmaceutico via `sales.pharmacist_validation`). Cf. SPEC 04 §"Os três modos".

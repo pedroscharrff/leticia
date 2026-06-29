@@ -114,9 +114,10 @@ Para skills **complexos** (vendedor), implementar inline replicando o padrão de
 
 ### `saudacao` — Recepção
 Plano: basic.
-Tools: nenhuma.
-Quando: primeiro contato, "oi", mensagem ambígua.
+Tools: nenhuma. **Sem `allowed_handoffs` → beco sem saída** (uma vez aqui, não repassa a bola).
+Quando: SÓ saudação/primeiro contato sem pedido concreto ("oi", "bom dia", "tudo bem?", "preciso de ajuda").
 Característica: skip de LLM via fast-path em `orchestrator._is_pure_greeting` (saudação pura + sem histórico).
+⚠️ **Não é catch-all de ambiguidade.** A `description` no `skills_registry` é injetada no prompt do orchestrator (`_build_skills_list`); um termo catch-all como "mensagens ambíguas" virava ÍMÃ de misroute — a LLM (sobretudo a fraca) mandava toda mensagem "incerta" pro saudacao, que não tem handoff e prende a conversa (medido jun/2026: várias msgs não-saudação caindo aqui). A description foi reduzida a "apenas saudações e primeiro contato sem pedido concreto"; ambíguo segue o fallback do `_SYSTEM` do orchestrator (`farmaceutico`). O `_SYSTEM` do node também não cita mais "mensagens ambíguas". Cf. SPEC 01 §roteamento + SPEC 08 §orquestração híbrida.
 
 ### `farmaceutico` — Orientação clínica
 Plano: basic.

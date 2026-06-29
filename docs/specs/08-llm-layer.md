@@ -55,6 +55,54 @@ def system_message(content: str, *, provider: str, volatile: str = "") -> System
 def llm_retry() -> AsyncRetrying  # 3 tentativas, exponencial 2-10s
 ```
 
+## Orquestração híbrida — papéis da plataforma vs. papéis do tenant
+
+**Decisão de produto (firmada jun/2026):** os papéis LEVES de classificação rodam
+SEMPRE no modelo da plataforma; só as **skills** (agentes que falam com o cliente)
+seguem a escolha do tenant.
+
+| Papel | Provider/model | Quem define | Pago por |
+|---|---|---|---|
+| `orchestrator` | **Anthropic Haiku** | Plataforma, via `.env` | Plataforma |
+| `analyst` | **Anthropic Haiku** | Plataforma, via `.env` | Plataforma |
+| `sentiment` | **Anthropic Haiku** (reusa o par do orchestrator) | Plataforma, via `.env` | Plataforma |
+| skills (`vendedor`, `farmaceutico`, …) | qualquer provider | **Tenant** (BYOK ou model-tier em credits) | Tenant |
+
+A fonte da verdade é `agents/graph_builder.py::_PLATFORM_ROLES =
+{"orchestrator", "analyst", "sentiment"}`. Para esses papéis, `_make_llm_factory`
+chama sempre `get_llm` com a chave da plataforma (`anthropic_api_key`),
+**ignorando o `provider_override` do BYOK e a coluna do tenant**. As skills passam
+por `get_llm_for_tenant` (BYOK) ou `get_llm` (credits).
+
+**Configuração** (`api/config.py`, sobrescritível por env):
+
+```
+DEFAULT_ORCHESTRATOR_PROVIDER = "anthropic"
+DEFAULT_ORCHESTRATOR_MODEL    = "claude-haiku-4-5-20251001"
+DEFAULT_ANALYST_PROVIDER      = "anthropic"
+DEFAULT_ANALYST_MODEL         = "claude-haiku-4-5-20251001"
+DEFAULT_SKILL_PROVIDER        = "anthropic"   # default em credits; BYOK sobrepõe
+DEFAULT_SKILL_MODEL           = "claude-sonnet-4-6"
+```
+
+**Por quê:** o roteamento é onde o produto inteiro depende — um misroute manda a
+mensagem ao agente errado (ou a um beco sem handoff). Deixar o orquestrador na
+mão de uma LLM fraca do tenant (DeepSeek/Gemini/Ollama) regredia o roteamento. A
+plataforma absorve o roteador (Haiku é forte e barato pra classificação) e o
+cliente paga só as skills. Ver memória *Orquestração híbrida*.
+
+**Consequência intencional:** `tenant_llm_config.orchestrator_model`/`analyst_model`
+ficam **inertes** — o controle desses papéis é só via `.env`. Não reabilitar a
+escolha de modelo do orquestrador/analista por tenant sem rediscutir esta decisão
+(reintroduz o misroute por LLM fraca). Cf. `services/llm_config.py::load_tenant_llm_config`
+(que já força os defaults da plataforma nesses dois papéis).
+
+> ⚠️ Mesmo com o orquestrador no Haiku, a **qualidade do prompt de roteamento**
+> ainda importa: descrições de skill ambíguas no `skills_registry` (ex.: um termo
+> catch-all como "mensagens ambíguas") viram ímã de misroute. A blindagem do
+> roteador é dupla: papel forte (esta seção) + prompt/descrições determinísticos
+> (SPEC 01 §roteamento, fast-paths).
+
 ## Providers suportados
 
 | Provider | Lib | Auth | Cache? |
@@ -401,4 +449,4 @@ Métrica de cache hit não está exposta. Caminho: tap em response Anthropic (`r
 
 ⚠️ **Modelos de raciocínio (o1/o3/o4)**: não aceitam o parâmetro `temperature`. O factory `_build_llm` detecta automaticamente pelo prefixo do model id e omite `temperature` nesses casos. Não passar temperatura explicitamente para esses modelos fora do factory.
 
-Default da plataforma: Haiku para orchestrator/analyst (low cost, alto volume), Sonnet para skills (qualidade na resposta ao cliente).
+Default da plataforma: Haiku para orchestrator/analyst (low cost, alto volume), Sonnet para skills (qualidade na resposta ao cliente). A **divisão de papéis** (orchestrator/analyst/sentiment SEMPRE na plataforma via `.env`; skills definidas pelo tenant) está detalhada em §"Orquestração híbrida — papéis da plataforma vs. papéis do tenant".

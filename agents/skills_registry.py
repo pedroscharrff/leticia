@@ -70,8 +70,14 @@ class SkillDefinition:
 SKILLS: dict[str, SkillDefinition] = {
     "saudacao": SkillDefinition(
         name="saudacao",
+        # ⚠️ NÃO reintroduzir "mensagens ambíguas"/catch-all aqui. Esta description
+        # é injetada no prompt do orchestrator (_build_skills_list). Um termo
+        # catch-all vira ÍMÃ de misroute: a LLM (sobretudo a fraca) manda toda
+        # mensagem que "não tem certeza" pro saudacao — que é BECO SEM SAÍDA
+        # (allowed_handoffs vazio), prendendo a conversa. Ambíguo → fallback do
+        # _SYSTEM (farmaceutico). Cf. SPEC 02 §saudacao + SPEC 01 §roteamento.
         plan_min="basic",
-        description="recepção, saudações iniciais, primeiro contato, mensagens ambíguas",
+        description="apenas saudações e primeiro contato sem pedido concreto (oi, bom dia, tudo bem)",
         node_path="agents.nodes.skills.saudacao:saudacao_node",
     ),
     "farmaceutico": SkillDefinition(
