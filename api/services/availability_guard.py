@@ -112,6 +112,26 @@ _PURCHASE_CUE_PATTERNS = [
     r"\bpode\s+ser\s+ess",             # "pode ser esse/essa?"
 ]
 
+# Cues de RECOMENDAÇÃO de produto — a LLM fraca recomenda/elogia uma marca
+# ("o mais comum aqui é o Fluimucil", "Expec é ótimo para tosse") SEM usar o
+# vocabulário de disponibilidade (`_AFFIRMATION_PATTERNS`) nem o convite de
+# compra (`_PURCHASE_CUE_PATTERNS`), então escapava do force-recall. Como
+# "recomendo" sozinho dispara em fala clínica legítima ("recomendo procurar um
+# médico"), `recommends_unverified_product` exige DOIS sinais (cue + apresentação),
+# igual `has_presentation_offer` — só vira sinal quando o elogio vem grudado numa
+# forma farmacêutica (xarope/comprimido/mg…), i.e., recomendação de PRODUTO.
+_RECOMMENDATION_CUE_PATTERNS = [
+    r"\brecomend",                     # recomendo/recomenda/recomendamos
+    r"\bindic(o|a|ad[oa]s?)\b",        # indico / indicado(s) para
+    r"\bsugiro\b",
+    r"\b[óo]tim[oa]s?\s+(?:para|op[cç])",  # "ótimo para", "ótima opção"
+    r"\bboa\s+op[cç]",                  # "boa opção"
+    r"\bbom\s+para\b",
+    r"\bo\s+mais\s+(?:comum|usado|indicad|vendid|pedid)",  # "o mais comum/vendido"
+    r"\bmais\s+comum\s+aqui\b",
+    r"\b[àa]\s+base\s+de\b",           # "à base de guaifenesina" (composição volunt.)
+]
+
 
 def has_presentation_offer(response_text: str) -> bool:
     """True quando a resposta OFERECE uma apresentação para o cliente escolher/
@@ -130,13 +150,33 @@ def has_presentation_offer(response_text: str) -> bool:
     return has_form and has_cue
 
 
+def recommends_unverified_product(response_text: str) -> bool:
+    """True quando a resposta RECOMENDA/elogia um produto (cue de recomendação
+    + forma farmacêutica) SEM negação clara — ex.: "o xarope mais comum aqui é o
+    Fluimucil", "o Expec é ótimo para tosse". Exige DOIS sinais (cue + forma) pra
+    não disparar em fala clínica pura ("recomendo procurar um médico"). É o vetor
+    que `has_unverified_affirmation`/`has_presentation_offer` não pegavam: a LLM
+    fraca recomenda uma marca sem dizer "temos" nem oferecer apresentação pra
+    escolher. Usado pelo force-recall (SPEC 10)."""
+    if not response_text:
+        return False
+    norm = _normalize(response_text)
+    if any(re.search(p, norm) for p in _NEGATION_PATTERNS):
+        return False  # agente admitiu indisponibilidade — confiamos
+    has_cue  = any(re.search(p, norm) for p in _RECOMMENDATION_CUE_PATTERNS)
+    has_form = any(re.search(p, norm) for p in _PRESENTATION_PATTERNS)
+    return has_cue and has_form
+
+
 def affirms_or_offers_availability(response_text: str) -> bool:
     """Sinal combinado do force-recall: afirmação direta de disponibilidade
-    (`has_unverified_affirmation`) OU oferta de apresentação para compra
-    (`has_presentation_offer`). Cf. SPEC 10 §força-busca de estoque."""
+    (`has_unverified_affirmation`), oferta de apresentação para compra
+    (`has_presentation_offer`) OU recomendação de produto não verificado
+    (`recommends_unverified_product`). Cf. SPEC 10 §força-busca de estoque."""
     return (
         has_unverified_affirmation(response_text)
         or has_presentation_offer(response_text)
+        or recommends_unverified_product(response_text)
     )
 
 

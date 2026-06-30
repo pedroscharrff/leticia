@@ -156,13 +156,23 @@ def _should_bypass_sticky(current_message: str) -> bool:
 _STOCK_INTENT_RE = re.compile(
     r"(quanto\s+custa|qual\s+o\s+(?:pre[çc]o|valor)|pre[çc]o|valor|"
     r"quero\s+comprar|comprar|me\s+v[êe]\b|tem\s+em\s+estoque|tem\s+a[íi]\b|"
-    r"voc[êe]s?\s+tem|vcs?\s+tem|tem\s+(?:ele|ela|isso|esse|essa)\b)",
+    r"voc[êe]s?\s+tem|vcs?\s+tem|vendem?\b|tem\s+(?:ele|ela|isso|esse|essa)\b|"
+    # "tem <produto>" — pega "tem dipirona?", "tem expec?" que o sticky prendia
+    # no farmaceutico. A guarda NEGATIVA abaixo defere sintoma/clínico/não-produto.
+    r"\btem\s+\w{3,})",
     re.IGNORECASE,
 )
 _STOCK_NEGATIVE_RE = re.compile(
     r"(gen[ée]ric|similar|princ[íi]pio\s+ativo|para\s+que\s+serve|serve\s+para|"
     r"\bbula\b|posologia|dosagem|\bdose\b|intera[çc]|pode\s+tomar|"
-    r"efeito\s+colateral|contraindic)",
+    r"efeito\s+colateral|contraindic|"
+    # Defere ao classificador: pedido de SINTOMA ("tem algum remédio pra tosse")
+    # — deve passar pela triagem clínica, não pelo fast-path de compra.
+    r"\brem[ée]di|medicament|\balgo\s+pra\b|\balguma\s+coisa\b|"
+    # "tem X" não-produto comum (evita misroute do bare "tem \w+").
+    r"\bdesconto|\bentrega|\bdelivery|\bfrete|\btroco|\bpromo|\bfidelidad|"
+    r"\bcadastr|\bconv[eê]nio|\breceita|\btem\s+que\b|\btem\s+como\b|"
+    r"\btem\s+jeito\b|\bprevis[aã]o)",
     re.IGNORECASE,
 )
 
