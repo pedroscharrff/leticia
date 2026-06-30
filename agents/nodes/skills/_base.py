@@ -167,6 +167,41 @@ def _extract_text(content) -> str:
         return "".join(parts)
     return str(content)
 
+
+def _norm_for_dup(text: str) -> str:
+    """Normaliza p/ comparação de duplicata: minúsculas, sem acento, só
+    alfanumérico+espaço, espaços colapsados. Determinístico, sem I/O."""
+    import unicodedata
+    nfkd = unicodedata.normalize("NFKD", text or "")
+    no_acc = "".join(c for c in nfkd if not unicodedata.combining(c))
+    cleaned = re.sub(r"[^a-z0-9\s]", " ", no_acc.lower())
+    return re.sub(r"\s+", " ", cleaned).strip()
+
+
+def _is_near_duplicate(prev: str, new: str) -> bool:
+    """True quando concatenar a continuação do handoff só DOBRA a mesma mensagem.
+    Usado pra evitar o "monte de resposta confusa" (caso real jun/2026:
+    farmaceutico e vendedor batendo no mesmo catálogo vazio, ambos dizendo "não
+    temos"). Determinístico, NÃO depende da frase:
+
+    1. **Mesma má notícia** — ambos comunicam indisponibilidade
+       (`expresses_unavailability`). É o sinal semântico, não textual: handoff
+       legítimo tem um lado POSITIVO (recomendação/disponibilidade), então não
+       casa aqui. Similaridade de caractere NÃO separava os casos (medido).
+    2. **Containment literal** — a continuação repete o miolo da anterior
+       (modelo fraco copiando), independente de ser not-found ou não."""
+    a, b = _norm_for_dup(prev), _norm_for_dup(new)
+    if not a or not b:
+        return False
+    shorter, longer = sorted((a, b), key=len)
+    if len(shorter) >= 20 and shorter in longer:
+        return True
+    try:
+        from services.availability_guard import expresses_unavailability
+        return expresses_unavailability(prev) and expresses_unavailability(new)
+    except Exception:  # noqa: BLE001
+        return False
+
 # Skills permitidos como destino de handoff — DERIVADO do skills_registry
 # (fonte única). Antes era um set hardcoded {farmaceutico, principio_ativo,
 # genericos, vendedor, recuperador, saudacao}. Usamos PLAN_GATED_SKILLS (mesmo
@@ -781,9 +816,19 @@ async def run_skill(
             "medicamento que você precisa?"
         )
 
-    # Se está recebendo handoff, concatena: resposta anterior + nova resposta
+    # Se está recebendo handoff, concatena: resposta anterior + nova resposta.
+    # MAS se a nova for quase-duplicata da anterior (ex.: farmaceutico e vendedor
+    # ambos dizendo "não temos" por baterem no mesmo catálogo vazio), concatenar
+    # só dobra a má notícia ("monte de resposta confusa") — mantemos UMA. Fica a
+    # nova (voz do skill que recebeu o handoff, carrega o próximo passo/escalação).
     if is_receiving_handoff and final_response and final_response.strip():
-        final_response = f"{prev_response.strip()}\n\n{final_response.strip()}"
+        if _is_near_duplicate(prev_response, final_response):
+            log.info("skill.handoff_dedup",
+                     skill=skill_name, prev_skill=prev_skill,
+                     kept="continuation")
+            # final_response já é a nova resposta — não concatena.
+        else:
+            final_response = f"{prev_response.strip()}\n\n{final_response.strip()}"
     elif is_receiving_handoff:
         final_response = prev_response  # fallback se LLM não respondeu nada
 

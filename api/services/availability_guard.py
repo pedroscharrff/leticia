@@ -49,6 +49,7 @@ _NEGATION_PATTERNS = [
     r"\bindispon",                 # indisponível
     r"\besgotad",                  # esgotado
     r"\bnao\s+encontr",            # não encontrei
+    r"\bnao\s+localiz",            # não localizei/localizamos
     r"\bnao\s+esta\s+dispon",
     r"\binfelizmente\s+nao",
 ]
@@ -178,6 +179,18 @@ def affirms_or_offers_availability(response_text: str) -> bool:
         or has_presentation_offer(response_text)
         or recommends_unverified_product(response_text)
     )
+
+
+def expresses_unavailability(response_text: str) -> bool:
+    """True quando a resposta comunica que NÃO há o item ("não temos", "não
+    encontrei", "não localizei", "indisponível", "esgotado"…). Reusa os
+    `_NEGATION_PATTERNS` (fonte única do regex — SPEC 10 §não duplicar). Usado
+    pelo dedup de handoff (`_base`): dois skills batendo no mesmo catálogo vazio
+    geram duas mensagens de "não temos" que a concatenação colaria."""
+    if not response_text:
+        return False
+    norm = _normalize(response_text)
+    return any(re.search(p, norm) for p in _NEGATION_PATTERNS)
 
 
 def has_unverified_affirmation(response_text: str) -> bool:

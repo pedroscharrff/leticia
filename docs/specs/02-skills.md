@@ -97,7 +97,7 @@ Para skills **complexos** (vendedor), implementar inline replicando o padrão de
    - **Sem tools**: `llm.ainvoke(messages)` com `llm_retry`
    - **Com tools**: loop `_invoke_with_tools` até `max_iters` (`settings.skill_max_tool_iterations`, default 5)
 4. `_parse_handoff` — extrai `[[HANDOFF:X:ctx]]`, limpa do texto
-5. Se recebendo handoff: concatena `prev_response + final_response`
+5. Se recebendo handoff: concatena `prev_response + final_response` — **exceto** quando a continuação é quase-duplicata da anterior (`_is_near_duplicate`), aí mantém só a nova (voz do skill que recebeu o handoff). Evita o "monte de resposta confusa" (jun/2026: farmaceutico e vendedor batendo no mesmo catálogo vazio → duas mensagens de "não temos" coladas). Critério determinístico, NÃO textual: ambos comunicam indisponibilidade (`availability_guard.expresses_unavailability`, handoff legítimo tem lado positivo) **OU** containment literal (modelo fraco copiando). Cf. `tests/test_handoff_dedup.py`.
 6. Trace step + retorna state com `final_response, handoff_to, handoff_context, handoff_count, skill_history, selected_skill`
 
 ## Invariantes globais (todos os skills)

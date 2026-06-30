@@ -13,6 +13,7 @@ from services.availability_guard import (
     has_presentation_offer,
     recommends_unverified_product,
     affirms_or_offers_availability,
+    expresses_unavailability,
     detect_hallucinations,
 )
 
@@ -108,3 +109,25 @@ def test_detect_hallucinations_empty_results_is_blindspot():
     """Sem busca, search_results vazio → guard NÃO pega (é o que o force-recall cobre)."""
     assert detect_hallucinations("Sim, temos!", []) == []
     assert detect_hallucinations("Sim, temos!", None) == []
+
+
+# ── expresses_unavailability (usado pelo dedup de handoff) ────────────────────
+def test_expresses_unavailability_variants():
+    for t in [
+        "não temos esse no momento",
+        "não encontrei no catálogo",
+        "não localizei xarope para tosse",
+        "infelizmente não temos",
+        "está esgotado",
+        "produto indisponível",
+    ]:
+        assert expresses_unavailability(t), f"deveria marcar not-found: {t!r}"
+
+
+def test_expresses_unavailability_negative():
+    for t in [
+        "temos sim o paracetamol",
+        "o expectorante ajuda a soltar a secreção",
+        "boa noite, como posso ajudar?",
+    ]:
+        assert not expresses_unavailability(t), f"NÃO é not-found: {t!r}"
