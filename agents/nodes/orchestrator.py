@@ -266,11 +266,16 @@ async def orchestrator(state: AgentState, llm_factory) -> AgentState:
     from config import settings as _settings
     sticky_enabled = getattr(_settings, "sticky_ownership_enabled", False)
     current_owner = state.get("current_owner")
+    from agents.skills_registry import is_sticky_ownable
     if (
         sticky_enabled
         and current_owner
         and current_owner in available_skills
-        and current_owner != "guardrails"
+        # Só honra owner que PODE conduzir a conversa. saudacao/recuperador/
+        # guardrails são transitórios e sem handoff — se um ficou gravado (ou veio
+        # de uma versão anterior do código), ignoramos e reclassificamos. Isso
+        # destrava conversas já presas no saudacao sem precisar limpar o Redis.
+        and is_sticky_ownable(current_owner)
         and not _should_bypass_sticky(current_message)
     ):
         log.info("orchestrator.sticky_owner", owner=current_owner)

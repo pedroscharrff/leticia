@@ -334,6 +334,13 @@ async def save_context(state: AgentState) -> AgentState:
         # desculpava e escalava em TODA mensagem seguinte). Regressão real ao ligar
         # sticky por default (jun/2026). `skill_history` é por-turno (não vai no
         # initial_state) → [0] é sempre o líder. Cf. SPEC 01 §sticky ownership.
+        # E o owner só é fixado se o líder PODE conduzir a conversa
+        # (`is_sticky_ownable`). saudacao/recuperador/guardrails são transitórios e
+        # sem handoff: se virassem owner, a conversa ficava presa neles (ex.: cliente
+        # cumprimenta → saudacao owna → "tô com dor de cabeça" continua no saudacao em
+        # vez de ir ao farmaceutico). Nesses casos LIMPA o owner → próximo turno
+        # reclassifica. Cf. registry §sticky_ownable + SPEC 01 §sticky ownership.
+        from agents.skills_registry import is_sticky_ownable
         turn_skills = state.get("skill_history") or []
         owner_skill = turn_skills[0] if turn_skills else skill_used
         try:
@@ -344,8 +351,12 @@ async def save_context(state: AgentState) -> AgentState:
                 or cart_just_finalized
             ):
                 await redis.delete(owner_key)
-            elif owner_skill and owner_skill != "unknown":
+            elif owner_skill and owner_skill != "unknown" and is_sticky_ownable(owner_skill):
                 await redis.setex(owner_key, ttl_s, owner_skill)
+            else:
+                # Líder transitório (saudacao/recuperador/...) → não fixa; limpa
+                # qualquer owner remanescente para o próximo turno reclassificar.
+                await redis.delete(owner_key)
         except Exception as exc:
             log.warning("context.redis.owner_save_failed", session=session_id, exc=str(exc))
     except Exception as exc:

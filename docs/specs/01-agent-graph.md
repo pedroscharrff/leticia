@@ -128,6 +128,16 @@ o destino fazia o sticky SEQUESTRAR a conversa pro sub-especialista — `generic
 seguinte só se desculpava e escalava ("roteando tudo pro genérico"). Não reverter
 para `selected_skill` aqui.
 
+⚠️ **Só skills `sticky_ownable` podem ser owner.** `saudacao`, `recuperador` e
+`guardrails` são TRANSITÓRIOS e sem handoff (becos): marcados `sticky_ownable=False`
+no `skills_registry`. Tanto o **consumo** (orchestrator ignora owner não-ownable →
+reclassifica) quanto a **gravação** (`save_context` limpa em vez de fixar) checam
+`is_sticky_ownable`. **Regressão real (jun/2026):** cliente cumprimentava →
+`saudacao` virava owner → "tô com dor de cabeça" / "um que vc tenha" / "efervescente"
+ficavam TODOS presos no `saudacao` (que sem tools nem handoff só fazia perguntas e
+nunca roteava ao farmaceutico/vendedor). O check no consumo destrava conversas já
+gravadas com owner inválido sem precisar limpar o Redis.
+
 ### Fluxo de retry do analyst
 
 1. Analyst reprovou + `retry_count < max_retries` → `final_response=""`, `retry_count++`, route volta pro skill.
@@ -162,6 +172,7 @@ Os mapas `routing_map`, `handoff_map`, `retry_map` derivam automaticamente de `a
 - **Não jogar estado por-turno no `system_prompt` estável.** Carrinho, status de campos, contexto de handoff → vão em `volatile_prompt` no `_build_messages`. Senão cache miss em TODA mensagem.
 - **Não usar `SystemMessage` consecutivo depois de `HumanMessage`/`AIMessage` no Anthropic** (loops force-call no vendedor). Use `HumanMessage` com prefixo "[INSTRUÇÃO INTERNA]".
 - **Não persistir o sticky owner a partir de `selected_skill`** — ele reflete o DESTINO do handoff, não o líder. Use `skill_history[0]` (líder do turno). Senão um handoff transitório (vendedor→genericos) sequestra a conversa pro sub-especialista em todos os turnos seguintes (regressão jun/2026). Ver §"Sticky ownership".
+- **Não deixar skill transitório (saudacao/recuperador/guardrails) virar sticky owner** — eles não têm handoff (beco): a conversa fica presa. Marque `sticky_ownable=False` no registry; orchestrator e `save_context` checam `is_sticky_ownable`. Skill novo sem tools nem handoff → provavelmente `sticky_ownable=False`. Ver §"Sticky ownership".
 
 ## Trace step shape
 

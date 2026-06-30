@@ -46,6 +46,16 @@ class SkillDefinition:
         supported_conversation_types: COSTURA FUTURA (Fase 2). Vazio hoje —
                      será preenchido quando o enum ConversationType existir.
         is_safety_net: guardrails — sempre roteável, fora do gating de plano.
+        sticky_ownable: pode ser DONO da conversa no sticky ownership? Default
+                     True. False para skills TRANSITÓRIAS que não conduzem um
+                     fluxo multi-turno — recepção (`saudacao`), reengajamento
+                     (`recuperador`) e o safety net (`guardrails`). Esses não
+                     têm handoff (beco sem saída): se virassem owner, o sticky
+                     prenderia a conversa neles (ex.: cliente cumprimenta →
+                     saudacao owna → "tô com dor de cabeça" continua preso no
+                     saudacao em vez de ir ao farmaceutico). Consumido em
+                     `orchestrator` (não honra owner não-ownable) e em
+                     `context.save_context` (não persiste owner não-ownable).
     """
     name: str
     plan_min: str
@@ -55,6 +65,7 @@ class SkillDefinition:
     capabilities: tuple[str, ...] = ()
     supported_conversation_types: tuple[str, ...] = ()
     is_safety_net: bool = False
+    sticky_ownable: bool = True
 
     def load_node(self) -> Callable:
         """Importa e retorna a função-node do skill (lazy, sem ciclo)."""
@@ -79,6 +90,9 @@ SKILLS: dict[str, SkillDefinition] = {
         plan_min="basic",
         description="apenas saudações e primeiro contato sem pedido concreto (oi, bom dia, tudo bem)",
         node_path="agents.nodes.skills.saudacao:saudacao_node",
+        # Recepção é transitória e SEM handoff (beco): nunca pode ser sticky owner,
+        # senão a conversa fica presa aqui assim que o cliente cumprimenta.
+        sticky_ownable=False,
     ),
     "farmaceutico": SkillDefinition(
         name="farmaceutico",
@@ -120,6 +134,8 @@ SKILLS: dict[str, SkillDefinition] = {
         plan_min="enterprise",
         description="reengajamento de clientes inativos",
         node_path="agents.nodes.skills.recuperador:recuperador_node",
+        # Reengajamento é transitório e sem handoff — não conduz fluxo multi-turno.
+        sticky_ownable=False,
     ),
     "guardrails": SkillDefinition(
         name="guardrails",
@@ -127,6 +143,8 @@ SKILLS: dict[str, SkillDefinition] = {
         description="off-topic, emergências médicas, conteúdo impróprio",
         node_path="agents.nodes.skills.guardrails:guardrails_node",
         is_safety_net=True,
+        # Safety net é single-shot — nunca dono da conversa.
+        sticky_ownable=False,
     ),
 }
 
@@ -140,6 +158,24 @@ KNOWN_SKILLS: frozenset[str] = frozenset(SKILLS)
 PLAN_GATED_SKILLS: tuple[str, ...] = tuple(
     name for name, d in SKILLS.items() if not d.is_safety_net
 )
+
+
+#: Skills que PODEM ser dono da conversa no sticky ownership (excluí recepção/
+#: reengajamento/safety net — transitórios e sem handoff). Ver `sticky_ownable`.
+STICKY_OWNABLE_SKILLS: frozenset[str] = frozenset(
+    name for name, d in SKILLS.items() if d.sticky_ownable
+)
+
+
+def is_sticky_ownable(skill_name: str | None) -> bool:
+    """True se o skill pode ser persistido/honrado como sticky owner.
+
+    Skills transitórios (saudacao, recuperador, guardrails) retornam False:
+    são becos sem saída que, se virassem owner, prenderiam a conversa. Skill
+    desconhecido → False (defensivo: não fixa owner que não existe no grafo).
+    """
+    d = SKILLS.get(skill_name or "")
+    return bool(d and d.sticky_ownable)
 
 
 def valid_handoff_targets() -> frozenset[str]:

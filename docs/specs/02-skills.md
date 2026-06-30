@@ -215,7 +215,7 @@ Quando a capability `intelligence.sentiment_analysis` está ON, o nó `sentiment
 
 1. `agents/nodes/skills/<nome>.py` — implementa `<nome>_node`. Use `run_skill` se possível (passe `enable_handoff/escalate/end` se o skill faz controle de fluxo).
 2. Constante `_SYSTEM` no topo com o prompt base (sem instruções de marcador — o `.flow()` do PromptBuilder gera isso a partir das tools).
-3. **`agents/skills_registry.py`: adicionar uma `SkillDefinition` em `SKILLS`** (name, plan_min, description, node_path, allowed_handoffs, capabilities). É a ÚNICA edição de "registro" — `_KNOWN_SKILLS`, `_VALID_HANDOFF_TARGETS`, `all_skill_nodes` e as descrições do orchestrator derivam daqui automaticamente.
+3. **`agents/skills_registry.py`: adicionar uma `SkillDefinition` em `SKILLS`** (name, plan_min, description, node_path, allowed_handoffs, capabilities, `sticky_ownable`). É a ÚNICA edição de "registro" — `_KNOWN_SKILLS`, `_VALID_HANDOFF_TARGETS`, `all_skill_nodes`, `STICKY_OWNABLE_SKILLS` e as descrições do orchestrator derivam daqui automaticamente. **`sticky_ownable`**: default True; marque **False** se o skill é transitório e sem handoff (recepção/reengajamento/safety net) — senão o sticky ownership prende a conversa nele. **Descrição sem termo catch-all** ("mensagens ambíguas" etc.): ela vai no prompt do orchestrator e vira ímã de misroute na LLM fraca.
 4. Migration: INSERT em `public.skill_catalog` (skill_name, display_name, plan_min, channel_compat, tools_json, default_provider/llm).
 5. Frontend `PortalSkills.tsx` mostra automaticamente (lê do catálogo).
 
