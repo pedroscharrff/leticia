@@ -39,16 +39,37 @@ export function PortalEstoque() {
 
   const [form, setForm] = useState({ name: "", sku: "", category: "", price: "", stock_qty: "0", unit: "un" });
 
-  async function load(q?: string) {
+  const [offset, setOffset] = useState(0);
+  const limit = 50;
+
+  async function load(q: string = search, off: number = offset) {
     setLoading(true);
     try {
-      const data = await listProducts({ q });
+      const data = await listProducts({ q: q || undefined, limit, offset: off });
       setProducts(data);
     } catch { setError("Erro ao carregar produtos"); }
     finally { setLoading(false); }
   }
 
   useEffect(() => { load(); }, []);
+
+  function handleSearch(value: string) {
+    setSearch(value);
+    setOffset(0);
+    load(value, 0);
+  }
+
+  function goToPrevPage() {
+    const next = Math.max(0, offset - limit);
+    setOffset(next);
+    load(search, next);
+  }
+
+  function goToNextPage() {
+    const next = offset + limit;
+    setOffset(next);
+    load(search, next);
+  }
 
   useEffect(() => {
     listPdvTemplates().then(setTemplates).catch(() => {});
@@ -207,14 +228,20 @@ export function PortalEstoque() {
     <PortalLayout active="estoque">
       <div className="estoque-page">
         <div className="estoque-header">
-          <h1 className="page-title">Estoque</h1>
+          <div>
+            <h1 className="page-title">Estoque</h1>
+            <p className="page-subtitle">Catálogo de produtos disponíveis para o agente de IA.</p>
+          </div>
           <div className="estoque-actions">
-            <input
-              className="search-input"
-              placeholder="Buscar produto…"
-              value={search}
-              onChange={(e) => { setSearch(e.target.value); load(e.target.value); }}
-            />
+            <div className="search-wrap">
+              <span className="search-icon">🔍</span>
+              <input
+                className="search-input"
+                placeholder="Buscar produto…"
+                value={search}
+                onChange={(e) => handleSearch(e.target.value)}
+              />
+            </div>
             <button className="btn btn--secondary btn--sm" onClick={() => pickFile("csv")}>
               Importar CSV
             </button>
@@ -240,31 +267,55 @@ export function PortalEstoque() {
         {error && <div className="error-banner">{error}</div>}
         {importMsg && <div className="info-banner">{importMsg}</div>}
 
-        {loading ? <Spinner /> : (
-          <table className="products-table">
-            <thead>
-              <tr><th>Nome</th><th>SKU</th><th>Categoria</th><th>Preço</th><th>Estoque</th><th>Origem</th><th></th></tr>
-            </thead>
-            <tbody>
-              {products.map((p) => (
-                <tr key={p.id}>
-                  <td className="product-name">{p.name}</td>
-                  <td>{p.sku ?? "—"}</td>
-                  <td>{p.category ?? "—"}</td>
-                  <td>{p.price != null ? `R$ ${p.price.toFixed(2)}` : "—"}</td>
-                  <td>{p.stock_qty} {p.unit}</td>
-                  <td><Badge variant={p.source === "manual" ? "gray" : "green"}>{p.source}</Badge></td>
-                  <td className="actions">
-                    <button className="btn-icon" onClick={() => openEdit(p)}>✏️</button>
-                    <button className="btn-icon" onClick={() => handleDelete(p.id)}>🗑️</button>
-                  </td>
-                </tr>
-              ))}
-              {products.length === 0 && (
-                <tr><td colSpan={7} className="empty-row">Nenhum produto cadastrado</td></tr>
-              )}
-            </tbody>
-          </table>
+        {loading ? (
+          <div className="loading-state"><Spinner /></div>
+        ) : products.length === 0 ? (
+          <div className="empty-state">
+            <p>{search ? "Nenhum produto encontrado." : "Nenhum produto cadastrado."}</p>
+            <p className="empty-hint">
+              {search
+                ? "Tente outro termo de busca."
+                : "Cadastre manualmente ou importe via CSV/Excel/Google Sheets."}
+            </p>
+          </div>
+        ) : (
+          <div className="table-wrapper">
+            <table className="products-table">
+              <thead>
+                <tr><th>Nome</th><th>SKU</th><th>Categoria</th><th>Preço</th><th>Estoque</th><th>Origem</th><th></th></tr>
+              </thead>
+              <tbody>
+                {products.map((p) => (
+                  <tr key={p.id}>
+                    <td className="product-name">{p.name}</td>
+                    <td>{p.sku ?? "—"}</td>
+                    <td>{p.category ?? "—"}</td>
+                    <td>{p.price != null ? `R$ ${p.price.toFixed(2)}` : "—"}</td>
+                    <td>{p.stock_qty} {p.unit}</td>
+                    <td><Badge variant={p.source === "manual" ? "neutral" : "success"}>{p.source}</Badge></td>
+                    <td className="actions">
+                      <button className="btn-icon" title="Editar" onClick={() => openEdit(p)}>✏️</button>
+                      <button className="btn-icon" title="Arquivar" onClick={() => handleDelete(p.id)}>🗑️</button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        {!loading && (offset > 0 || products.length === limit) && (
+          <div className="pagination">
+            <button className="btn-page" disabled={offset === 0} onClick={goToPrevPage}>
+              ← Anterior
+            </button>
+            <span className="page-info">
+              Mostrando {products.length === 0 ? 0 : offset + 1}–{offset + products.length}
+            </span>
+            <button className="btn-page" disabled={products.length < limit} onClick={goToNextPage}>
+              Próxima →
+            </button>
+          </div>
         )}
       </div>
 
