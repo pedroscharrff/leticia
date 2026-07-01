@@ -340,6 +340,15 @@ _QTY_WORD_RE = _re.compile(
 _DOSAGE_AFTER_RE = _re.compile(r"^\s*(mg|mcg|ml|g|grama|gramas|mililitros?)\b",
                                _re.IGNORECASE)
 
+# Intenção EXPLÍCITA do cliente de remover/cancelar um item. Usada pelo veto
+# add→remove no mesmo turno (gate weak): se o cliente NÃO pediu pra tirar, a LLM
+# fraca não pode remover um item que ela mesma acabou de adicionar.
+_REMOVE_INTENT_RE = _re.compile(
+    r"\b(remov\w*|tir[ae]\w*|tire\b|cancel\w*|apag\w*|exclu\w*|"
+    r"desist\w*|n[ãa]o\s+quero|sem\s+(?:o|a|os|as)\b)",
+    _re.IGNORECASE,
+)
+
 
 def _stated_quantity(text: str) -> bool:
     """Heurística determinística: o cliente declarou uma QUANTIDADE neste texto?
@@ -645,6 +654,36 @@ async def vendedor_node(state: AgentState, llm_factory) -> AgentState:
 
         async def _order_gate(tc):  # noqa: ANN001
             name = tc.get("name")
+            # ── Veto add→remove no MESMO turno (andaime weak) ───────────────
+            # LLM fraca adiciona um item e, na mesma leva de tool-calls, o
+            # REMOVE — esvaziando o pedido (sintoma real: "sim" → add 3x
+            # Benegrip → remove → carrinho vazio → resposta vazia → "Pronto!"
+            # → pedido perdido). Se o alvo saiu de um add DESTE turno e o
+            # cliente NÃO pediu pra tirar, veta. Remoção pedida pelo cliente
+            # (ou de item de turno anterior) passa livre.
+            if name == "remover_do_carrinho":
+                _alvo = str((tc.get("args") or {}).get("produto") or "").strip().lower()
+                _added_now = {
+                    s.split("|", 1)[0]
+                    for s in (cart.get("_calls_this_turn") or [])
+                }
+                _hit_added = any(
+                    _alvo and (_alvo in n or n in _alvo) for n in _added_now
+                )
+                _client_asked = bool(
+                    _REMOVE_INTENT_RE.search(state.get("current_message", "") or "")
+                )
+                if _hit_added and not _client_asked:
+                    log.info("vendedor.remove_gate.blocked",
+                             tenant_id=tenant_id, produto=_alvo)
+                    return (
+                        f"NÃO REMOVA — você acabou de adicionar "
+                        f"'{(tc.get('args') or {}).get('produto')}' ao carrinho NESTE "
+                        f"turno e o cliente NÃO pediu pra tirar. Remover agora esvazia "
+                        f"o pedido e o cliente fica sem nada. MANTENHA o item no "
+                        f"carrinho e siga para confirmar/finalizar. Só use "
+                        f"remover_do_carrinho se o cliente pedir explicitamente."
+                    )
             # ── Gate de quantidade (modo normal) — andaime weak ─────────────
             # Veta adicionar_ao_carrinho de item NOVO quando o cliente não
             # declarou a quantidade: a LLM fraca pula a etapa e assume qty=1
@@ -1086,9 +1125,70 @@ async def vendedor_node(state: AgentState, llm_factory) -> AgentState:
         # anotar_pedido_balcao e o draft-fallback Haiku ([[project_preattend_draft_fallback]],
         # [[project_balcao_cart_mutation]]). NÃO remover.
         async def _vendedor_post_hook(*, lc_messages, llm, llm_with_tools, tools, result):
+            from langchain_core.messages import HumanMessage as _HM, ToolMessage as _TM
+
+            # ── Guard de fechamento com carrinho vazio (modo normal, weak) ───────
+            # A LLM fraca tentou `finalizar_pedido` (ou prometeu fechar) com o
+            # carrinho VAZIO — os adds falharam antes (SKU-fantasma / nome sem
+            # match) e ela narrou sucesso mesmo assim. Sem isto, o pedido "vira
+            # fumaça": cliente ouve "Posso finalizar?/Pronto!" e nada foi gravado.
+            # Força uma rodada corretiva: resolver o produto (buscar+adicionar) ou
+            # perguntar qual — nunca afirmar que o pedido está pronto.
+            if _v_scaffold and not use_preattendimento:
+                _finalize_tried = any(
+                    tc.get("name") == "finalizar_pedido"
+                    for tc in result.tool_calls_trace
+                )
+                if _finalize_tried and not (cart.get("items") or []):
+                    log.warning("vendedor.normal.finalize_empty_cart",
+                                final_response_preview=(result.final_text or "")[:200])
+                    lc_messages.append(_HM(content=(
+                        "[INSTRUÇÃO INTERNA DO SISTEMA — não é o cliente falando]\n"
+                        "⚠️ O CARRINHO ESTÁ VAZIO, mas você tentou finalizar / deu a "
+                        "entender que o pedido existe. Ele NÃO existe: nenhum item foi "
+                        "adicionado com sucesso.\n\n"
+                        "NÃO diga que o pedido está pronto/fechado. AGORA:\n"
+                        "• Se você já sabe qual produto o cliente quer, chame "
+                        "buscar_produto e depois adicionar_ao_carrinho com o nome "
+                        "correto ANTES de qualquer confirmação;\n"
+                        "• Se houver mais de uma opção com o mesmo nome (formatos/"
+                        "preços diferentes), mostre as opções e PERGUNTE qual — não "
+                        "escolha por conta própria;\n"
+                        "• Só fale em finalizar depois que o item estiver no carrinho."
+                    )))
+                    _resp = await llm_with_tools.ainvoke(lc_messages)
+                    if _resp.tool_calls:
+                        lc_messages.append(_resp)
+                        _tmap = {t.name: t for t in tools}
+                        for _tc in _resp.tool_calls:
+                            _rec: dict = {"iter": "forced_empty_cart",
+                                          "name": _tc.get("name"), "args": _tc.get("args")}
+                            _gated = await _order_gate(_tc) if _order_gate is not None else None
+                            if _gated is not None:
+                                _rec["gated"] = True
+                                _rec["result_preview"] = str(_gated)[:300]
+                                lc_messages.append(_TM(content=str(_gated), tool_call_id=_tc["id"]))
+                                result.tool_calls_trace.append(_rec)
+                                continue
+                            _tool = _tmap.get(_tc["name"])
+                            if _tool:
+                                try:
+                                    _r = await _tool.ainvoke(_tc["args"])
+                                    result.last_tool_result = str(_r)
+                                    _rec["result_preview"] = str(_r)[:300]
+                                    lc_messages.append(_TM(content=str(_r), tool_call_id=_tc["id"]))
+                                except Exception as _te:  # noqa: BLE001
+                                    _rec["error"] = str(_te)
+                            result.tool_calls_trace.append(_rec)
+                        _resp2 = await llm.ainvoke(lc_messages)
+                        result.final_text = _extract_text(_resp2.content) or result.final_text
+                    else:
+                        # Não chamou tool — regenera texto só com a diretiva (evita
+                        # afirmar pedido pronto). Mantém o texto anterior se vier vazio.
+                        result.final_text = _extract_text(_resp.content) or result.final_text
+
             if not use_preattendimento:
                 return
-            from langchain_core.messages import HumanMessage as _HM, ToolMessage as _TM
 
             # Force-call: "fechou" sem anotar_pedido_balcao → o pedido não existe.
             balcao_ok = any(

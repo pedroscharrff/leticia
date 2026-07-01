@@ -245,17 +245,78 @@ def make_add_to_cart_tool(schema_name: str, cart: dict):
             quantidade: Quantidade informada pelo cliente. NÃO invente: só passe
                 o número que o cliente declarou.
         """
+        # Tokens do pedido — usados no fallback por token e no desempate. Números
+        # curtos ("30", "12", "250mg") são o DIFERENCIADOR entre linhas de mesmo
+        # nome → NÃO filtrar por tamanho mínimo agressivo (mantém len>=2).
+        _STOP = {"de", "do", "da", "com", "para", "em", "un", "caixa", "cx"}
+        q_tokens = [
+            t for t in re.split(r"[\s,/\-]+", str(produto).lower().strip())
+            if t and len(t) >= 2 and t not in _STOP
+        ]
+
+        _SELECT_CAND = """
+            SELECT name, price, description
+            FROM products
+            WHERE active = TRUE
+              AND (name ILIKE $1 OR description ILIKE $1 OR principio_ativo ILIKE $1)
+            ORDER BY CASE WHEN name ILIKE $1 THEN 0 ELSE 1 END, name
+            LIMIT 15
+        """
+
         try:
             from db.postgres import get_db_conn
             async with get_db_conn() as conn:
                 await conn.execute(f"SET search_path = {schema_name}, public")
-                row = await conn.fetchrow(
-                    "SELECT name, price FROM products WHERE (name ILIKE $1 OR principio_ativo ILIKE $1) AND active = TRUE LIMIT 1",
-                    f"%{produto}%",
-                )
+                # ── Resolução de produto — NÃO usar LIMIT 1 cego ────────────────
+                # Catálogo importado de Sheets tem linhas de MESMO `name` e preços
+                # diferentes (ex.: dois "Benegrip": R$16,90 e R$83,15, distintos só
+                # pela `description` "Caixa c/ 12" vs "Caixa c/ 30 | 250mg"). Um
+                # `LIMIT 1` pegava uma arbitrariamente → cliente faturado no produto
+                # ERRADO em silêncio, ou o add falhava quando o nome vinha "completo"
+                # (`name` é só "Benegrip", não bate em "%Benegrip caixa c/ 30%").
+                # Busca candidatos por name/description/principio e desempata.
+                candidates = await conn.fetch(_SELECT_CAND, f"%{produto}%")
 
-            if not row:
+                # Fallback por token: nome "completo" (ex.: "Benegrip caixa c/ 30
+                # comprimidos 250mg") não é substring de `name` ("Benegrip") nem da
+                # description inteira → a busca de frase acima volta vazia. Refaz com
+                # só o token primário e deixa o score abaixo escolher a linha certa.
+                if not candidates and q_tokens:
+                    candidates = await conn.fetch(_SELECT_CAND, f"%{q_tokens[0]}%")
+
+            if not candidates:
                 return f"Produto '{produto}' não encontrado. Verifique o nome e tente novamente."
+
+            if len(candidates) == 1:
+                row = candidates[0]
+            else:
+                # Múltiplos candidatos (nomes iguais / colisão). Desempata exigindo
+                # o MÁXIMO de tokens do pedido em name+description.
+                def _score(cand) -> int:
+                    hay = f"{cand['name']} {cand['description'] or ''}".lower()
+                    return sum(1 for t in q_tokens if t in hay)
+
+                best = max((_score(c) for c in candidates), default=0)
+                top = [c for c in candidates if _score(c) == best] if best > 0 else candidates
+
+                if len(top) == 1:
+                    row = top[0]
+                else:
+                    # Empate real: NÃO adivinhe qual — devolve a lista pro agente
+                    # perguntar ao cliente qual (formato/dosagem + preço). Fecha o
+                    # buraco de faturar o produto errado.
+                    lines = []
+                    for c in top:
+                        desc = f" — {str(c['description']).strip()}" if c["description"] else ""
+                        lines.append(f"• {c['name']} — R$ {float(c['price']):.2f}{desc}")
+                    return (
+                        f"⚠️ Há mais de um produto que casa com '{produto}'. NÃO adicionei "
+                        f"nada ainda. Mostre estas opções ao cliente (diferença de "
+                        f"formato/dosagem + preço) e pergunte qual ele quer. Só depois "
+                        f"chame adicionar_ao_carrinho com o nome MAIS a diferença "
+                        f"específica (ex.: 'Benegrip 250mg' ou 'Benegrip 30 comprimidos'):\n"
+                        + "\n".join(lines)
+                    )
 
             # ── Dedup determinístico por turno ─────────────────────────────
             # O LLM em loops de tool-use às vezes chama essa tool várias vezes

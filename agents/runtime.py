@@ -505,6 +505,7 @@ async def run_tool_loop(
     empty_text_fallback: bool = True,
     post_loop_hook: PostLoopHook | None = None,
     defer_premature_flow: bool = False,
+    defer_handoff: bool = True,
     domain_tool_gate=None,
     stock_recall: StockRecall | None = None,
     claim_grounding: ClaimGrounding | None = None,
@@ -532,6 +533,17 @@ async def run_tool_loop(
     honrado quando vier SOZINHO (intenção real). Default False = comportamento
     histórico (Claude/OpenAI não precisam). Gated por
     `llm.model_tier.needs_tool_scaffolding`.
+
+    `defer_handoff` (só relevante quando `defer_premature_flow=True`): decide se a
+    tool de HANDOFF (transferência de ESPECIALIDADE) também entra na guarda acima.
+    Default True = comportamento histórico. Skills cujo fluxo LEGÍTIMO é
+    "consultar/validar → passar para outra especialidade" (ex.: farmaceutico:
+    `consultar_bula` → vendedor) passam False: aí o handoff que vem JUNTO de uma
+    tool de domínio é HONRADO (não descartado), enquanto escalate/end continuam
+    sob a guarda anti-confusão. Sem isso, o andaime feito p/ o Gemini (transferir
+    à toa em vez de responder) engolia o handoff central do farmaceutico no
+    DeepSeek — o bastão nunca chegava ao vendedor. Cf.
+    [[project_farmaceutico_handoff_deferred]].
 
     `stock_recall` / `claim_grounding`: andaimes weak-LLM pós-loop (force-busca de
     estoque e grounding de fato farmacológico). Só fornecidos pelo skill quando o
@@ -566,15 +578,33 @@ async def run_tool_loop(
                                            gate=domain_tool_gate)
 
             # Guarda anti-confusão (Gemini/weak): fluxo + domínio no mesmo turno →
-            # adia o fluxo, deixa o modelo responder com o que buscou.
+            # adia o fluxo, deixa o modelo responder com o que buscou. EXCEÇÃO
+            # skill-aware: quando `defer_handoff=False`, o HANDOFF de especialidade
+            # que vem junto do domínio é HONRADO (é o pipeline legítimo do
+            # farmaceutico: validar na bula → passar a venda ao vendedor).
+            # escalate/end seguem sob a guarda. Cf. defer_handoff no docstring.
             if defer_premature_flow and domain and flow:
+                honored, deferred = [], []
                 for tc in flow:
+                    is_handoff = tc.get("name") == HANDOFF_TOOL_NAME
+                    (honored if (is_handoff and not defer_handoff) else deferred).append(tc)
+                for tc in deferred:
                     _ack_flow_tool(tc, lc_messages, result, result.iters_used)
                     result.tool_calls_trace[-1]["deferred_flow"] = True
-                log.info("runtime.flow_deferred",
-                         flow=[tc.get("name") for tc in flow],
-                         domain=[tc.get("name") for tc in domain])
-                continue  # próximo turno: modelo responde usando o resultado
+                if deferred:
+                    log.info("runtime.flow_deferred",
+                             flow=[tc.get("name") for tc in deferred],
+                             domain=[tc.get("name") for tc in domain])
+                if honored:
+                    # Handoff legítimo pós-tool: aplica o sinal e encerra o turno
+                    # (a outra especialidade complementa a resposta).
+                    for tc in honored:
+                        _apply_flow_signal(tc, result)
+                        _ack_flow_tool(tc, lc_messages, result, result.iters_used)
+                    result.final_text = _extract_text(response.content)
+                    broke_on_signal = True
+                    break
+                continue  # nada honrado → próximo turno responde usando o resultado
 
             for tc in flow:
                 _apply_flow_signal(tc, result)

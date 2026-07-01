@@ -55,6 +55,30 @@ def make_buscar_produto_tool(schema_name: str, tenant_id: str, cart: dict):
 
 `finalizar_pedido` falha **fechado** quando faltam campos obrigatórios (`sales_config.required_fields`) — incrementa `sales_attempts`, retorna mensagem de erro pedindo o campo.
 
+⚠️ **Resolução de produto em `adicionar_ao_carrinho` — NÃO usar `LIMIT 1` cego.**
+Catálogo de Sheets tem linhas de **mesmo `name`** e preços diferentes, distintas só
+pela `description` (ex.: dois "Benegrip": R$16,90 "Caixa c/ 12" vs R$83,15 "Caixa
+c/ 30 | 250mg"). O antigo `SELECT … WHERE name ILIKE $1 … LIMIT 1` pegava uma
+arbitrariamente → **faturava o produto ERRADO em silêncio**; e falhava quando o nome
+vinha "completo" (`"Benegrip caixa c/ 30 comprimidos"` não é substring de `name`).
+Fluxo atual (determinístico):
+1. Busca candidatos por `name`/`description`/`principio_ativo` (sem `LIMIT 1`).
+2. Se a frase inteira não casa, **fallback por token** com o token primário (igual à
+   Estratégia 2 do `buscar_produto`) — deixa a `description` casar.
+3. **Desempate por score de tokens** (números curtos "30"/"12"/"250mg" NÃO são
+   filtrados — são o diferenciador). Um vencedor → adiciona.
+4. **Empate real → NÃO adiciona**: devolve a lista de opções (formato/dosagem +
+   preço) e instrui o agente a perguntar qual. Fecha o buraco de cobrar errado.
+Este é fix de **dado/SQL** (vale p/ todos os providers), não de comportamento do
+modelo. Ver [[project_cart_duplicate_name_limit1]].
+
+Dois **guards weak-only** (gated `needs_tool_scaffolding`, em `vendedor.py`, não na
+tool) complementam do lado do skill: **(a)** veto add→remove no mesmo turno (LLM
+fraca adiciona e remove o item na mesma leva → esvazia o pedido) e **(b)** guard de
+fechamento com carrinho vazio (tentou `finalizar_pedido` com `cart.items` vazio →
+força buscar+adicionar ou perguntar, nunca "pedido pronto" sem lastro). Caminho
+Claude/GPT forte byte-idêntico.
+
 ### `customer.py` — Cadastro + ciclo de vida de pedido
 
 | Tool | Args | Side effect | Retorna |
@@ -244,6 +268,8 @@ origem + faixas. Endpoints: `/portal/shipping-origin` (GET/PUT, PUT geocoda),
 - **Não fazer `tool.invoke` (síncrono) num evento async.** Sempre `await tool.ainvoke(args)`.
 - **Não logar PII do cliente em plaintext** (CPF, endereço completo). Logue prefixo + flags.
 - **Não inventar variantes de embalagem em buscar_produto** — `vendedor._SYSTEM` REGRA 11. Tool retorna o que existe; LLM não pode oferecer "blister/frasco/ampola" que não vieram.
+- **Não resolver produto em `adicionar_ao_carrinho` com `LIMIT 1`.** Com nomes duplicados (Sheets), `LIMIT 1` fatura o item errado silenciosamente OU falha em nome "completo". Use a resolução por candidatos + score + desambiguação (acima). Empate ⇒ perguntar, nunca adivinhar. [[project_cart_duplicate_name_limit1]]
+- **Não deixar a LLM fraca remover no mesmo turno o item que ela adicionou** (sem o cliente pedir) nem **prometer/finalizar pedido com `cart.items` vazio.** Guards em `vendedor._order_gate` e no post-hook (gated weak). Sem eles o pedido "vira fumaça": cliente ouve "Posso finalizar?/Pronto!" e nada foi gravado.
 - **Não deixar `sugerir_nome_medicamento` auto-corrigir.** A tool SUGERE; o agente tem que perguntar e esperar confirmação. Trocar o nome sozinho = risco de dispensar o remédio errado. E nunca usar `dados_medicamentos.csv` como dicionário de nomes (é correlatos/dispositivos, não medicamentos).
 - **Não declarar tool com `args_schema` SEM nenhum campo.** Um schema de `OBJECT` com `properties` vazio é aceito por Anthropic/OpenAI, mas o **Gemini rejeita em runtime** (`400 INVALID_ARGUMENT ... parameters.properties should be non-empty`). Tool sem payload (ex.: `encerrar_atendimento`) deve declarar ao menos um campo opcional inócuo. Mordeu o `_EndInput` em `flow_control.py` quando habilitamos BYOK Gemini.
 

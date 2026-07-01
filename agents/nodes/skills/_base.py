@@ -531,6 +531,7 @@ async def run_skill(
     enable_end: bool = False,
     verify_stock_affirmation: bool = False,
     verify_claim_grounding: bool = False,
+    specialty_handoff_after_tools: bool = False,
 ) -> AgentState:
     """
     Executa um skill genérico.
@@ -554,6 +555,15 @@ async def run_skill(
             (genérico/princípio ativo/composição não-ancorado) — só tem efeito
             quando o modelo é fraco (`_scaffold`). Ligado nos skills que afirmam
             fato farmacológico. Cf. SPEC 10 §Grounding de fato farmacológico.
+        specialty_handoff_after_tools: marca que o fluxo LEGÍTIMO deste skill é
+            "consultar/validar via tool → transferir para OUTRA especialidade"
+            (ex.: farmaceutico: `consultar_bula` → vendedor). Só afeta modelos
+            fracos (`_scaffold`): (a) o bloco DISCIPLINA para de DESENCORAJAR
+            transferir após uma tool e (b) o runtime para de ADIAR o handoff que
+            vem junto de uma tool de domínio (`defer_handoff=False`). escalate/end
+            seguem sob a guarda anti-confusão. Sem isso, o andaime de LLM fraca
+            (feito p/ Gemini transferir à toa) engolia o handoff farmaceutico→
+            vendedor no DeepSeek. Cf. [[project_farmaceutico_handoff_deferred]].
 
     Montagem do prompt via PromptBuilder: persona (porta única _persona_prefix) +
     base/override + flow + extra = ESTÁVEL (prefixo cacheado); memória do cliente,
@@ -652,17 +662,35 @@ async def run_skill(
     # É VOLÁTIL (não toca o prefixo cacheado) e GATED — o prompt de Claude/GPT
     # forte fica byte-idêntico ao histórico. Só faz sentido quando há tools.
     if _scaffold and (tools or enable_handoff or enable_escalate or enable_end):
-        pb.volatile(
-            "[DISCIPLINA DE FERRAMENTAS — crítico]\n"
-            "• Quando você consultar uma ferramenta, RESPONDA a pergunta do "
-            "cliente usando o RESULTADO dela. NÃO transfira nem encerre no MESMO "
-            "turno em que consultou algo.\n"
-            "• Use transferência para especialidade/atendente APENAS quando você "
-            "realmente NÃO conseguir resolver — NUNCA para uma dúvida que a "
-            "ferramenta já respondeu, nem como forma de encerrar.\n"
-            "• NUNCA afirme que um produto existe, sua dosagem/preço, ou que um "
-            "pedido foi anotado, sem ANTES chamar a ferramenta correspondente."
-        )
+        if specialty_handoff_after_tools:
+            # Variante p/ skills cujo fluxo legítimo é validar-via-tool → passar
+            # a outra especialidade (farmaceutico → vendedor). NÃO desencoraja o
+            # handoff pós-tool; só mantém a guarda contra ENCERRAR/ESCALAR à toa.
+            pb.volatile(
+                "[DISCIPLINA DE FERRAMENTAS — crítico]\n"
+                "• Quando você consultar uma ferramenta, USE o RESULTADO dela na "
+                "sua resposta — não a ignore.\n"
+                "• Passar a conversa para OUTRA ESPECIALIDADE interna (ex.: vendas) "
+                "DEPOIS de validar/consultar é ESPERADO — faça isso assim que for o "
+                "próximo passo do atendimento, no mesmo turno se preciso.\n"
+                "• NÃO acione ATENDENTE HUMANO nem ENCERRE o atendimento no mesmo "
+                "turno em que consultou algo, nem para uma dúvida que a ferramenta "
+                "já respondeu.\n"
+                "• NUNCA afirme que um produto existe, sua dosagem/preço, ou que um "
+                "pedido foi anotado, sem ANTES chamar a ferramenta correspondente."
+            )
+        else:
+            pb.volatile(
+                "[DISCIPLINA DE FERRAMENTAS — crítico]\n"
+                "• Quando você consultar uma ferramenta, RESPONDA a pergunta do "
+                "cliente usando o RESULTADO dela. NÃO transfira nem encerre no MESMO "
+                "turno em que consultou algo.\n"
+                "• Use transferência para especialidade/atendente APENAS quando você "
+                "realmente NÃO conseguir resolver — NUNCA para uma dúvida que a "
+                "ferramenta já respondeu, nem como forma de encerrar.\n"
+                "• NUNCA afirme que um produto existe, sua dosagem/preço, ou que um "
+                "pedido foi anotado, sem ANTES chamar a ferramenta correspondente."
+            )
 
     system_prompt, volatile_prompt = pb.build()
     messages = _build_messages(state, system_prompt, volatile_prompt=volatile_prompt)
@@ -741,6 +769,10 @@ async def run_skill(
         result = await run_tool_loop(
             llm, list(messages), all_tools, settings.skill_max_tool_iterations,
             defer_premature_flow=_scaffold,
+            # farmaceutico & afins: handoff pós-tool é o pipeline legítimo, não
+            # adia. escalate/end seguem sob a guarda (defer_handoff controla só o
+            # handoff). Cf. specialty_handoff_after_tools.
+            defer_handoff=not specialty_handoff_after_tools,
             stock_recall=_stock_recall,
             claim_grounding=_claim_grounding,
         )

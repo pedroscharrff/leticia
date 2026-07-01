@@ -323,4 +323,11 @@ async def farmaceutico_node(state: AgentState, llm_factory) -> AgentState:
         # princípio ativo/composição; com LLM fraca, reancora afirmação que não
         # veio de tool (consultar_bula/referencia). No-op p/ Claude/GPT forte.
         verify_claim_grounding=True,
+        # Fluxo central do farmaceutico é validar na bula → PASSAR A VENDA ao
+        # vendedor. O handoff vem junto do consultar_bula por natureza; sem esta
+        # flag, o andaime de LLM fraca (defer_premature_flow + bloco DISCIPLINA)
+        # engolia o bastão no DeepSeek e a conversa ficava presa no farmaceutico.
+        # No-op p/ Claude/GPT forte (scaffold OFF). Cf.
+        # [[project_farmaceutico_handoff_deferred]].
+        specialty_handoff_after_tools=True,
     )
