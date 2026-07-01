@@ -458,6 +458,7 @@ export interface Persona {
   persona_bio: string | null;
   greeting_template: string | null;
   signature: string | null;
+  signature_position: "topo" | "fim";
   custom_instructions: string | null;
   forbidden_topics: string | null;
   catchphrases: string[];

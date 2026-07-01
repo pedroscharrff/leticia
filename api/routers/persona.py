@@ -49,6 +49,7 @@ class PersonaOut(BaseModel):
     persona_bio: str | None
     greeting_template: str | None
     signature: str | None
+    signature_position: str
     custom_instructions: str | None
     forbidden_topics: str | None
     catchphrases: list[str]
@@ -76,6 +77,7 @@ class PersonaUpdate(BaseModel):
     persona_bio: str | None = None
     greeting_template: str | None = None
     signature: str | None = None
+    signature_position: str | None = None
     custom_instructions: str | None = None
     forbidden_topics: str | None = None
     catchphrases: list[str] | None = None
@@ -113,6 +115,7 @@ ALLOWED = {
     "response_length": {"short", "medium", "long"},
     "vocabulary_level": {"leigo", "intermediario", "tecnico"},
     "explanation_depth": {"minima", "equilibrada", "detalhada"},
+    "signature_position": {"topo", "fim"},
 }
 
 

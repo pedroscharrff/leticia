@@ -51,10 +51,14 @@ def _apply_signature(text: str, state: AgentState) -> str:
     de respostas longas" que a LLM quase nunca cumpria, já que as respostas são
     curtas por design). Aqui ela é colada direto no texto enviado ao cliente.
 
+    Posição (`persona.signature_position`, default "fim"): "topo" cola antes do
+    texto, "fim" depois — configurável por tenant em `/portal/persona`.
+
     Escopo (decisão de produto): SÓ respostas normais. Pula transferência para
     humano (`escalate`), encerramento (`end_conversation`) e respostas vazias —
     não faz sentido assinar uma mensagem de "vou te transferir" ou um resumo
-    pós-handoff. Idempotente: não duplica se o texto já termina com a assinatura.
+    pós-handoff. Idempotente: não duplica se o texto já contém a assinatura na
+    posição configurada.
     """
     sid = state.get("session_id")
     body = (text or "").strip()
@@ -89,11 +93,18 @@ def _apply_signature(text: str, state: AgentState) -> str:
         log.info("signature.skip", session=sid, reason="no_signature",
                  has_persona=bool(persona))
         return text
+    position = (persona.get("signature_position") or "fim").strip().lower()
+    if position not in ("topo", "fim"):
+        position = "fim"
     # Dedupe defensivo: se a LLM (por mímica do histórico) já assinou, não repete.
-    if body.endswith(signature):
+    if (position == "topo" and body.startswith(signature)) or (
+        position == "fim" and body.endswith(signature)
+    ):
         log.info("signature.skip", session=sid, reason="already_present")
         return text
-    log.info("signature.applied", session=sid, sig_len=len(signature))
+    log.info("signature.applied", session=sid, sig_len=len(signature), position=position)
+    if position == "topo":
+        return f"{signature}\n\n{body}"
     return f"{body}\n\n{signature}"
 
 

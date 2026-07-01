@@ -50,6 +50,10 @@ const DEPTH_OPTIONS = [
   { value: "equilibrada", label: "Equilibrada" },
   { value: "detalhada",   label: "Detalhada" },
 ];
+const SIGNATURE_POSITION_OPTIONS = [
+  { value: "fim",  label: "No final da mensagem" },
+  { value: "topo", label: "No topo da mensagem" },
+];
 
 // Presets de 1 clique — preenchem os campos de voz/estilo. O operador pode
 // ajustar depois e salvar normalmente (PUT /portal/persona).
@@ -332,6 +336,16 @@ export function PortalPersona() {
                 placeholder="Ex.: — Letícia | Drogaria São Paulo"
                 onChange={(e) => setPersona({ ...persona, signature: e.target.value })}
               />
+            </label>
+            <label className="persona-full">
+              Posição da assinatura
+              <select
+                className="form-select"
+                value={persona.signature_position}
+                onChange={(e) => setPersona({ ...persona, signature_position: e.target.value as Persona["signature_position"] })}
+              >
+                {SIGNATURE_POSITION_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+              </select>
             </label>
             <label className="persona-full">
               Bordões da marca (separe por vírgula)

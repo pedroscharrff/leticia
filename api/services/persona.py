@@ -27,6 +27,7 @@ PERSONA_DEFAULTS: dict[str, Any] = {
     "persona_bio": None,
     "greeting_template": None,
     "signature": None,
+    "signature_position": "fim",
     "custom_instructions": None,
     "forbidden_topics": None,
     "catchphrases": [],
@@ -173,8 +174,9 @@ def build_persona_block(persona: dict) -> str:
     if persona.get("forbidden_topics"):
         parts.append("**Tópicos proibidos:**\n" + persona["forbidden_topics"].strip())
 
-    # `signature` NÃO entra no prompt — é anexada deterministicamente à resposta
-    # em save_context (agents/nodes/context.py), depois da LLM.
+    # `signature` (e `signature_position`) NÃO entram no prompt — a assinatura é
+    # anexada deterministicamente à resposta em save_context
+    # (agents/nodes/context.py), depois da LLM.
 
     parts.append(
         "Mantenha SEMPRE essa identidade. Nunca diga que é uma IA, "
