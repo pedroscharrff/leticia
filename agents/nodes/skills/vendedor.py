@@ -320,12 +320,27 @@ _LISTING_PHRASES = (
     "seu pedido", "lista completa", "itens do pedido",
 )
 
+# Frases de confirmação/anotação em prosa corrida (sem bullet), que a LLM fraca
+# usa pra narrar UM item só (ex.: "Beleza, vou anotar a Dipirona pra você") —
+# escapavam da heurística acima, que exigia >=2 linhas tipo bullet.
+_ITEM_ACK_PHRASES = (
+    "anotei", "anotado", "registrado", "certo, inclu", "adicionei",
+    "vou colocar", "vou adicionar", "vou anotar",
+)
+
 def _detect_item_listing(text: str) -> bool:
     lower = text.lower()
     if any(phrase in lower for phrase in _LISTING_PHRASES):
         return True
     matches = _ITEM_LINE_RE.findall(text)
-    return len(matches) >= 2
+    if matches:
+        return True
+    # Item único em prosa: só dispara se houver confirmação de anotação E um
+    # sinal de item (quantidade numérica/por extenso) — evita falso positivo em
+    # small talk puro ("Certo, bom dia!").
+    if any(phrase in lower for phrase in _ITEM_ACK_PHRASES):
+        return bool(_re.search(r"\d", lower)) or bool(_QTY_WORD_RE.search(lower))
+    return False
 
 
 # ── Detecção de QUANTIDADE declarada pelo cliente (gate determinístico) ──────
@@ -508,6 +523,10 @@ async def vendedor_node(state: AgentState, llm_factory) -> AgentState:
     cart               = state.get("cart", {"items": [], "subtotal": 0.0})
     sales_config       = state.get("sales_config", {}) or {}
     customer           = state.get("customer", {}) or {}
+    # Pré-atendimento nunca coleta pagamento/entrega (SPEC 08 §andaime 4), mas
+    # pode ter CEP como required_field — fonte única do gate reusada no prompt,
+    # no bind de tools e no force-call de CEP (ver blocos abaixo).
+    _preattend_collects_cep = "cep" in (sales_config.get("required_fields") or [])
     trace              = list(state.get("trace_steps", []))
     handoff_context    = state.get("handoff_context", "")
     skill_history      = state.get("skill_history", [])
@@ -769,6 +788,15 @@ async def vendedor_node(state: AgentState, llm_factory) -> AgentState:
             if skill_extra:
                 pb.section("[INSTRUÇÕES EXTRAS DO DONO DA FARMÁCIA]\n" + skill_extra)
 
+            # Autocompletar endereço por CEP — só quando o tenant marcou CEP
+            # como required_field no pré-atendimento (normalmente resolvido no
+            # balcão humano; aqui é a exceção configurada). Bloco ESTÁVEL
+            # (depende só da config do tenant) → prefixo cacheado. Reusa o
+            # mesmo texto do modo normal (menciona `salvar_dados_cliente`, que
+            # também existe aqui).
+            if _preattend_collects_cep:
+                pb.section(_commerce.cep_lookup_block())
+
             # ── Volátil: status do cliente + contexto de handoff ─────────────
             try:
                 customer_block = _build_preattendimento_customer_block(
@@ -837,6 +865,7 @@ async def vendedor_node(state: AgentState, llm_factory) -> AgentState:
             from agents.tools.customer import (
                 make_save_customer_tool,
                 make_consultar_pedido_tool,
+                make_consultar_cep_tool,
             )
             from agents.tools.balcao import (
                 make_anotar_pedido_balcao_tool,
@@ -848,6 +877,11 @@ async def vendedor_node(state: AgentState, llm_factory) -> AgentState:
                 make_registrar_itens_interesse_tool(schema_name, cart, merge=_v_scaffold),
                 make_anotar_pedido_balcao_tool(schema_name, phone_num, customer, cart),
             ]
+            # Só quando o tenant marcou CEP como required_field no
+            # pré-atendimento (ver `_preattend_collects_cep` acima) — do
+            # contrário mantém o comportamento atual (sem tool de endereço).
+            if _preattend_collects_cep:
+                tools.append(make_consultar_cep_tool(schema_name, phone_num, customer))
 
             # Pré-atendimento marca o carrinho como 'balcao' para o save_context
             # persistir esse modo (o portal/relatórios diferenciam de 'catalogo').
@@ -1246,6 +1280,54 @@ async def vendedor_node(state: AgentState, llm_factory) -> AgentState:
                         "Tive um problema técnico ao registrar seu pedido agora. "
                         "Vou te transferir para um atendente humano completar."
                     )
+
+            # Force-call de CEP (weak-LLM): cliente informou um CEP nesta
+            # conversa, o tenant marcou CEP como required_field, mas a LLM
+            # fraca não chamou `consultar_cep` (respondeu de memória ou vai
+            # pedir o resto do endereço sem validar). Mesmo padrão do force-call
+            # de fechamento acima. No-op se a tool não está bindada
+            # (`_preattend_collects_cep` False) ou em modelo forte.
+            if _v_scaffold and _preattend_collects_cep:
+                _cep_re = _re.compile(r"\b\d{5}-?\d{3}\b")
+                _last_human = next(
+                    (m.content for m in reversed(lc_messages) if isinstance(m, _HM)), ""
+                )
+                _cep_mentioned = bool(_cep_re.search(str(_last_human)))
+                _cep_tool_called = any(
+                    tc.get("name") == "consultar_cep" for tc in result.tool_calls_trace
+                )
+                if _cep_mentioned and not _cep_tool_called:
+                    log.warning("vendedor.preattendimento.cep_without_tool",
+                                final_response_preview=(result.final_text or "")[:200])
+                    lc_messages.append(_HM(content=(
+                        "[INSTRUÇÃO INTERNA DO SISTEMA — não é o cliente falando]\n"
+                        "⚠️ O cliente informou um CEP, mas você NÃO chamou a tool "
+                        "`consultar_cep`.\n\n"
+                        "AGORA: chame `consultar_cep` IMEDIATAMENTE passando o CEP "
+                        "informado. NÃO escreva texto antes — só a tool call."
+                    )))
+                    response_cep = await llm_with_tools.ainvoke(lc_messages)
+                    if response_cep.tool_calls:
+                        lc_messages.append(response_cep)
+                        tool_map_cep = {t.name: t for t in tools}
+                        for tc in response_cep.tool_calls:
+                            tool = tool_map_cep.get(tc["name"])
+                            rec: dict = {"iter": "forced_cep", "name": tc.get("name"), "args": tc.get("args")}
+                            if tool:
+                                try:
+                                    r = await tool.ainvoke(tc["args"])
+                                    result.last_tool_result = str(r)
+                                    rec["result_preview"] = str(r)[:300]
+                                    lc_messages.append(_TM(content=str(r), tool_call_id=tc["id"]))
+                                except Exception as tool_exc:  # noqa: BLE001
+                                    rec["error"] = str(tool_exc)
+                            result.tool_calls_trace.append(rec)
+                        response_cep2 = await llm.ainvoke(lc_messages)
+                        result.final_text = _extract_text(response_cep2.content) or result.final_text
+                    else:
+                        # Não chamou tool nem forçado — fail-open: mantém a
+                        # resposta atual (log já registrou o caso pra métrica).
+                        log.error("vendedor.preattendimento.cep_force_call_failed")
 
             # Draft-fallback: itens listados em texto sem tool de cart → extrai
             # via Haiku e grava rascunho (mesma camada 1 de antes).
