@@ -1143,7 +1143,7 @@ async def vendedor_node(state: AgentState, llm_factory) -> AgentState:
         )
         flow_tools = [make_escalate_tool(), make_end_tool()]
         if use_preattendimento:
-            if preattend_handoff_enabled:
+            if preattend_handoff_enabled and not (received_handoff and prev_skill == "farmaceutico"):
                 ht = make_handoff_tool(("farmaceutico",))
                 if ht is not None:
                     flow_tools.insert(0, ht)
@@ -1392,8 +1392,14 @@ async def vendedor_node(state: AgentState, llm_factory) -> AgentState:
         # poluiria a resposta concatenada com "Pronto! Algo mais?". Com marcador
         # antigo isso não acontecia (o texto vinha não-vazio antes do parse);
         # com a tool de handoff o texto pode vir vazio de propósito.
-        if (not final_response or not final_response.strip()) and not sig_handoff_to:
-            final_response = last_tool_result or "Pronto! Algo mais que posso ajudar?"
+        # Quando recebendo handoff e a LLM não produziu texto (ex.: a tool de
+        # handoff não estava bindada e o modelo só escreveu [[HANDOFF:...]] que
+        # foi limpo), usa prev_response como fallback em vez de genérico.
+        if not final_response or not final_response.strip():
+            if received_handoff and prev_response:
+                final_response = prev_response
+            elif not sig_handoff_to:
+                final_response = last_tool_result or "Pronto! Algo mais que posso ajudar?"
 
     except Exception as exc:
         # Captura o erro real para o trace step (linha 744 abaixo) — sem isso o
@@ -1465,13 +1471,15 @@ async def vendedor_node(state: AgentState, llm_factory) -> AgentState:
 
     # ── Handoff: TOOL (sig_handoff_to) com prioridade, marcador como fallback ─
     # SEMPRE rodamos _parse_handoff para LIMPAR qualquer marcador residual do
-    # texto antes de enviar ao cliente (mesmo em pré-atendimento, onde por padrão
-    # não roteamos). O SINAL da tool de fluxo vence; o marcador é a rede de
-    # segurança.
+    # texto antes de enviar ao cliente — mesmo quando recebendo handoff, senão
+    # [[HANDOFF:...]] vaza pro cliente se o LLM escreveu o marcador.
+    # O SINAL da tool de fluxo vence; o marcador é a rede de segurança.
+    # A decisão de rotear (setar handoff_target) só acontece quando NÃO estamos
+    # recebendo handoff — evita ping-pong farmaceutico↔vendedor.
     handoff_target: str | None = None
     handoff_ctx_new = ""
+    final_response, parsed_target, parsed_ctx = _parse_handoff(final_response)
     if not received_handoff:
-        final_response, parsed_target, parsed_ctx = _parse_handoff(final_response)
         if not use_preattendimento:
             # Modo NORMAL: tool, markup vazado ou marcador roteiam livremente.
             handoff_target  = sig_handoff_to or mk_handoff or parsed_target
