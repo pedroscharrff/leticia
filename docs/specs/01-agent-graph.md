@@ -118,15 +118,18 @@ e PULA o LLM de classificação, salvo se: owner ausente/inválido, ou a mensage
 casa com `_should_bypass_sticky` (emergência / pedido de humano). Owner é limpo
 em fim/escalation/pedido finalizado. Reduz custo/latência/misroute mid-conversa.
 
-⚠️ **O owner é o LÍDER do turno (`skill_history[0]`), não o `selected_skill`.**
-Num handoff (vendedor→genericos), `_base.py` sobrescreve `selected_skill` com o
-DESTINO. Um handoff é delegação de UM turno — quem conduz segue sendo o líder que
-o orchestrator escolheu. `save_context` persiste `skill_history[0]` (por-turno;
-[0] = líder). **Regressão real (jun/2026, ao ligar sticky por default):** persistir
-o destino fazia o sticky SEQUESTRAR a conversa pro sub-especialista — `genericos`
-(sem catálogo/`buscar_produto`) virava owner após um handoff e em TODA mensagem
-seguinte só se desculpava e escalava ("roteando tudo pro genérico"). Não reverter
-para `selected_skill` aqui.
+⚠️ **O owner é o ÚLTIMO skill do turno quando esse skill é `vendedor`; caso
+contrário, o LÍDER (`skill_history[0]`).** `vendedor` é o skill executor da
+conversa — todos os sub-especialistas (farmaceutico, genericos, principio_ativo)
+fazem handoff **para** ele. Quando o último handler é `vendedor`, ele assume o
+sticky ownership, eliminando o hop extra via sub-especialista em toda mensagem
+seguinte (ex.: farmaceutico→vendedor → owner = vendedor, não farmaceutico).
+Quando o último handler NÃO é `vendedor`, mantém `skill_history[0]` para evitar
+que um sub-especialista (genericos/principio_ativo) sem ferramentas de catálogo
+se torne owner — **regressão real (jun/2026, ao ligar sticky por default):**
+persistir o destino (`selected_skill`, contaminado pelo handoff) fazia o sticky
+SEQUESTRAR a conversa pro sub-especialista — `genericos` virava owner e em TODA
+mensagem seguinte só se desculpava e escalava. Não reverter para `selected_skill`.
 
 ⚠️ **Só skills `sticky_ownable` podem ser owner.** `saudacao`, `recuperador` e
 `guardrails` são TRANSITÓRIOS e sem handoff (becos): marcados `sticky_ownable=False`
@@ -171,7 +174,8 @@ Os mapas `routing_map`, `handoff_map`, `retry_map` derivam automaticamente de `a
 - **Não remover o `llm_retry()` do orchestrator e analyst.** APIConnectionError do Anthropic é silencioso e regular: nodes idle entre turnos + httpx pool envelhece. Sem retry, TODOS os turnos viram fallback.
 - **Não jogar estado por-turno no `system_prompt` estável.** Carrinho, status de campos, contexto de handoff → vão em `volatile_prompt` no `_build_messages`. Senão cache miss em TODA mensagem.
 - **Não usar `SystemMessage` consecutivo depois de `HumanMessage`/`AIMessage` no Anthropic** (loops force-call no vendedor). Use `HumanMessage` com prefixo "[INSTRUÇÃO INTERNA]".
-- **Não persistir o sticky owner a partir de `selected_skill`** — ele reflete o DESTINO do handoff, não o líder. Use `skill_history[0]` (líder do turno). Senão um handoff transitório (vendedor→genericos) sequestra a conversa pro sub-especialista em todos os turnos seguintes (regressão jun/2026). Ver §"Sticky ownership".
+- **Não persistir o sticky owner a partir de `selected_skill`** — ele reflete o DESTINO do handoff, contaminado antes do destino executar. Use `skill_history[-1]` quando o último handler foi `vendedor` (skill executor); caso contrário `skill_history[0]` (líder). Senão um handoff transitório (vendedor→genericos) sequestra a conversa pro sub-especialista em todos os turnos seguintes (regressão jun/2026). Ver §"Sticky ownership".
+- **Não persistir o sticky owner como `vendedor` quando `vendedor` NÃO foi o último skill do turno** — senão um handoff de vendedor→genericos que não retornou ainda teria vendedor como owner incorretamente. O gate `turn_skills[-1] == "vendedor"` em `save_context` garante isso.
 - **Não deixar skill transitório (saudacao/recuperador/guardrails) virar sticky owner** — eles não têm handoff (beco): a conversa fica presa. Marque `sticky_ownable=False` no registry; orchestrator e `save_context` checam `is_sticky_ownable`. Skill novo sem tools nem handoff → provavelmente `sticky_ownable=False`. Ver §"Sticky ownership".
 
 ## Trace step shape

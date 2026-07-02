@@ -330,30 +330,37 @@ async def save_context(state: AgentState) -> AgentState:
         ttl_s = await _resolve_session_ttl(state.get("tenant_id"))
         await redis.setex(hist_key, ttl_s, json.dumps(messages))
 
-        # ── Sticky ownership: grava o dono (LÍDER do turno) ou limpa ──────────
+        # ── Sticky ownership: grava o dono do turno ou limpa ─────────────────
         # Limpa quando o atendimento terminou/escalou/finalizou pedido — a
         # próxima mensagem deve reclassificar do zero. Caso contrário, fixa o
         # owner. Mesma TTL do histórico (o owner expira junto com a sessão).
         # Consumido pelo orchestrator quando sticky_ownership_enabled.
         #
-        # ⚠️ O owner é o LÍDER do turno (`skill_history[0]`), NÃO o `selected_skill`.
-        # Num handoff (ex.: vendedor→genericos pra buscar alternativa), o _base.py
-        # sobrescreve `selected_skill` com o DESTINO do handoff (genericos). Um
-        # handoff é delegação de UM turno — quem conduz a conversa segue sendo o
-        # líder que o orchestrator escolheu. Persistir o destino fazia o sticky
-        # SEQUESTRAR a conversa pro sub-especialista (genericos sem catálogo só se
-        # desculpava e escalava em TODA mensagem seguinte). Regressão real ao ligar
-        # sticky por default (jun/2026). `skill_history` é por-turno (não vai no
-        # initial_state) → [0] é sempre o líder. Cf. SPEC 01 §sticky ownership.
-        # E o owner só é fixado se o líder PODE conduzir a conversa
-        # (`is_sticky_ownable`). saudacao/recuperador/guardrails são transitórios e
-        # sem handoff: se virassem owner, a conversa ficava presa neles (ex.: cliente
-        # cumprimenta → saudacao owna → "tô com dor de cabeça" continua no saudacao em
-        # vez de ir ao farmaceutico). Nesses casos LIMPA o owner → próximo turno
+        # O owner é o ÚLTIMO skill que executou no turno quando esse skill é
+        # `vendedor` (skill executor, principal destinatário de handoffs dos
+        # sub-especialistas). Caso contrário, mantém o LÍDER (`skill_history[0]`)
+        # para evitar que um sub-especialista (genericos/principio_ativo) sem
+        # ferramentas de catálogo/carrinho se torne owner e trave a conversa —
+        # regressão real ao ligar sticky por default (jun/2026), quando o owner
+        # era derivado de `selected_skill` (contaminado pelo destino do handoff
+        # antes de o destino executar).
+        #
+        # Exemplo: farmaceutico→vendedor → owner = vendedor (evita hop extra
+        # em toda mensagem seguinte). vendedor→genericos → owner = vendedor
+        # (genericos é sub-especialista, não assume a conversa).
+        #
+        # E o owner só é fixado se PODE conduzir a conversa (`is_sticky_ownable`).
+        # saudacao/recuperador/guardrails são transitórios e sem handoff: se
+        # virassem owner, a conversa ficava presa neles (ex.: cliente cumprimenta
+        # → saudacao owna → "tô com dor de cabeça" continua no saudacao em vez
+        # de ir ao farmaceutico). Nesses casos LIMPA o owner → próximo turno
         # reclassifica. Cf. registry §sticky_ownable + SPEC 01 §sticky ownership.
         from agents.skills_registry import is_sticky_ownable
         turn_skills = state.get("skill_history") or []
-        owner_skill = turn_skills[0] if turn_skills else skill_used
+        if turn_skills and turn_skills[-1] == "vendedor":
+            owner_skill = "vendedor"
+        else:
+            owner_skill = turn_skills[0] if turn_skills else skill_used
         try:
             cart_just_finalized = bool((state.get("cart") or {}).get("just_finalized"))
             if (
